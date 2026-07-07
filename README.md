@@ -16,6 +16,7 @@ The main workflow is `WD tagger + llama.cpp`: generate WD tags from an image, th
 - Floating LLM prompt assistant for character layout, spatial relationships, and prompt rewriting.
 - Prompt assistant can use DeepSeek/OpenAI-compatible APIs or a local llama.cpp endpoint.
 - Prompt assistant can read and replace the current txt2img/img2img prompt through UI tools.
+- Prompt assistant can read/write the WebUI style template / trigger-word template when the field is present.
 
 ## Default Model
 
@@ -74,7 +75,15 @@ The model can request UI tools by returning exact JSON:
 {"tool":"set_current_prompt","arguments":{"target":"txt2img","prompt":"..."}}
 ```
 
-The frontend executes these tools and sends the result back to the assistant. Targets are `active`, `txt2img`, or `img2img`.
+```json
+{"tool":"get_style_template","arguments":{}}
+```
+
+```json
+{"tool":"set_style_template","arguments":{"template":"..."}}
+```
+
+The frontend executes these tools and sends the result back to the assistant. Targets are `active`, `txt2img`, or `img2img`. `get_current_prompt` also includes the WebUI style template when the field can be found by label, such as `风格模版` / `风格模板`.
 
 ## Notes
 

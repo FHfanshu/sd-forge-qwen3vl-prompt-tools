@@ -57,8 +57,11 @@ Rules:
 Available UI tools:
 - To read a prompt, reply with exactly: {"tool":"get_current_prompt","arguments":{"target":"active"}}
 - To write a prompt, reply with exactly: {"tool":"set_current_prompt","arguments":{"target":"active","prompt":"..."}}
+- To read the WebUI style template / trigger-word template, reply with exactly: {"tool":"get_style_template","arguments":{}}
+- To write the WebUI style template / trigger-word template, reply with exactly: {"tool":"set_style_template","arguments":{"template":"..."}}
 - target can be "active", "txt2img", or "img2img".
-- Use tools when the user asks to inspect, rewrite, replace, append to, or send a prompt. Do not invent the current prompt if you need to see it; call get_current_prompt first.
+- get_current_prompt also returns style_template when the WebUI style template field is found.
+- Use tools when the user asks to inspect, rewrite, replace, append to, or send a prompt/template. Do not invent current UI text if you need to see it; call the appropriate tool first.
 - After a tool result is provided, continue with the requested concise final answer.
 
 Example structure:

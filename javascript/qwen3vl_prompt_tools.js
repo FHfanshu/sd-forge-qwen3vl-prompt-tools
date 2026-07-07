@@ -187,12 +187,60 @@
         };
     }
 
+    function normalizedLabelText(value) {
+        return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+    }
+
+    function styleTemplateRoot() {
+        const app = q3vlApp();
+        const direct = app.querySelector(
+            "#setting_neta_template_positive, #neta_template_positive, #txt2img_style_template, #img2img_style_template"
+        );
+        if (direct && (direct.querySelector("textarea") || direct.querySelector("input"))) return direct;
+
+        const labelNeedles = [
+            "风格模版",
+            "风格模板",
+            "style template",
+            "positive template",
+            "trigger template",
+            "触发词"
+        ].map(normalizedLabelText);
+        const labels = Array.from(app.querySelectorAll('[data-testid="block-info"], label, span'));
+        for (const label of labels) {
+            const text = normalizedLabelText(label.textContent);
+            if (!text || !labelNeedles.some(function (needle) { return text.includes(needle); })) continue;
+            let node = label.parentElement;
+            for (let i = 0; i < 8 && node && node !== document.body; i += 1) {
+                const control = node.querySelector("textarea, input");
+                if (control && !control.closest("#q3vl_assistant_panel")) return node;
+                node = node.parentElement;
+            }
+        }
+        return null;
+    }
+
+    function styleTemplateInfo() {
+        const root = styleTemplateRoot();
+        return {
+            found: !!root,
+            template: textboxValue(root)
+        };
+    }
+
     function executeAssistantTool(tool) {
         const name = tool.tool || tool.name;
         const args = tool.arguments || {};
         if (name === "get_current_prompt") {
             const item = promptRootForTarget(args.target || "active");
-            return { ok: true, target: item.target, prompt: textboxValue(item.root) };
+            const template = styleTemplateInfo();
+            return {
+                ok: true,
+                target: item.target,
+                prompt: textboxValue(item.root),
+                style_template_found: template.found,
+                style_template: template.template
+            };
         }
         if (name === "set_current_prompt") {
             const item = promptRootForTarget(args.target || "active");
@@ -201,6 +249,17 @@
             const ok = setTextboxValue(item.root, prompt);
             if (ok) switchMainTab(item.target);
             return { ok: ok, target: item.target, prompt: prompt };
+        }
+        if (name === "get_style_template") {
+            const template = styleTemplateInfo();
+            return { ok: template.found, style_template: template.template, error: template.found ? "" : "style template field not found" };
+        }
+        if (name === "set_style_template") {
+            const root = styleTemplateRoot();
+            const template = String(args.template || "");
+            if (!root) return { ok: false, error: "style template field not found" };
+            if (!template.trim()) return { ok: false, error: "template is empty" };
+            return { ok: setTextboxValue(root, template), style_template: template };
         }
         return { ok: false, error: `unknown tool: ${name}` };
     }
@@ -242,6 +301,9 @@
         });
         if (!response.ok) {
             const detail = await response.text();
+            if (response.status === 404) {
+                throw new Error("助手后端接口未注册。请重启 Forge/WebUI 后再试；只刷新浏览器不会注册新的 /qwen3vl-prompt-tools/assistant route。原始错误: " + detail);
+            }
             throw new Error(detail);
         }
         return await response.json();
@@ -314,7 +376,7 @@
             </details>
             <div id="q3vl_assistant_messages"></div>
             <textarea id="q3vl_assistant_input" placeholder="例如：读取当前提示词，改成三名角色的自拍构图，明确左中右位置。"></textarea>
-            <div class="q3vl-assistant-actions"><button type="button" id="q3vl_assistant_read">读取当前 prompt</button><button type="button" id="q3vl_assistant_clear">清空</button><button type="button" id="q3vl_assistant_send">发送</button></div>
+            <div class="q3vl-assistant-actions"><button type="button" id="q3vl_assistant_read">读取 prompt/模板</button><button type="button" id="q3vl_assistant_clear">清空</button><button type="button" id="q3vl_assistant_send">发送</button></div>
         `;
         document.body.appendChild(panel);
         restoreAssistantPosition(panel);
@@ -357,7 +419,7 @@
             }
         });
         panel.querySelector("#q3vl_assistant_read").addEventListener("click", function () {
-            runAssistantLoop("Read the current prompt and briefly summarize what composition and spatial relationships it currently describes. If it is empty, say it is empty.");
+            runAssistantLoop("Read the current prompt and WebUI style template. Briefly summarize the composition, trigger words, and spatial relationships they describe. If both are empty, say they are empty.");
         });
         panel.querySelector("#q3vl_assistant_clear").addEventListener("click", function () {
             assistantState.messages = [];
