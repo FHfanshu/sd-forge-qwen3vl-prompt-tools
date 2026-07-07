@@ -1,0 +1,52 @@
+# Forge Neo Qwen3-VL Prompt Tools
+
+Prompt reverse-engineering tools for Forge Neo.
+
+The main workflow is `WD tagger + llama.cpp`: generate WD tags from an image, then use a local Qwen3.5 VLM GGUF to create an English natural-language prompt suitable for Anima-style image generation. The Krea2 / Qwen3-VL path is kept as a fallback.
+
+## Features
+
+- Reverse prompt tab for image-to-prompt workflows.
+- WD tagger integration with character/rating/debug output.
+- Local GGUF VLM backend through `llama-server.exe`.
+- One-shot local backend mode: loads the model only for the request, then releases VRAM.
+- OpenAI-compatible endpoint mode for batch/frequent reverse prompting.
+- Auto-downloads the default HauhauCS Qwen3.5 9B uncensored GGUF and mmproj when missing.
+- Auto-downloads a Windows x64 llama.cpp release backend when `llama-server.exe` is missing.
+
+## Default Model
+
+When local model paths are empty or missing, the extension downloads:
+
+- `HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive`
+- `Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q6_K.gguf`
+- `mmproj-Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-BF16.gguf`
+
+Files are placed under:
+
+```text
+<Forge Neo>/models/LLM/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-GGUF
+```
+
+## Backend
+
+This extension does not install or depend on `llama-cpp-python` for Qwen3.5 inference. Forge Neo environments may ship an older binding that cannot load `qwen35` GGUF files. Instead, local one-shot inference uses an external `llama-server.exe` from a recent llama.cpp build.
+
+If `llama-server.exe` is missing, the extension downloads the latest suitable Windows x64 zip from `ggml-org/llama.cpp` and extracts it to:
+
+```text
+<extension>/bin/llama.cpp
+```
+
+You can also set `LLAMA_SERVER_EXE` or fill the path manually in the UI.
+
+## Modes
+
+- `Local GGUF once`: best for occasional prompt reverse-engineering. Loads the model, runs one request, then closes the backend.
+- `OpenAI endpoint`: best for many images. Start your own llama.cpp server and point the UI to it.
+
+## Notes
+
+- The Anima style template intentionally outputs English.
+- `thinking` is optional and disabled by default because Qwen3.5 VLM may spend the token budget in `reasoning_content` without producing final `content`.
+- Downloaded GGUF models and llama.cpp binaries are ignored by git.

@@ -1,0 +1,135 @@
+#txt2img_prompt_row,
+#img2img_prompt_row {
+    flex-wrap: wrap !important;
+}
+
+.q3vl-inline-actions {
+    align-items: center;
+    flex: 1 0 100% !important;
+    gap: 0.42rem;
+    min-width: 100% !important;
+    padding: 0.1rem 0.15rem 0.05rem;
+}
+
+.q3vl-inline-actions button {
+    flex: 0 0 auto !important;
+    min-width: 4.5rem !important;
+}
+
+.q3vl-inline-actions.q3vl-hidden {
+    display: none !important;
+}
+
+.q3vl-inline-label {
+    color: var(--body-text-color-subdued);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    margin-right: 0.25rem;
+    text-transform: uppercase;
+}
+
+#q3vl-workbench {
+    margin: 0 auto;
+    max-width: 1360px;
+    padding: clamp(0.6rem, 2vw, 1.4rem);
+}
+
+.q3vl-heading {
+    align-items: stretch;
+    display: flex;
+    gap: 1rem;
+    justify-content: space-between;
+    margin: 0.25rem 0 1rem;
+}
+
+.q3vl-heading h1 {
+    font-size: clamp(1.75rem, 4vw, 3.25rem);
+    font-weight: 650;
+    letter-spacing: -0.045em;
+    line-height: 0.98;
+    margin: 0.18rem 0 0.55rem;
+}
+
+.q3vl-heading p {
+    color: var(--body-text-color-subdued);
+    margin: 0;
+}
+
+.q3vl-kicker {
+    color: var(--primary-500);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.72rem;
+    font-weight: 750;
+    letter-spacing: 0.13em;
+}
+
+.q3vl-rail {
+    background: linear-gradient(180deg, var(--primary-400), #7257d9 55%, transparent);
+    border-radius: 999px;
+    min-height: 5.6rem;
+    opacity: 0.9;
+    width: 0.34rem;
+}
+
+.q3vl-grid {
+    gap: 0.85rem;
+}
+
+.q3vl-panel {
+    gap: 0.7rem;
+    padding: 0;
+}
+
+.q3vl-panel > .form,
+.q3vl-panel > .block,
+.q3vl-panel .q3vl-live-log,
+.q3vl-output-panel > .form,
+.q3vl-output-panel > .block {
+    background: color-mix(in srgb, var(--block-background-fill) 96%, var(--primary-500) 4%);
+    border: 1px solid var(--block-border-color);
+    border-radius: var(--block-radius);
+    padding: clamp(0.55rem, 1.2vw, 0.85rem);
+}
+
+.q3vl-output-panel textarea {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    line-height: 1.55;
+}
+
+.q3vl-run {
+    min-height: 2.8rem;
+}
+
+.q3vl-status-idle,
+.q3vl-status-ok {
+    border-left: 3px solid var(--border-color-primary);
+    color: var(--body-text-color-subdued);
+    display: block;
+    font-size: 0.8rem;
+    padding: 0.25rem 0.65rem;
+}
+
+.q3vl-status-ok {
+    border-left-color: var(--primary-500);
+    color: var(--body-text-color);
+}
+
+@media (max-width: 720px) {
+    .q3vl-heading h1 {
+        font-size: 2rem;
+    }
+
+    .q3vl-inline-actions {
+        overflow-x: auto;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .q3vl-inline-actions *,
+    #q3vl-workbench * {
+        scroll-behavior: auto !important;
+        transition: none !important;
+    }
+}
