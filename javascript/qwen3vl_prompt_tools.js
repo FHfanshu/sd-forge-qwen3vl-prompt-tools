@@ -1,6 +1,25 @@
 (function () {
     function q3vlApp() {
-        return typeof gradioApp === "function" ? gradioApp() : document;
+        const app = typeof gradioApp === "function" ? gradioApp() : null;
+        return app || document;
+    }
+
+    function q3vlMainApp() {
+        const app = q3vlApp();
+        if (!app || typeof app.querySelector !== "function") return null;
+        const hasMainTabs = !!app.querySelector("#tabs");
+        const hasPromptBox = !!(app.querySelector("#txt2img_prompt") || app.querySelector("#img2img_prompt"));
+        return hasMainTabs && hasPromptBox ? app : null;
+    }
+
+    function assistantPanel() {
+        return document.getElementById("q3vl_assistant_panel");
+    }
+
+    function removeAssistantWindow() {
+        document.querySelectorAll("#q3vl_assistant_launcher, #q3vl_assistant_panel").forEach(function (el) {
+            el.remove();
+        });
     }
 
     function currentForgePreset() {
@@ -124,7 +143,7 @@
     };
 
     function assistantConfig() {
-        const panel = q3vlApp().querySelector("#q3vl_assistant_panel");
+        const panel = assistantPanel();
         const get = function (name, fallback) {
             const value = panel ? panel.querySelector(`[data-q3vl-setting="${name}"]`)?.value : localStorage.getItem(`q3vl_assistant_${name}`);
             return value || fallback;
@@ -144,7 +163,7 @@
     }
 
     function saveAssistantConfig() {
-        const panel = q3vlApp().querySelector("#q3vl_assistant_panel");
+        const panel = assistantPanel();
         if (!panel) return;
         panel.querySelectorAll("[data-q3vl-setting]").forEach(function (input) {
             localStorage.setItem(`q3vl_assistant_${input.dataset.q3vlSetting}`, input.value || "");
@@ -205,7 +224,7 @@
     }
 
     function addAssistantMessage(role, text) {
-        const log = q3vlApp().querySelector("#q3vl_assistant_messages");
+        const log = assistantPanel()?.querySelector("#q3vl_assistant_messages");
         if (!log) return;
         const item = document.createElement("div");
         item.className = `q3vl-assistant-msg q3vl-assistant-${role}`;
@@ -233,7 +252,7 @@
             assistantState.messages.push({ role: "user", content: userText });
             addAssistantMessage("user", userText);
         }
-        const sendButton = q3vlApp().querySelector("#q3vl_assistant_send");
+        const sendButton = assistantPanel()?.querySelector("#q3vl_assistant_send");
         if (sendButton) sendButton.disabled = true;
         try {
             for (let i = 0; i < 4; i += 1) {
@@ -260,8 +279,14 @@
     }
 
     function setupAssistantWindow() {
-        const app = q3vlApp();
-        if (app.querySelector("#q3vl_assistant_launcher")) return;
+        if (!q3vlMainApp()) {
+            removeAssistantWindow();
+            return;
+        }
+        const existingLaunchers = document.querySelectorAll("#q3vl_assistant_launcher");
+        const existingPanels = document.querySelectorAll("#q3vl_assistant_panel");
+        if (existingLaunchers.length === 1 && existingPanels.length === 1) return;
+        if (existingLaunchers.length || existingPanels.length) removeAssistantWindow();
         const launcher = document.createElement("button");
         launcher.id = "q3vl_assistant_launcher";
         launcher.type = "button";
@@ -477,6 +502,10 @@
     }
 
     function setupQwenTools() {
+        if (!q3vlMainApp()) {
+            removeAssistantWindow();
+            return;
+        }
         setupQwenPresetGate();
         setupSendButtons();
         setupAssistantWindow();
