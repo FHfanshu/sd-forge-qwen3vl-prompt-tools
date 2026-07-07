@@ -728,5 +728,12 @@ def combine_prompt(tags: str, nl: str, mode: str) -> str:
     if mode == "NL only":
         return nl
     if tags and nl:
-        return f"{tags}\n\n{nl}"
+        return f"{tags}\n\n{_strip_subject_placeholders(nl)}"
     return tags or nl
+
+
+def _strip_subject_placeholders(text: str) -> str:
+    text = re.sub(r"\[[^\]]*(?:replace|insert|subject|character|主体|角色)[^\]]*\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+([,.;:])", r"\1", text)
+    text = re.sub(r"^[\s,.;:]+", "", text)
+    return " ".join(text.split()).strip()
