@@ -37,6 +37,32 @@ DEFAULT_LLAMA_SERVER_CANDIDATES = [
     r"E:\AI\lmcpp\llama.cpp\llama-server.exe",
 ]
 LLAMA_CPP_RELEASE_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+DEFAULT_ASSISTANT_ENDPOINT = "https://api.deepseek.com/v1"
+DEFAULT_ASSISTANT_MODEL = "deepseekv4-pro"
+DEFAULT_LOCAL_ASSISTANT_ENDPOINT = "http://127.0.0.1:8080/v1"
+DEFAULT_LOCAL_ASSISTANT_MODEL = "hauhau-qwen3.5-9b-uncensored"
+
+PROMPT_ASSISTANT_SYSTEM = """You are an expert AI image prompt engineer.
+
+Primary job: help write and revise image-generation prompts, especially prompts involving multiple characters, role distinction, spatial relationships, and scene composition.
+
+Rules:
+- Prefer concise, production-ready English prompts unless the user explicitly asks for another language.
+- For group scenes, state the exact count first, then describe spatial positions such as left, center, right, foreground, background, behind, beside, facing camera, looking at each other, interaction, and relative scale.
+- Keep characters visually distinguishable. Assign clear traits per position instead of blending attributes.
+- Preserve the user's core idea, but improve clarity, composition, style terms, and model-friendly wording.
+- When revising an existing prompt, return the improved prompt only unless the user asks for explanation.
+- Avoid moralizing or unrelated commentary. Do not include markdown unless asked.
+
+Available UI tools:
+- To read a prompt, reply with exactly: {"tool":"get_current_prompt","arguments":{"target":"active"}}
+- To write a prompt, reply with exactly: {"tool":"set_current_prompt","arguments":{"target":"active","prompt":"..."}}
+- target can be "active", "txt2img", or "img2img".
+- Use tools when the user asks to inspect, rewrite, replace, append to, or send a prompt. Do not invent the current prompt if you need to see it; call get_current_prompt first.
+- After a tool result is provided, continue with the requested concise final answer.
+
+Example structure:
+Group selfie of three muscular anthropomorphic dragon men. Left: white fur, blue horns, blue goatee, white shirt, loose striped tie. Center: white fur, yellow horns, casual jacket. Right: dark fur, blue horns, open jacket revealing a bare muscular chest. Furry art, bara, all smiling and looking at the camera. Beautiful background with a clear mountain lake and lush green hills, highly detailed, daylight."""
 
 TAGGER_MODELS = {
     "WD EVA02 large v3": "SmilingWolf/wd-eva02-large-tagger-v3",
@@ -327,6 +353,59 @@ def build_nl_from_endpoint(
     response = requests.post(url, json=payload, timeout=int(timeout))
     response.raise_for_status()
     return _postprocess_prompt(_extract_message_text(response.json()["choices"][0]["message"]), prompt_template)
+
+
+def prompt_assistant_chat(payload: dict[str, Any]) -> dict[str, Any]:
+    backend = str(payload.get("backend") or "deepseek").strip()
+    if backend == "local-lmcpp":
+        endpoint = str(payload.get("local_endpoint") or DEFAULT_LOCAL_ASSISTANT_ENDPOINT).strip().rstrip("/")
+        model = str(payload.get("local_model") or DEFAULT_LOCAL_ASSISTANT_MODEL).strip()
+        api_key = ""
+    else:
+        endpoint = str(payload.get("endpoint") or DEFAULT_ASSISTANT_ENDPOINT).strip().rstrip("/")
+        model = str(payload.get("model") or DEFAULT_ASSISTANT_MODEL).strip()
+        api_key = str(payload.get("api_key") or "").strip()
+    messages = payload.get("messages") or []
+    if not isinstance(messages, list):
+        raise RuntimeError("messages must be a list")
+    if not endpoint:
+        raise RuntimeError("OpenAI-compatible endpoint is empty")
+    if not model:
+        raise RuntimeError("model is empty")
+    if endpoint.endswith("/chat/completions"):
+        url = endpoint
+    elif endpoint.endswith("/v1"):
+        url = endpoint + "/chat/completions"
+    else:
+        url = endpoint + "/v1/chat/completions"
+
+    request_messages = [{"role": "system", "content": PROMPT_ASSISTANT_SYSTEM}]
+    for item in messages[-20:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip()
+        content = str(item.get("content") or "").strip()
+        if role in {"user", "assistant"} and content:
+            request_messages.append({"role": role, "content": content})
+    if len(request_messages) == 1:
+        raise RuntimeError("message is empty")
+
+    body = {
+        "model": model,
+        "messages": request_messages,
+        "temperature": float(payload.get("temperature") or 0.35),
+        "top_p": float(payload.get("top_p") or 0.9),
+        "max_tokens": int(payload.get("max_tokens") or 768),
+        "stream": False,
+    }
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    response = requests.post(url, json=body, headers=headers, timeout=int(payload.get("timeout") or 120))
+    response.raise_for_status()
+    data = response.json()
+    text = _extract_message_text(data["choices"][0]["message"])
+    return {"text": text, "model": model, "endpoint": endpoint}
 
 
 def ensure_local_gguf_pair(model_path: str, mmproj_path: str, need_mmproj: bool) -> tuple[str, str]:

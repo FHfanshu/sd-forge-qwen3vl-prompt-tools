@@ -151,6 +151,126 @@
     color: var(--body-text-color);
 }
 
+#q3vl_assistant_launcher {
+    background: var(--button-primary-background-fill);
+    border: 1px solid var(--button-primary-border-color);
+    border-radius: 999px;
+    bottom: 1.25rem;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 24%);
+    color: var(--button-primary-text-color);
+    cursor: pointer;
+    font-weight: 700;
+    padding: 0.55rem 0.9rem;
+    position: fixed;
+    right: 1.25rem;
+    z-index: 9998;
+}
+
+#q3vl_assistant_panel {
+    background: var(--body-background-fill);
+    border: 1px solid var(--block-border-color);
+    border-radius: 10px;
+    bottom: 4.2rem;
+    box-shadow: 0 18px 42px rgb(0 0 0 / 34%);
+    display: none;
+    flex-direction: column;
+    gap: 0.55rem;
+    max-height: min(720px, calc(100vh - 6rem));
+    padding: 0.8rem;
+    position: fixed;
+    right: 1.25rem;
+    width: min(460px, calc(100vw - 2rem));
+    z-index: 9999;
+}
+
+#q3vl_assistant_panel.q3vl-assistant-open {
+    display: flex;
+}
+
+.q3vl-assistant-head,
+.q3vl-assistant-actions {
+    align-items: center;
+    display: flex;
+    gap: 0.5rem;
+    justify-content: space-between;
+}
+
+.q3vl-assistant-settings {
+    display: grid;
+    gap: 0.35rem;
+    grid-template-columns: 1fr 1fr;
+}
+
+.q3vl-assistant-settings select,
+.q3vl-assistant-settings input,
+#q3vl_assistant_input {
+    background: var(--input-background-fill);
+    border: 1px solid var(--input-border-color);
+    border-radius: var(--input-radius);
+    color: var(--body-text-color);
+    min-width: 0;
+    padding: 0.45rem 0.55rem;
+}
+
+.q3vl-assistant-settings select,
+.q3vl-assistant-settings input[data-q3vl-setting="api_key"] {
+    grid-column: span 2;
+}
+
+#q3vl_assistant_messages {
+    background: color-mix(in srgb, var(--block-background-fill) 92%, black 8%);
+    border: 1px solid var(--block-border-color);
+    border-radius: var(--block-radius);
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    min-height: 180px;
+    overflow: auto;
+    padding: 0.65rem;
+}
+
+.q3vl-assistant-msg {
+    border-radius: 8px;
+    line-height: 1.4;
+    padding: 0.45rem 0.55rem;
+    white-space: pre-wrap;
+}
+
+.q3vl-assistant-user {
+    align-self: flex-end;
+    background: var(--primary-500);
+    color: white;
+    max-width: 86%;
+}
+
+.q3vl-assistant-assistant {
+    align-self: flex-start;
+    background: var(--block-background-fill);
+    border: 1px solid var(--block-border-color);
+    max-width: 92%;
+}
+
+.q3vl-assistant-status,
+.q3vl-assistant-tool {
+    color: var(--body-text-color-subdued);
+    font-size: 0.82rem;
+}
+
+.q3vl-assistant-error {
+    background: #4b1111;
+    color: #ffd9d9;
+}
+
+#q3vl_assistant_input {
+    min-height: 5.2rem;
+    resize: vertical;
+}
+
+.q3vl-assistant-actions button,
+.q3vl-assistant-head button {
+    cursor: pointer;
+}
+
 @media (max-width: 720px) {
     .q3vl-heading h1 {
         font-size: 2rem;

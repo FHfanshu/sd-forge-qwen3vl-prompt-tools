@@ -12,6 +12,7 @@ from lib_qwen3vl_prompt_tools.generic import (
     build_nl_from_local_gguf,
     combine_prompt,
     find_default_llama_server,
+    prompt_assistant_chat,
     repo_from_label,
 )
 from lib_qwen3vl_prompt_tools.prompts import CAPTION_TASKS
@@ -72,6 +73,17 @@ def _run_enhancer(text: str, task: str):
             return enhance(text, task)
     except Exception as error:
         raise gr.Error(str(error)) from error
+
+
+def _assistant_api(_: gr.Blocks, app):
+    from fastapi import Body, HTTPException
+
+    @app.post("/qwen3vl-prompt-tools/assistant")
+    async def qwen3vl_prompt_assistant(payload: dict = Body(...)):
+        try:
+            return prompt_assistant_chat(payload)
+        except Exception as error:
+            raise HTTPException(status_code=500, detail=str(error)) from error
 
 
 def _after_component(component, **kwargs):
@@ -683,4 +695,5 @@ def _ui_tab():
 
 
 script_callbacks.on_after_component(_after_component, name="qwen3vl-prompt-actions")
+script_callbacks.on_app_started(_assistant_api, name="qwen3vl-prompt-assistant-api")
 script_callbacks.on_ui_tabs(_ui_tab, name="qwen3vl-prompt-tab")

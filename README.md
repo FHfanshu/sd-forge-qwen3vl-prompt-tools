@@ -13,6 +13,9 @@ The main workflow is `WD tagger + llama.cpp`: generate WD tags from an image, th
 - OpenAI-compatible endpoint mode for batch/frequent reverse prompting.
 - Auto-downloads the default HauhauCS Qwen3.5 9B uncensored GGUF and mmproj when missing.
 - Auto-downloads a Windows x64 llama.cpp release backend when `llama-server.exe` is missing.
+- Floating LLM prompt assistant for character layout, spatial relationships, and prompt rewriting.
+- Prompt assistant can use DeepSeek/OpenAI-compatible APIs or a local llama.cpp endpoint.
+- Prompt assistant can read and replace the current txt2img/img2img prompt through UI tools.
 
 ## Default Model
 
@@ -44,6 +47,34 @@ You can also set `LLAMA_SERVER_EXE` or fill the path manually in the UI.
 
 - `Local GGUF once`: best for occasional prompt reverse-engineering. Loads the model, runs one request, then closes the backend.
 - `OpenAI endpoint`: best for many images. Start your own llama.cpp server and point the UI to it.
+
+## Floating Prompt Assistant
+
+The `LLM 助手` button opens a floating chat window. Defaults:
+
+- Endpoint: `https://api.deepseek.com/v1`
+- Model: `deepseekv4-pro`
+
+You can switch the assistant to `本地 llama.cpp endpoint` and reuse a running Hauhau/Qwen3.5 server, for example:
+
+```text
+http://127.0.0.1:8080/v1
+hauhau-qwen3.5-9b-uncensored
+```
+
+The assistant is instructed to generate and revise image-generation prompts, especially multi-character spatial layouts such as left / center / right, foreground / background, interactions, and distinct per-character traits.
+
+The model can request UI tools by returning exact JSON:
+
+```json
+{"tool":"get_current_prompt","arguments":{"target":"active"}}
+```
+
+```json
+{"tool":"set_current_prompt","arguments":{"target":"txt2img","prompt":"..."}}
+```
+
+The frontend executes these tools and sends the result back to the assistant. Targets are `active`, `txt2img`, or `img2img`.
 
 ## Notes
 
