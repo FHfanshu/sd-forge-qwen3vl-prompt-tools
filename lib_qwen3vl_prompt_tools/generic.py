@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -37,8 +38,8 @@ DEFAULT_LLAMA_SERVER_CANDIDATES = [
     r"E:\AI\lmcpp\llama.cpp\llama-server.exe",
 ]
 LLAMA_CPP_RELEASE_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
-DEFAULT_ASSISTANT_ENDPOINT = "https://api.deepseek.com/v1"
-DEFAULT_ASSISTANT_MODEL = "deepseekv4-pro"
+DEFAULT_ASSISTANT_ENDPOINT = "https://api.deepseek.com"
+DEFAULT_ASSISTANT_MODEL = "deepseek-v4-pro"
 DEFAULT_LOCAL_ASSISTANT_ENDPOINT = "http://127.0.0.1:8080/v1"
 DEFAULT_LOCAL_ASSISTANT_MODEL = "hauhau-qwen3.5-9b-uncensored"
 
@@ -375,12 +376,7 @@ def prompt_assistant_chat(payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("OpenAI-compatible endpoint is empty")
     if not model:
         raise RuntimeError("model is empty")
-    if endpoint.endswith("/chat/completions"):
-        url = endpoint
-    elif endpoint.endswith("/v1"):
-        url = endpoint + "/chat/completions"
-    else:
-        url = endpoint + "/v1/chat/completions"
+    url = _assistant_chat_url(endpoint)
 
     request_messages = [{"role": "system", "content": PROMPT_ASSISTANT_SYSTEM}]
     for item in messages[-20:]:
@@ -401,14 +397,32 @@ def prompt_assistant_chat(payload: dict[str, Any]) -> dict[str, Any]:
         "max_tokens": int(payload.get("max_tokens") or 768),
         "stream": False,
     }
+    if urllib.parse.urlparse(endpoint).netloc.lower() == "api.deepseek.com":
+        body["thinking"] = {"type": "disabled"}
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     response = requests.post(url, json=body, headers=headers, timeout=int(payload.get("timeout") or 120))
-    response.raise_for_status()
+    if response.status_code >= 400:
+        detail = response.text.strip()
+        raise RuntimeError(f"Assistant API {response.status_code} error from {url}: {detail or response.reason}")
     data = response.json()
     text = _extract_message_text(data["choices"][0]["message"])
     return {"text": text, "model": model, "endpoint": endpoint}
+
+
+def _assistant_chat_url(endpoint: str) -> str:
+    endpoint = endpoint.strip().rstrip("/")
+    if endpoint.endswith("/chat/completions"):
+        return endpoint
+    parsed = urllib.parse.urlparse(endpoint)
+    if parsed.netloc.lower() == "api.deepseek.com":
+        base_path = parsed.path.rstrip("/")
+        path = f"{base_path}/chat/completions"
+        return urllib.parse.urlunparse((parsed.scheme or "https", parsed.netloc, path, "", "", ""))
+    if endpoint.endswith("/v1"):
+        return endpoint + "/chat/completions"
+    return endpoint + "/v1/chat/completions"
 
 
 def ensure_local_gguf_pair(model_path: str, mmproj_path: str, need_mmproj: bool) -> tuple[str, str]:

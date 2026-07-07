@@ -53,8 +53,10 @@ You can also set `LLAMA_SERVER_EXE` or fill the path manually in the UI.
 
 The `LLM 助手` button opens a floating chat window. Defaults:
 
-- Endpoint: `https://api.deepseek.com/v1`
-- Model: `deepseekv4-pro`
+- Endpoint: `https://api.deepseek.com`
+- Model: `deepseek-v4-pro`
+
+Older `https://api.deepseek.com/v1` DeepSeek-style endpoints remain accepted; the assistant will append `/chat/completions` to whichever base you configure. Local llama.cpp/OpenAI-compatible endpoints still normally use `/v1`.
 
 You can switch the assistant to `本地 llama.cpp endpoint` and reuse a running Hauhau/Qwen3.5 server, for example:
 

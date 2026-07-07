@@ -148,10 +148,11 @@
             const value = panel ? panel.querySelector(`[data-q3vl-setting="${name}"]`)?.value : localStorage.getItem(`q3vl_assistant_${name}`);
             return value || fallback;
         };
+        const endpoint = get("endpoint", "https://api.deepseek.com");
         return {
             backend: get("backend", "deepseek"),
-            endpoint: get("endpoint", "https://api.deepseek.com/v1"),
-            model: get("model", "deepseekv4-pro"),
+            endpoint: endpoint,
+            model: normalizeAssistantModel(endpoint, get("model", "deepseek-v4-pro")),
             api_key: get("api_key", ""),
             local_endpoint: get("local_endpoint", "http://127.0.0.1:8080/v1"),
             local_model: get("local_model", "hauhau-qwen3.5-9b-uncensored"),
@@ -160,6 +161,17 @@
             max_tokens: 768,
             timeout: 120
         };
+    }
+
+    function normalizeAssistantModel(endpoint, model) {
+        const cleaned = String(model || "").trim() || "deepseek-v4-pro";
+        try {
+            const url = new URL(String(endpoint || ""));
+            if (url.hostname === "api.deepseek.com" && cleaned === "deepseekv4-pro") return "deepseek-v4-pro";
+            if (url.hostname === "api.deepseek.com" && cleaned === "deepseek-chat") return "deepseek-v4-pro";
+            if (url.hostname === "api.deepseek.com" && cleaned === "deepseek-reasoner") return "deepseek-v4-pro";
+        } catch (_error) { }
+        return cleaned;
     }
 
     function saveAssistantConfig() {
@@ -375,7 +387,7 @@
                 </div>
             </details>
             <div id="q3vl_assistant_messages"></div>
-            <textarea id="q3vl_assistant_input" placeholder="例如：读取当前提示词，改成三名角色的自拍构图，明确左中右位置。"></textarea>
+            <textarea id="q3vl_assistant_input" placeholder="例如：读取当前提示词，改成三名角色的自拍构图，明确左中右位置。Enter 换行，Ctrl+Enter 发送。"></textarea>
             <div class="q3vl-assistant-actions"><button type="button" id="q3vl_assistant_read">读取 prompt/模板</button><button type="button" id="q3vl_assistant_clear">清空</button><button type="button" id="q3vl_assistant_send">发送</button></div>
         `;
         document.body.appendChild(panel);
@@ -387,8 +399,13 @@
         });
         const backend = panel.querySelector('[data-q3vl-setting="backend"]');
         backend.value = localStorage.getItem("q3vl_assistant_backend") || "deepseek";
-        panel.querySelector('[data-q3vl-setting="endpoint"]').value = localStorage.getItem("q3vl_assistant_endpoint") || "https://api.deepseek.com/v1";
-        panel.querySelector('[data-q3vl-setting="model"]').value = localStorage.getItem("q3vl_assistant_model") || "deepseekv4-pro";
+        const endpointInput = panel.querySelector('[data-q3vl-setting="endpoint"]');
+        const modelInput = panel.querySelector('[data-q3vl-setting="model"]');
+        endpointInput.value = localStorage.getItem("q3vl_assistant_endpoint") || "https://api.deepseek.com";
+        modelInput.value = normalizeAssistantModel(endpointInput.value, localStorage.getItem("q3vl_assistant_model") || "deepseek-v4-pro");
+        if (modelInput.value !== localStorage.getItem("q3vl_assistant_model")) {
+            localStorage.setItem("q3vl_assistant_model", modelInput.value);
+        }
         panel.querySelector('[data-q3vl-setting="api_key"]').value = localStorage.getItem("q3vl_assistant_api_key") || "";
         panel.querySelector('[data-q3vl-setting="local_endpoint"]').value = localStorage.getItem("q3vl_assistant_local_endpoint") || "http://127.0.0.1:8080/v1";
         panel.querySelector('[data-q3vl-setting="local_model"]').value = localStorage.getItem("q3vl_assistant_local_model") || "hauhau-qwen3.5-9b-uncensored";
@@ -414,8 +431,12 @@
             runAssistantLoop(text);
         });
         panel.querySelector("#q3vl_assistant_input").addEventListener("keydown", function (event) {
-            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+            if (event.key !== "Enter") return;
+            if (event.ctrlKey || event.metaKey) {
+                event.preventDefault();
                 panel.querySelector("#q3vl_assistant_send").click();
+            } else {
+                event.stopPropagation();
             }
         });
         panel.querySelector("#q3vl_assistant_read").addEventListener("click", function () {
