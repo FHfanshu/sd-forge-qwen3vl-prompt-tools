@@ -42,15 +42,64 @@
         }
     }
 
+    function textboxValue(root) {
+        if (!root) return "";
+        const textarea = root.querySelector("textarea");
+        const input = root.querySelector("input");
+        return textarea ? textarea.value : input ? input.value : "";
+    }
+
+    function setTextboxValue(root, value) {
+        if (!root) return false;
+        const target = root.querySelector("textarea") || root.querySelector("input");
+        if (!target) return false;
+        target.value = value;
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+        target.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+    }
+
+    function sendReversePrompt(kind) {
+        const app = q3vlApp();
+        const source = app.querySelector("#q3vl_reverse_output");
+        const target = app.querySelector(kind === "txt2img" ? "#txt2img_prompt" : "#img2img_prompt");
+        const value = textboxValue(source).trim();
+        if (!value) return;
+        setTextboxValue(target, value);
+    }
+
+    function setupSendButtons() {
+        const app = q3vlApp();
+        const txt = app.querySelector("#q3vl_send_txt2img");
+        const img = app.querySelector("#q3vl_send_img2img");
+        if (txt && !txt.dataset.q3vlSendBound) {
+            txt.dataset.q3vlSendBound = "1";
+            txt.addEventListener("click", function () {
+                window.setTimeout(function () { sendReversePrompt("txt2img"); }, 0);
+            }, true);
+        }
+        if (img && !img.dataset.q3vlSendBound) {
+            img.dataset.q3vlSendBound = "1";
+            img.addEventListener("click", function () {
+                window.setTimeout(function () { sendReversePrompt("img2img"); }, 0);
+            }, true);
+        }
+    }
+
+    function setupQwenTools() {
+        setupQwenPresetGate();
+        setupSendButtons();
+    }
+
     if (typeof onUiLoaded === "function") {
-        onUiLoaded(setupQwenPresetGate);
+        onUiLoaded(setupQwenTools);
     } else {
-        window.addEventListener("load", setupQwenPresetGate);
+        window.addEventListener("load", setupQwenTools);
     }
 
     if (typeof onAfterUiUpdate === "function") {
-        onAfterUiUpdate(setupQwenPresetGate);
+        onAfterUiUpdate(setupQwenTools);
     } else {
-        window.setInterval(setupQwenPresetGate, 1500);
+        window.setInterval(setupQwenTools, 1500);
     }
 })();

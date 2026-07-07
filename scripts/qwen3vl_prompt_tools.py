@@ -499,11 +499,11 @@ def _ui_tab():
                         combine = gr.Button("合并输出", variant="secondary")
                         with gr.Accordion("Tag scores / debug", open=False):
                             raw_json = gr.Code(label="Tag scores JSON", language="json", lines=7)
-                    output = gr.Textbox(label="反推结果", placeholder="结果会出现在这里。你可以直接修改，再发送到生成页。", lines=12, show_copy_button=True)
+                    output = gr.Textbox(label="反推结果", placeholder="结果会出现在这里。你可以直接修改，再发送到生成页。", lines=12, show_copy_button=True, elem_id="q3vl_reverse_output")
                     status = gr.HTML("<span class='q3vl-status-idle'>等待图像</span>")
                     with gr.Row():
-                        send_txt = gr.Button("发送到 txt2img", variant="secondary")
-                        send_img = gr.Button("发送到 img2img", variant="secondary")
+                        send_txt = gr.Button("发送到 txt2img", variant="secondary", elem_id="q3vl_send_txt2img")
+                        send_img = gr.Button("发送到 img2img", variant="secondary", elem_id="q3vl_send_img2img")
 
             with gr.Group(visible=False) as krea_settings:
                 with gr.Accordion("Krea2 / Qwen3-VL 设置", open=False):
