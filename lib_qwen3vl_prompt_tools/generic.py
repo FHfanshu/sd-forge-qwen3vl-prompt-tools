@@ -221,6 +221,8 @@ STYLE_EXTRACTION_TEMPLATE = """Act as a top-tier AI image prompt specialist and 
 
 Goal: extract and reverse-engineer the image's artistic style into a universal prompt. The prompt must remove the original image's specific character, readable text, named identity, and concrete story event, keeping only its aesthetic essence.
 
+Hard subject-removal rule: do not name or describe the original subject category, species, role, clothing, props, pose, facial features, body parts, character identity, or any concrete object that would recreate the source content. Replace the whole subject with the exact placeholder "[replace with your desired subject here]" and describe only how that placeholder should be rendered.
+
 Required style dimensions: image style, visual component structure, composition method, shot/framing type, light and shadow qualities, tone and color science, medium and material texture, emotion and atmosphere, rendering or camera parameters, period feeling and cultural context, spatial logic and perspective, information density and negative space, dynamic instantaneity, post-processing and digital artifacts, symbolic visual traits.
 
 Output requirements:
@@ -247,7 +249,7 @@ def _nl_messages(tags: str, characters: str, rating: str, guidance: str, languag
     if template != "standard":
         system_prompt = (
             "You are a precise image-prompt specialist. Follow the user's template exactly. "
-            "Do not output analysis, markdown, labels, or reasoning."
+            "Do not output analysis, markdown, labels, or reasoning. Remove the source subject completely."
         )
         user_prompt = (
             f"{template}\n\n"
@@ -324,7 +326,7 @@ def build_nl_from_endpoint(
 
     response = requests.post(url, json=payload, timeout=int(timeout))
     response.raise_for_status()
-    return _extract_message_text(response.json()["choices"][0]["message"])
+    return _postprocess_prompt(_extract_message_text(response.json()["choices"][0]["message"]), prompt_template)
 
 
 def ensure_local_gguf_pair(model_path: str, mmproj_path: str, need_mmproj: bool) -> tuple[str, str]:
@@ -536,7 +538,7 @@ def build_nl_from_local_gguf(
             int(timeout),
             bool(enable_thinking),
         )
-        return _extract_message_text(response["choices"][0]["message"])
+        return _postprocess_prompt(_extract_message_text(response["choices"][0]["message"]), prompt_template)
     finally:
         if proc and proc.poll() is None:
             proc.terminate()
@@ -618,6 +620,30 @@ def _extract_message_text(message: dict[str, Any]) -> str:
     raise RuntimeError("模型返回了空结果。请降低模板复杂度、提高 Max tokens，或换 9B/4B 模型重试。")
 
 
+def _postprocess_prompt(text: str, prompt_template: str) -> str:
+    if NL_PROMPT_TEMPLATES.get(prompt_template, "standard") == "standard":
+        return text
+    placeholder = "[replace with your desired subject here]"
+    cleaned = text
+    cleaned = re.sub(r"\[(?:replace|insert).*?subject.*?\]", placeholder, cleaned, flags=re.IGNORECASE)
+    subject_patterns = [
+        r"\b(?:anthropomorphic|furry)\s+(?:wolf|fox|dog|cat|tiger|dragon|animal)\s+(?:boy|girl|man|woman|character)\b",
+        r"\b(?:wolf|fox|dog|cat|tiger|dragon)\s+(?:boy|girl|man|woman|character)\b",
+        r"\b(?:anime|manga)\s+(?:boy|girl|man|woman|character)\b",
+        r"\b(?:boy|girl|man|woman|character|person|figure)\s+(?:with|wearing|holding)\b[^,;.]*",
+        r"\bwearing\s+(?:a\s+)?(?:white\s+)?(?:collared\s+)?shirt\b[^,;.]*",
+        r"\b(?:necktie|tie|shirt|collar|sweater|jacket)\b",
+        r"\b(?:wolf|fox|dog|cat|tiger|dragon|animal ears|blue eyes|fur|snout|tail|sweat drop)\b",
+    ]
+    for pattern in subject_patterns:
+        cleaned = re.sub(pattern, placeholder, cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(rf"(?:{re.escape(placeholder)}\s*,\s*)+", f"{placeholder}, ", cleaned)
+    cleaned = re.sub(rf"(?:{re.escape(placeholder)}\s+)+", f"{placeholder} ", cleaned)
+    if placeholder not in cleaned:
+        cleaned = f"{placeholder}, {cleaned}"
+    return " ".join(cleaned.split()).strip()
+
+
 def _prompt_messages(
     tags: str,
     characters: str,
@@ -634,11 +660,12 @@ def _prompt_messages(
     if template != "standard":
         system_prompt = (
             "You are a top-tier AI image-prompt specialist. Follow the user's template exactly. "
-            "Use the image as the primary source. Do not output analysis, markdown, labels, or reasoning."
+            "Use the image as the primary source for style only. Remove the source subject completely. "
+            "Do not output analysis, markdown, labels, or reasoning."
         )
         user_text = (
             f"{template}\n\n"
-            "图像标签提示（仅作辅助，必须以图片为准）：\n"
+            "Style-only tag hints. Use these only to infer aesthetics; do not copy subject nouns into the output:\n"
             f"Rating tag hint: {rating or 'unknown'}\n"
             f"Character tag hints: {characters or 'none'}\n"
             f"General tag hints: {tags or 'none'}\n"
