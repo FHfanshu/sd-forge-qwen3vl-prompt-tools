@@ -68,7 +68,7 @@ hauhau-qwen3.5-9b-uncensored
 
 The assistant is instructed to generate and revise image-generation prompts, especially multi-character spatial layouts such as left / center / right, foreground / background, interactions, and distinct per-character traits.
 
-Use `附图` to attach a reference image. The extension starts the default local Qwen3.5 9B GGUF VLM once, extracts composition/style notes, releases the local process, then sends those notes into the assistant conversation. This lets text-only remote models such as DeepSeek V4 Pro work from image references without receiving image data directly.
+Use `附图` to attach a reference image. The extension first asks the local Qwen3.5 9B GGUF VLM to produce a detailed Chinese image caption with subject/spatial facts plus a subject-agnostic reusable style prompt, then sends those visual notes into the assistant conversation. The local VLM does not receive the user's chat text, so the image analysis is not biased by the editing request. This lets text-only remote models such as DeepSeek V4 Pro work from image references without receiving image data directly.
 
 The model can request UI tools by returning exact JSON. The prompt-edit harness exposes only read and edit operations:
 

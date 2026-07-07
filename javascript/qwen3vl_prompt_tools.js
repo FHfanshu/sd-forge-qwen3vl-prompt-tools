@@ -718,7 +718,6 @@
             body: JSON.stringify({
                 image: attachment.dataUrl,
                 filename: attachment.name,
-                prompt: userText || "",
                 local_endpoint: config.local_endpoint,
                 local_model: config.local_model,
                 timeout: 120
