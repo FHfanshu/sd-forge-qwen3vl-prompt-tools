@@ -140,7 +140,8 @@
 
     const assistantState = {
         messages: [],
-        attachment: null
+        attachment: null,
+        promptReads: {}
     };
 
     function assistantConfig() {
@@ -241,6 +242,36 @@
         };
     }
 
+    function promptHash(text) {
+        let hash = 2166136261;
+        const value = String(text || "");
+        for (let i = 0; i < value.length; i += 1) {
+            hash ^= value.charCodeAt(i);
+            hash = Math.imul(hash, 16777619);
+        }
+        return `fnv1a:${(hash >>> 0).toString(16).padStart(8, "0")}:${value.length}`;
+    }
+
+    function readPromptTool(target) {
+        const item = promptRootForTarget(target || "active");
+        const prompt = textboxValue(item.root);
+        const hash = promptHash(prompt);
+        const template = styleTemplateInfo();
+        assistantState.promptReads[item.target] = {
+            hash: hash,
+            prompt: prompt,
+            at: Date.now()
+        };
+        return {
+            ok: true,
+            target: item.target,
+            prompt: prompt,
+            prompt_hash: hash,
+            style_template_found: template.found,
+            style_template: template.template
+        };
+    }
+
     function normalizePatchSeparator(value) {
         if (value === "space") return " ";
         if (value === "newline") return "\n";
@@ -273,6 +304,11 @@
             if (first < 0) return { ok: false, error: "find text not found", text: text };
             const second = text.indexOf(find, first + find.length);
             if (second >= 0 && !patch.allow_multiple) return { ok: false, error: "find text is not unique; use a longer find string", text: text };
+            if (second >= 0 && patch.allow_multiple) {
+                const insertText = operation === "insert_after" ? find + separator + replacement : replacement + separator + find;
+                const parts = text.split(find);
+                return { ok: true, text: parts.join(insertText), changed: parts.length - 1 };
+            }
             const insertAt = operation === "insert_after" ? first + find.length : first;
             const insertText = operation === "insert_after" ? separator + replacement : replacement + separator;
             return { ok: true, text: text.slice(0, insertAt) + insertText + text.slice(insertAt), changed: 1 };
@@ -305,13 +341,19 @@
         return { ok: false, error: `unknown patch operation: ${operation}`, text: text };
     }
 
-    function patchPromptRoot(root, patches) {
+    function patchPromptRoot(root, patches, baseHash) {
         if (!root) return { ok: false, error: "prompt field not found", prompt: "" };
         const target = root.querySelector("textarea") || root.querySelector("input");
         if (!target) return { ok: false, error: "prompt input not found", prompt: "" };
+        const current = target.value || "";
+        const currentHash = promptHash(current);
+        if (!baseHash) return { ok: false, error: "edit requires base_hash from read_prompt", prompt: current };
+        if (currentHash !== baseHash) {
+            return { ok: false, error: "prompt changed since read_prompt; read again before editing", prompt: current, current_hash: currentHash };
+        }
         const list = Array.isArray(patches) ? patches : [patches];
-        if (!list.length) return { ok: false, error: "no patches provided", prompt: target.value || "" };
-        let next = target.value || "";
+        if (!list.length) return { ok: false, error: "no patches provided", prompt: current };
+        let next = current;
         const results = [];
         for (let i = 0; i < list.length; i += 1) {
             const result = applyPromptPatchText(next, list[i] || {});
@@ -322,7 +364,7 @@
             next = result.text;
         }
         setNativeValueIfAvailable(target, next);
-        return { ok: true, results: results, prompt: next };
+        return { ok: true, results: results, prompt: next, prompt_hash: promptHash(next) };
     }
 
     function setNativeValueIfAvailable(target, value) {
@@ -345,50 +387,54 @@
         return next;
     }
 
+    function editPromptTool(args, patches) {
+        const item = promptRootForTarget(args.target || "active");
+        const readState = assistantState.promptReads[item.target];
+        const baseHash = String(args.base_hash || args.prompt_hash || "").trim();
+        if (!readState) {
+            return { ok: false, target: item.target, error: "must call read_prompt for this target before edit_prompt" };
+        }
+        if (!baseHash) {
+            return { ok: false, target: item.target, error: "edit_prompt requires base_hash from read_prompt", last_read_hash: readState.hash };
+        }
+        if (baseHash !== readState.hash) {
+            return { ok: false, target: item.target, error: "base_hash does not match the latest read_prompt result; read again", last_read_hash: readState.hash };
+        }
+        const result = compactPromptPatchResult(patchPromptRoot(item.root, patches, baseHash), Boolean(args.return_prompt));
+        if (result.ok) {
+            switchMainTab(item.target);
+            assistantState.promptReads[item.target] = {
+                hash: result.prompt_hash,
+                prompt: result.prompt || "",
+                at: Date.now()
+            };
+        }
+        return Object.assign({ target: item.target }, result);
+    }
+
     function executeAssistantTool(tool) {
         const name = tool.tool || tool.name;
         const args = tool.arguments || {};
-        if (name === "get_current_prompt") {
-            const item = promptRootForTarget(args.target || "active");
-            const template = styleTemplateInfo();
-            return {
-                ok: true,
-                target: item.target,
-                prompt: textboxValue(item.root),
-                style_template_found: template.found,
-                style_template: template.template
-            };
+        if (name === "read_prompt" || name === "get_current_prompt") {
+            return readPromptTool(args.target || "active");
+        }
+        if (name === "edit_prompt") {
+            return editPromptTool(args, args.patches || args.patch || []);
         }
         if (name === "set_current_prompt") {
-            const item = promptRootForTarget(args.target || "active");
-            const prompt = String(args.prompt || "");
-            if (!prompt.trim()) return { ok: false, error: "prompt is empty" };
-            const ok = setTextboxValue(item.root, prompt);
-            if (ok) switchMainTab(item.target);
-            return { ok: ok, target: item.target, prompt: prompt };
+            return { ok: false, error: "set_current_prompt is disabled to prevent prompt loss. Use read_prompt, then edit_prompt with base_hash and patches." };
         }
         if (name === "patch_current_prompt") {
-            const item = promptRootForTarget(args.target || "active");
-            const result = compactPromptPatchResult(patchPromptRoot(item.root, args.patch || args), Boolean(args.return_prompt));
-            if (result.ok) switchMainTab(item.target);
-            return Object.assign({ target: item.target }, result);
+            return editPromptTool(args, args.patch || args);
         }
         if (name === "multi_patch_current_prompt") {
-            const item = promptRootForTarget(args.target || "active");
-            const result = compactPromptPatchResult(patchPromptRoot(item.root, args.patches || []), Boolean(args.return_prompt));
-            if (result.ok) switchMainTab(item.target);
-            return Object.assign({ target: item.target }, result);
+            return editPromptTool(args, args.patches || []);
         }
         if (name === "get_style_template") {
-            const template = styleTemplateInfo();
-            return { ok: template.found, style_template: template.template, error: template.found ? "" : "style template field not found" };
+            return { ok: false, error: "get_style_template is disabled. Use read_prompt; it returns style_template when available." };
         }
         if (name === "set_style_template") {
-            const root = styleTemplateRoot();
-            const template = String(args.template || "");
-            if (!root) return { ok: false, error: "style template field not found" };
-            if (!template.trim()) return { ok: false, error: "template is empty" };
-            return { ok: setTextboxValue(root, template), style_template: template };
+            return { ok: false, error: "set_style_template is disabled to avoid blind overwrites. Use read_prompt and edit the normal prompt with edit_prompt." };
         }
         return { ok: false, error: `unknown tool: ${name}` };
     }

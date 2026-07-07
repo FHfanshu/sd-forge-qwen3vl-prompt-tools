@@ -70,37 +70,25 @@ The assistant is instructed to generate and revise image-generation prompts, esp
 
 Use `附图` to attach a reference image. The extension starts the default local Qwen3.5 9B GGUF VLM once, extracts composition/style notes, releases the local process, then sends those notes into the assistant conversation. This lets text-only remote models such as DeepSeek V4 Pro work from image references without receiving image data directly.
 
-The model can request UI tools by returning exact JSON:
+The model can request UI tools by returning exact JSON. The prompt-edit harness exposes only read and edit operations:
 
 ```json
-{"tool":"get_current_prompt","arguments":{"target":"active"}}
+{"tool":"read_prompt","arguments":{"target":"active"}}
 ```
 
 ```json
-{"tool":"set_current_prompt","arguments":{"target":"txt2img","prompt":"..."}}
+{"tool":"edit_prompt","arguments":{"target":"txt2img","base_hash":"prompt_hash from read_prompt","patches":[{"operation":"replace","find":"old phrase","replace":"new phrase"}]}}
 ```
 
-For existing prompts, prefer precise patch tools instead of whole-prompt replacement:
+`edit_prompt` is refused unless `read_prompt` has already read the same concrete target and `base_hash` matches the current prompt. If the user changes the prompt between read and edit, the edit is rejected and the assistant must read again.
 
 ```json
-{"tool":"patch_current_prompt","arguments":{"target":"active","patch":{"operation":"replace","find":"old phrase","replace":"new phrase"}}}
+{"tool":"edit_prompt","arguments":{"target":"txt2img","base_hash":"fnv1a:...","patches":[{"operation":"replace","find":"left character","replace":"left character holding a phone"},{"operation":"append","separator":"space","text":"clear left / center / right spacing"}]}}
 ```
 
-```json
-{"tool":"multi_patch_current_prompt","arguments":{"target":"txt2img","patches":[{"operation":"replace","find":"left character","replace":"left character holding a phone"},{"operation":"append","separator":"space","text":"clear left / center / right spacing"}]}}
-```
+Patch operations: `replace`, `replace_all`, `replace_n`, `insert_after`, `insert_before`, `append`, `prepend`, and `delete`. `replace` and insert operations require a unique `find` string unless `allow_multiple` is set. Edit tools return a preview by default; pass `return_prompt: true` only when the full updated prompt is needed.
 
-Patch operations: `replace`, `replace_all`, `replace_n`, `insert_after`, `insert_before`, `append`, `prepend`, and `delete`. `replace` and insert operations require a unique `find` string unless `allow_multiple` is set. Patch tools return a preview by default; pass `return_prompt: true` only when the full updated prompt is needed.
-
-```json
-{"tool":"get_style_template","arguments":{}}
-```
-
-```json
-{"tool":"set_style_template","arguments":{"template":"..."}}
-```
-
-The frontend executes these tools and sends the result back to the assistant. Targets are `active`, `txt2img`, or `img2img`. `get_current_prompt` also includes the WebUI style template when the field can be found by label, such as `风格模版` / `风格模板`.
+The frontend executes these tools and sends the result back to the assistant. Targets are `active`, `txt2img`, or `img2img`. `read_prompt` also includes the WebUI style template when the field can be found by label, such as `风格模版` / `风格模板`.
 
 ## Notes
 
