@@ -63,6 +63,8 @@ Older `https://api.deepseek.com/v1` DeepSeek-style endpoints remain accepted; th
 
 You can switch the text assistant to `本地 llama.cpp endpoint`, but DeepSeek remains the default text assistant. Image attachments use a separate local VLM configuration with presets for `Gemma 4 12B`, `Qwen3.5 原版 9B`, `Qwen3.5 破限版 9B`, plus `自定义`. The local VLM thinking switch is optional and off by default.
 
+The floating settings panel keeps common controls visible by default: text backend, API key, visual VLM preset, and visual thinking. Endpoint/model/path overrides are under `高级` and are hidden unless relevant.
+
 For local text-assistant testing, an endpoint can still be configured, for example:
 
 ```text

@@ -157,7 +157,8 @@
     }
 
     function visionModelForPreset(preset) {
-        return q3vlVisionPresets[preset] || q3vlVisionPresets[defaultVisionPreset()] || "local-vlm";
+        if (Object.prototype.hasOwnProperty.call(q3vlVisionPresets, preset)) return q3vlVisionPresets[preset];
+        return q3vlVisionPresets[defaultVisionPreset()] || "local-vlm";
     }
 
     function configBool(value) {
@@ -215,6 +216,23 @@
         if (!panel) return;
         panel.querySelectorAll("[data-q3vl-setting]").forEach(function (input) {
             localStorage.setItem(`q3vl_assistant_${input.dataset.q3vlSetting}`, input.value || "");
+        });
+    }
+
+    function setAssistantSettingsVisibility(panel) {
+        if (!panel) return;
+        const backend = panel.querySelector('[data-q3vl-setting="backend"]')?.value || "deepseek";
+        const visionPreset = panel.querySelector('[data-q3vl-setting="vision_preset"]')?.value || defaultVisionPreset();
+        const localText = backend === "local-lmcpp";
+        panel.querySelector('[data-q3vl-setting="api_key"]')?.toggleAttribute("hidden", localText);
+        panel.querySelectorAll('[data-q3vl-field="remote"]').forEach(function (element) {
+            element.hidden = localText;
+        });
+        panel.querySelectorAll('[data-q3vl-field="local-text"]').forEach(function (element) {
+            element.hidden = !localText;
+        });
+        panel.querySelectorAll('[data-q3vl-field="vision-custom"]').forEach(function (element) {
+            element.hidden = visionPreset !== "自定义";
         });
     }
 
@@ -1170,37 +1188,42 @@
         panel.innerHTML = `
             <div class="q3vl-assistant-head"><div><strong>LLM 提示词助手</strong><span>文本改写 + 本地视觉</span></div><button type="button" id="q3vl_assistant_close" class="q3vl-assistant-close" title="关闭">×</button></div>
             <details class="q3vl-assistant-config">
-                <summary><span>设置</span><span class="q3vl-assistant-config-hint">后端 / 模型 / API key</span></summary>
-                <div class="q3vl-assistant-settings">
+                <summary><span>设置</span><span class="q3vl-assistant-config-hint">DeepSeek + 视觉预设</span></summary>
+                <div class="q3vl-assistant-settings q3vl-assistant-settings-basic">
                     <select data-q3vl-setting="backend">
-                        <option value="deepseek">DeepSeek / OpenAI-compatible</option>
-                        <option value="local-lmcpp">本地 llama.cpp endpoint</option>
-                    </select>
-                    <input data-q3vl-setting="endpoint" placeholder="DeepSeek endpoint">
-                    <input data-q3vl-setting="model" placeholder="DeepSeek model">
-                    <input data-q3vl-setting="max_tokens" placeholder="Max tokens">
-                    <select data-q3vl-setting="reasoning_effort">
-                        <option value="high">Thinking high</option>
-                        <option value="max">Thinking max</option>
+                        <option value="deepseek">文本: DeepSeek</option>
+                        <option value="local-lmcpp">文本: 本地 endpoint</option>
                     </select>
                     <input data-q3vl-setting="api_key" placeholder="API key" type="password">
-                    <input data-q3vl-setting="local_endpoint" placeholder="local lmcpp endpoint">
-                    <input data-q3vl-setting="local_model" placeholder="local model">
                     <select data-q3vl-setting="vision_preset" title="附图/反推使用的本地视觉模型">
-                        <option value="Gemma 4 12B">Vision: Gemma 4 12B</option>
-                        <option value="Qwen3.5 原版 9B">Vision: Qwen3.5 原版 9B</option>
-                        <option value="Qwen3.5 破限版 9B">Vision: Qwen3.5 破限版 9B</option>
-                        <option value="自定义">Vision: 自定义</option>
+                        <option value="Gemma 4 12B">视觉: Gemma 4 12B</option>
+                        <option value="Qwen3.5 原版 9B">视觉: Qwen3.5 原版 9B</option>
+                        <option value="Qwen3.5 破限版 9B">视觉: Qwen3.5 破限版 9B</option>
+                        <option value="自定义">视觉: 自定义</option>
                     </select>
                     <select data-q3vl-setting="vision_thinking" title="本地视觉模型 thinking">
-                        <option value="0">Vision thinking off</option>
-                        <option value="1">Vision thinking on</option>
+                        <option value="0">视觉 thinking off</option>
+                        <option value="1">视觉 thinking on</option>
                     </select>
-                    <input data-q3vl-setting="vision_endpoint" placeholder="vision lmcpp endpoint">
-                    <input data-q3vl-setting="vision_model" placeholder="vision model alias">
-                    <input data-q3vl-setting="vision_model_path" placeholder="vision GGUF path (optional)">
-                    <input data-q3vl-setting="vision_mmproj_path" placeholder="vision mmproj path (optional)">
                 </div>
+                <details class="q3vl-assistant-advanced">
+                    <summary>高级</summary>
+                    <div class="q3vl-assistant-settings q3vl-assistant-settings-advanced">
+                        <input data-q3vl-setting="endpoint" data-q3vl-field="remote" placeholder="DeepSeek endpoint">
+                        <input data-q3vl-setting="model" data-q3vl-field="remote" placeholder="DeepSeek model">
+                        <input data-q3vl-setting="max_tokens" placeholder="Max tokens">
+                        <select data-q3vl-setting="reasoning_effort" data-q3vl-field="remote">
+                            <option value="high">Thinking high</option>
+                            <option value="max">Thinking max</option>
+                        </select>
+                        <input data-q3vl-setting="local_endpoint" data-q3vl-field="local-text" placeholder="text local endpoint">
+                        <input data-q3vl-setting="local_model" data-q3vl-field="local-text" placeholder="text local model">
+                        <input data-q3vl-setting="vision_endpoint" data-q3vl-field="vision-advanced" placeholder="vision endpoint override">
+                        <input data-q3vl-setting="vision_model" data-q3vl-field="vision-advanced" placeholder="vision model alias">
+                        <input data-q3vl-setting="vision_model_path" data-q3vl-field="vision-custom" placeholder="vision GGUF path">
+                        <input data-q3vl-setting="vision_mmproj_path" data-q3vl-field="vision-custom" placeholder="vision mmproj path">
+                    </div>
+                </details>
             </details>
             <div id="q3vl_assistant_messages"></div>
             <div id="q3vl_assistant_attachment" class="q3vl-assistant-attachment q3vl-assistant-attachment-empty"></div>
@@ -1246,11 +1269,14 @@
             if (!visionModel.value || Object.values(q3vlVisionPresets).includes(visionModel.value)) {
                 visionModel.value = visionModelForPreset(visionPreset.value);
             }
+            setAssistantSettingsVisibility(panel);
         });
         panel.querySelectorAll("[data-q3vl-setting]").forEach(function (input) {
             input.addEventListener("change", saveAssistantConfig);
             input.addEventListener("input", saveAssistantConfig);
+            input.addEventListener("change", function () { setAssistantSettingsVisibility(panel); });
         });
+        setAssistantSettingsVisibility(panel);
         launcher.addEventListener("click", function () {
             if (launcher.dataset.q3vlSuppressClick === "1") return;
             panel.classList.toggle("q3vl-assistant-open");

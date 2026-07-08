@@ -605,7 +605,7 @@ def analyze_reference_image(payload: dict[str, Any]) -> dict[str, Any]:
     temperature = float(payload.get("temperature") or 0.15)
     top_p = float(payload.get("top_p") or 0.9)
     vision_preset = str(payload.get("vision_preset") or DEFAULT_VISION_MODEL_PRESET).strip()
-    vision_model = str(payload.get("vision_model") or payload.get("local_model") or vision_preset_alias(vision_preset)).strip()
+    vision_model = str(payload.get("vision_model") or vision_preset_alias(vision_preset) or payload.get("local_model") or DEFAULT_LOCAL_ASSISTANT_MODEL).strip()
 
     local_endpoint = str(payload.get("vision_endpoint") or payload.get("local_endpoint") or "").strip().rstrip("/")
     if local_endpoint and _local_endpoint_ready(local_endpoint):

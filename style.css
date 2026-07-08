@@ -306,11 +306,47 @@ html.q3vl-no-pull-refresh .gradio-container {
     padding: 0.45rem 0.55rem;
 }
 
+.q3vl-assistant-advanced {
+    border-top: 1px solid color-mix(in srgb, var(--block-border-color) 70%, transparent);
+    margin-top: 0.45rem;
+    padding-top: 0.45rem;
+}
+
+.q3vl-assistant-advanced > summary {
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    color: var(--body-text-color-subdued);
+    cursor: pointer;
+    display: block;
+    font-size: 0.78rem;
+    font-weight: 700;
+    padding: 0.15rem 0.1rem;
+}
+
+.q3vl-assistant-advanced > summary::-webkit-details-marker {
+    display: none;
+}
+
+.q3vl-assistant-advanced > summary::after {
+    content: "展开 endpoint / 路径";
+    float: right;
+    font-weight: 500;
+}
+
+.q3vl-assistant-advanced[open] > summary::after {
+    content: "收起";
+}
+
 .q3vl-assistant-settings select,
 .q3vl-assistant-settings input[data-q3vl-setting="api_key"],
 .q3vl-assistant-settings input[data-q3vl-setting="vision_model_path"],
 .q3vl-assistant-settings input[data-q3vl-setting="vision_mmproj_path"] {
     grid-column: span 2;
+}
+
+.q3vl-assistant-settings-basic select {
+    grid-column: auto;
 }
 
 #q3vl_assistant_messages {
