@@ -31,3 +31,6 @@ Goal: split oversized backend and browser files, keep files under 1000 lines, an
 - Browser syntax check passed after the split: `node --check javascript/qwen3vl_prompt_tools*.js`.
 - Local model directory confirmed present: `E:\AI\lmcpp\models\Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-GGUF`.
 - Local llama-server binary confirmed present: `E:\AI\lmcpp\llama.cpp\llama-server.exe`.
+- Final unittest/compile/browser checks passed after all commits.
+- Local Qwen one-shot assistant was exercised with `local-qwen-once` and returned `local qwen assistant ok` from source `one-shot-local-qwen`.
+- Moyuu/Gemini route was exercised without a token and reached the remote API, which returned 401 `Invalid token`; live Gemini teacher inquiry requires a configured API key.
