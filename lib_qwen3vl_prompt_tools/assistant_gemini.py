@@ -15,7 +15,7 @@ from .response_text import _clean_response_text, _response_json_utf8, _response_
 from .utils import _payload_bool
 
 def _assistant_use_gemini_native(backend: str, endpoint: str, model: str) -> bool:
-    if backend == "local-lmcpp":
+    if backend in {"local-lmcpp", "openai", "openai-compatible"}:
         return False
     lowered_model = model.lower()
     if lowered_model.startswith("gemini-") or "gemini" in lowered_model:
@@ -24,7 +24,7 @@ def _assistant_use_gemini_native(backend: str, endpoint: str, model: str) -> boo
         host = urllib.parse.urlparse(endpoint).netloc.lower()
     except Exception:
         host = ""
-    return backend == "moyuu" or host in {"moyuu.cc", "hk-api.moyuu.cc"}
+    return backend == "moyuu" and host in {"moyuu.cc", "hk-api.moyuu.cc"}
 
 
 def _assistant_remote_endpoints(endpoint: str, payload: dict[str, Any]) -> list[str]:

@@ -17,6 +17,7 @@ from lib_qwen3vl_prompt_tools.generic import (
     ask_teacher,
     build_nl_from_endpoint,
     build_nl_from_local_gguf,
+    cancel_local_assistant_run,
     combine_prompt,
     find_default_llama_server,
     find_vision_preset_files,
@@ -98,6 +99,10 @@ def _assistant_api(_: gr.Blocks, app):
     @app.post("/qwen3vl-prompt-tools/assistant-stream")
     async def qwen3vl_prompt_assistant_stream(payload: dict = Body(...)):
         return StreamingResponse(prompt_assistant_stream(payload), media_type="application/x-ndjson")
+
+    @app.post("/qwen3vl-prompt-tools/assistant-cancel")
+    async def qwen3vl_prompt_assistant_cancel(payload: dict = Body(...)):
+        return cancel_local_assistant_run(str(payload.get("run_id") or ""))
 
     @app.post("/qwen3vl-prompt-tools/ask-teacher")
     async def qwen3vl_ask_teacher(payload: dict = Body(...)):

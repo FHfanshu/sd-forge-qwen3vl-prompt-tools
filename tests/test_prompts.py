@@ -5,7 +5,7 @@ from PIL import Image
 
 from lib_qwen3vl_prompt_tools.assistant import ask_teacher
 from lib_qwen3vl_prompt_tools.generic import _PromptSanitizer, _restore_gemini_result
-from lib_qwen3vl_prompt_tools.assistant_gemini import _gemini_request_body, _prompt_assistant_chat_gemini
+from lib_qwen3vl_prompt_tools.assistant_gemini import _assistant_use_gemini_native, _gemini_request_body, _prompt_assistant_chat_gemini
 from lib_qwen3vl_prompt_tools.assistant_teacher import qwen_teacher_enabled
 from lib_qwen3vl_prompt_tools.images import prepare_image
 from lib_qwen3vl_prompt_tools.prompts import build_caption_chat, build_enhance_chat, clean_generation
@@ -79,6 +79,10 @@ class PromptToolsTests(unittest.TestCase):
         body, _tokens = _gemini_request_body({"disable_tools": True}, [{"role": "user", "content": "teacher only"}])
         self.assertNotIn("tools", body)
         self.assertNotIn("toolConfig", body)
+
+    def test_openai_backend_can_force_moyuu_compatible_route(self):
+        self.assertFalse(_assistant_use_gemini_native("openai", "https://moyuu.cc", "grok-4.5"))
+        self.assertTrue(_assistant_use_gemini_native("moyuu", "https://moyuu.cc", "gemini-3.5-flash-high"))
 
     def test_ask_teacher_uses_gemini_without_tools(self):
         with patch(

@@ -11,7 +11,7 @@ from .response_text import _extract_message_text
 from .utils import _payload_bool
 
 
-QWEN_TEACHER_SANITIZER_SYSTEM = """你是运行在本地的 uncensored Qwen 多模态提示词代理。
+QWEN_TEACHER_SANITIZER_SYSTEM = """你是运行在本地的多模态提示词代理。
 
 你的任务是把用户与助手的完整上下文整理成可以发送给远端 Gemini 教师模型的安全 briefing。远端教师只负责复核、改写和给出工具调用建议，不能看到原始敏感片段。
 
@@ -44,7 +44,7 @@ def prepare_teacher_messages(payload: dict[str, Any], messages: list[Any]) -> tu
         {
             "role": "user",
             "content": (
-                "本地 Qwen 已经完成多模态解析和脱敏。请作为 Gemini 教师模型，基于以下 briefing 继续完成用户请求。"
+                "本地模型已经完成多模态解析和脱敏。请作为 Gemini 教师模型，基于以下 briefing 继续完成用户请求。"
                 "如果 briefing 里标出不确定点，请优先复核这些问题并给出明确判断。"
                 "如果需要修改 WebUI 当前提示词，仍必须使用 read_prompt/edit_prompt 工具流程。\n\n"
                 f"{text}"

@@ -15,13 +15,13 @@ DEFAULT_LLAMA_SERVER_CANDIDATES = [
 LLAMA_CPP_RELEASE_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
 DEFAULT_ASSISTANT_ENDPOINT = "https://moyuu.cc"
 DEFAULT_ASSISTANT_FALLBACK_ENDPOINT = "https://hk-api.moyuu.cc"
-DEFAULT_ASSISTANT_MODEL = "gemini-3.1-pro-high"
+DEFAULT_ASSISTANT_MODEL = "gemini-3.5-flash-preview"
 DEFAULT_LOCAL_ASSISTANT_ENDPOINT = "http://127.0.0.1:8080/v1"
 DEFAULT_LOCAL_ASSISTANT_MODEL = "hauhau-qwen3.5-9b-uncensored"
 DEFAULT_LOCAL_CONTEXT_TOKENS = 16384
-DEFAULT_LOCAL_TEXT_PRESET = "Qwen3.5 破限版 9B"
+DEFAULT_LOCAL_TEXT_PRESET = "Qwen3.5 原版 9B"
 VISION_MODEL_PRESET_CUSTOM = "自定义"
-DEFAULT_VISION_MODEL_PRESET = "Qwen3.5 破限版 9B"
+DEFAULT_VISION_MODEL_PRESET = "Qwen3.5 原版 9B"
 VISION_MODEL_PRESETS: dict[str, dict[str, Any]] = {
     "Gemma 4 12B": {
         "alias": "gemma-4-12b-it",
@@ -31,6 +31,8 @@ VISION_MODEL_PRESETS: dict[str, dict[str, Any]] = {
             "**/*gemma*4*12b*it*.gguf",
         ],
         "mmproj_globs": [
+            "mmproj-gemma-4-12B-it-BF16.gguf",
+            "**/mmproj-gemma-4-12B-it-BF16.gguf",
             "mmproj-BF16.gguf",
             "**/*gemma*mmproj*.gguf",
             "**/*mmproj*gemma*.gguf",
@@ -92,7 +94,7 @@ Available UI tools:
 - To edit the prompt, use edit_prompt with base_hash and a diff. Preferred diff format is a SEARCH/REPLACE block with markers named SEARCH, separator line =======, and ending marker REPLACE.
 - target can be "active", "txt2img", or "img2img".
 - read_prompt returns prompt, prompt_hash, style_selector, selected_styles, forge_positive_template, and style_template when available.
-- edit_prompt also accepts patches with operations "replace", "replace_all", "replace_n", "insert_after", "insert_before", "append", "prepend", and "delete". Use exact text from read_prompt. For replace/insert, find text must be unique unless allow_multiple is true.
+- edit_prompt also accepts patches with operations "replace", "replace_all", "replace_n", "insert_after", "insert_before", "append", "prepend", and "delete". Use exact text from read_prompt. For replace/insert, find text must be unique unless allow_multiple is true. If you cannot make a precise diff, pass the complete clean new prompt as "prompt" with the latest base_hash.
 - You must call read_prompt before edit_prompt. edit_prompt must include the base_hash returned by the latest read_prompt for the same concrete target.
 - Never use whole-prompt replacement tools. For an empty prompt, use edit_prompt with operation "append" and the base_hash from read_prompt.
 - Use tools when the user asks to inspect, rewrite, replace, append to, or send a prompt/template. Do not invent current UI text if you need to see it; call read_prompt first.
@@ -195,6 +197,31 @@ ASSISTANT_TOOLS = [
                             },
                             "required": ["operation"],
                         },
+                    },
+                    "operations": {
+                        "type": "array",
+                        "description": "Alias for patches, accepted for local models that call patch lists operations.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "operation": {"type": "string", "enum": ["replace", "replace_all", "replace_n", "insert_after", "insert_before", "append", "prepend", "delete"]},
+                                "find": {"type": "string"},
+                                "replace": {"type": "string"},
+                                "text": {"type": "string"},
+                                "separator": {"type": "string"},
+                                "count": {"type": "integer"},
+                                "allow_multiple": {"type": "boolean"},
+                            },
+                            "required": ["operation"],
+                        },
+                    },
+                    "patch": {
+                        "type": "object",
+                        "description": "Single patch object, accepted as a shortcut for patches with one item.",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Complete clean replacement prompt, used only when a precise diff/patch is not practical. Do not include diff markers.",
                     },
                     "return_prompt": {"type": "boolean"},
                 },
