@@ -6,7 +6,7 @@ from typing import Any
 
 import requests
 
-from .assistant_common import _assistant_chat_url, _assistant_stream_event, _extract_tool_calls
+from .assistant_common import _assistant_chat_url, _assistant_request_messages, _assistant_stream_event, _extract_tool_calls
 from .assistant_gemini import _assistant_use_gemini_native, _prompt_assistant_chat_gemini, _prompt_assistant_stream_gemini
 from .assistant_local import _prompt_assistant_chat_local_once
 from .constants import (
@@ -83,16 +83,7 @@ def prompt_assistant_chat(payload: dict[str, Any]) -> dict[str, Any]:
         return _prompt_assistant_chat_gemini(payload, endpoint, model, api_key)
     url = _assistant_chat_url(endpoint)
 
-    request_messages = [{"role": "system", "content": PROMPT_ASSISTANT_SYSTEM}]
-    for item in messages[-20:]:
-        if not isinstance(item, dict):
-            continue
-        role = str(item.get("role") or "").strip()
-        content = str(item.get("content") or "").strip()
-        if role in {"user", "assistant"} and content:
-            request_messages.append({"role": role, "content": content})
-    if len(request_messages) == 1:
-        raise RuntimeError("message is empty")
+    request_messages = _assistant_request_messages(messages)
 
     body = {
         "model": model,

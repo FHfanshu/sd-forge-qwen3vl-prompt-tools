@@ -30,7 +30,19 @@ from .assistant_gemini import (
     _prompt_assistant_stream_gemini,
     _restore_gemini_result,
 )
-from .assistant_local import _prompt_assistant_chat_local_once
+from .assistant_local import _prompt_assistant_chat_local_once, cancel_local_assistant_run
+from .assistant_workflow import (
+    PromptToolHarness,
+    assistant_tool_mutates_prompt,
+    assistant_user_requested_prompt_edit,
+    build_assistant_payload,
+    build_prompt_edit_eval_payloads,
+    normalize_assistant_tool_calls,
+    parse_assistant_tools,
+    prompt_edit_messages,
+    prompt_hash,
+    run_assistant_loop,
+)
 from .constants import (
     ASSISTANT_TOOLS,
     DEFAULT_ASSISTANT_ENDPOINT,
