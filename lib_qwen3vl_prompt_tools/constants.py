@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+from typing import Any
+
+MODEL_FILENAME = "model.onnx"
+LABEL_FILENAME = "selected_tags.csv"
+
+DEFAULT_GGUF_REPO = "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive"
+DEFAULT_GGUF_DIR = "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-GGUF"
+DEFAULT_GGUF_MODEL = "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q6_K.gguf"
+DEFAULT_GGUF_MMPROJ = "mmproj-Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-BF16.gguf"
+DEFAULT_LLAMA_SERVER_CANDIDATES = [
+    r"E:\AI\lmcpp\llama.cpp\llama-server.exe",
+]
+LLAMA_CPP_RELEASE_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+DEFAULT_ASSISTANT_ENDPOINT = "https://moyuu.cc"
+DEFAULT_ASSISTANT_FALLBACK_ENDPOINT = "https://hk-api.moyuu.cc"
+DEFAULT_ASSISTANT_MODEL = "gemini-3.1-pro-high"
+DEFAULT_LOCAL_ASSISTANT_ENDPOINT = "http://127.0.0.1:8080/v1"
+DEFAULT_LOCAL_ASSISTANT_MODEL = "hauhau-qwen3.5-9b-uncensored"
+DEFAULT_LOCAL_TEXT_PRESET = "Qwen3.5 破限版 9B"
+VISION_MODEL_PRESET_CUSTOM = "自定义"
+DEFAULT_VISION_MODEL_PRESET = "Gemma 4 12B"
+VISION_MODEL_PRESETS: dict[str, dict[str, Any]] = {
+    "Gemma 4 12B": {
+        "alias": "gemma-4-12b-it",
+        "model_globs": [
+            "gemma-4-12b-it-UD-Q8_K_XL.gguf",
+            "**/gemma-4-12b-it-UD-Q8_K_XL.gguf",
+            "**/*gemma*4*12b*it*.gguf",
+        ],
+        "mmproj_globs": [
+            "mmproj-BF16.gguf",
+            "**/*gemma*mmproj*.gguf",
+            "**/*mmproj*gemma*.gguf",
+            "**/mmproj-BF16.gguf",
+        ],
+        "auto_download": False,
+    },
+    "Qwen3.5 原版 9B": {
+        "alias": "qwen3.5-9b-vlm",
+        "model_globs": [
+            "Qwen3.5-9B-GGUF/Qwen3.5-9B-UD-Q6_K_XL.gguf",
+            "**/Qwen3.5-9B-GGUF/Qwen3.5-9B-UD-Q6_K_XL.gguf",
+            "**/Qwen3.5-9B-UD-Q6_K_XL.gguf",
+        ],
+        "mmproj_globs": [
+            "Qwen3.5-9B-GGUF/mmproj-F16.gguf",
+            "**/Qwen3.5-9B-GGUF/mmproj-F16.gguf",
+            "**/mmproj-F16.gguf",
+        ],
+        "auto_download": False,
+    },
+    "Qwen3.5 破限版 9B": {
+        "alias": "hauhau-qwen3.5-9b-uncensored",
+        "model_globs": [
+            "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-GGUF/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q6_K.gguf",
+            "**/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q6_K.gguf",
+        ],
+        "mmproj_globs": [
+            "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-GGUF/mmproj-Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-BF16.gguf",
+            "**/mmproj-Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-BF16.gguf",
+        ],
+        "auto_download": True,
+    },
+}
+
+PROMPT_ASSISTANT_SYSTEM = """You are an expert AI image prompt engineer for Stable Diffusion / Flux style image generation.
+
+Primary job: write and revise production-ready image-generation prompts, especially prompts involving multiple characters, role distinction, spatial relationships, and scene composition.
+
+Rules:
+- Match the user's language for normal chat, greetings, explanations, summaries, and tool-result follow-up. If the user writes Chinese, reply in Chinese.
+- When outputting a final image-generation prompt intended to be copied into txt2img/img2img, output only one concise production-ready English prompt unless the user explicitly asks for another prompt language or explanation.
+- A good final prompt starts with the exact subject/count, then composition, spatial layout, pose/action, visible details, background, lighting, camera/framing, medium/style, and quality/aesthetic terms. Avoid vague filler and avoid explaining your choices.
+- If the user only greets you or asks a meta question, answer naturally in the user's language instead of generating an image prompt.
+- For group scenes, state the exact count first, then describe spatial positions such as left, center, right, foreground, background, behind, beside, facing camera, looking at each other, interaction, and relative scale.
+- Keep characters visually distinguishable. Assign clear traits per position instead of blending attributes.
+- Preserve the user's core idea, but improve clarity, composition, style terms, and model-friendly wording.
+- If reference-image observations are present, use them as factual visual context and reusable style guidance. Do not mention that an image was analyzed in the final prompt.
+- When revising an existing prompt, return the improved prompt only unless the user asks for explanation.
+- Avoid moralizing or unrelated commentary. Do not include markdown unless asked.
+
+Available UI tools:
+- If native tool calling is available, use tool calls instead of writing tool JSON in normal text.
+- If native tool calling is not available through the current API relay, emit the tool request as JSON text. It may be preceded by one short natural-language sentence, but the JSON must be complete and valid.
+- Some prompt text may contain SAFE_SLOT_### placeholders. Treat them as opaque exact text: preserve them in SEARCH/REPLACE blocks, never expand or reinterpret them.
+- To read the current prompt, reply with exactly: {"tool":"read_prompt","arguments":{"target":"active"}}
+- To edit the prompt, use edit_prompt with base_hash and a diff. Preferred diff format is a SEARCH/REPLACE block with markers named SEARCH, separator line =======, and ending marker REPLACE.
+- target can be "active", "txt2img", or "img2img".
+- read_prompt returns prompt, prompt_hash, style_selector, selected_styles, forge_positive_template, and style_template when available.
+- edit_prompt also accepts patches with operations "replace", "replace_all", "replace_n", "insert_after", "insert_before", "append", "prepend", and "delete". Use exact text from read_prompt. For replace/insert, find text must be unique unless allow_multiple is true.
+- You must call read_prompt before edit_prompt. edit_prompt must include the base_hash returned by the latest read_prompt for the same concrete target.
+- Never use whole-prompt replacement tools. For an empty prompt, use edit_prompt with operation "append" and the base_hash from read_prompt.
+- Use tools when the user asks to inspect, rewrite, replace, append to, or send a prompt/template. Do not invent current UI text if you need to see it; call read_prompt first.
+- If the user asks to change the current WebUI prompt, never claim it was changed and never stop with only a rewritten prompt. Call read_prompt if needed, then edit_prompt, and only say it is done after edit_prompt returns ok:true.
+- Diff syntax is only a tool argument format. The actual prompt text written into WebUI must never contain git diff markers, patch headers, SEARCH/REPLACE markers, conflict markers, or fenced diff blocks.
+- After a tool result is provided, continue with the requested concise final answer.
+
+Example structure:
+Group selfie of three muscular anthropomorphic dragon men. Left: white fur, blue horns, blue goatee, white shirt, loose striped tie. Center: white fur, yellow horns, casual jacket. Right: dark fur, blue horns, open jacket revealing a bare muscular chest. Furry art, bara, all smiling and looking at the camera. Beautiful background with a clear mountain lake and lush green hills, highly detailed, daylight."""
+
+REFERENCE_IMAGE_ANALYSIS_SYSTEM = """你是一名本地图像视觉分析子代理，只根据输入图片本身工作。
+
+不要参考用户聊天文字，不要延展用户意图。输出需要同时包含精确的图像内容 caption 和可复用的风格描述，供后续文本模型整合提示词。"""
+
+REFERENCE_IMAGE_STYLE_PROMPT = """请作为一名顶级的 AI 绘画提示词专家，为我分析这张图片。
+
+任务目标：输出两部分信息，第一部分是精确详尽的图像 caption，第二部分是剥离主体后的通用风格 Prompt。你只能根据图片本身描述，不要引入用户额外要求。
+
+第一部分：图像内容详述（必须保留主体）
+- 客观描述画面中可见的主体数量、外观差异、服装/道具、表情、姿态、视线、动作、互动关系。
+- 精确描述空间关系与构图：左/中/右、前景/中景/背景、遮挡、距离、透视、镜头角度、裁切、画幅、主体占比。
+- 描述场景环境、背景元素、可见文字/符号、材质、光源方向、阴影和色彩关系。
+- 这一部分必须保留原图中的具体主体内容，因为它用于后续上下文理解。不要把主体替换成占位符，不要省略主体身份、数量、外观、位置和互动。
+
+第二部分：通用风格 Prompt
+- 提取并反推这张图片的艺术风格，生成一份通用的 Prompt。
+- 这一部分必须剥离原图中的具体角色、文字、身份或特定情节，仅保留其美学灵魂。
+
+分析维度（请务必涵盖以下 15 个方面）：
+基础维度：画面风格、画面成分组成、构图方式、分镜类型、光影特质、色调与色彩科学、媒介与材质纹理、情绪与氛围、渲染/拍摄参数。
+进阶维度：时代感与文化语境、空间逻辑与透视关系、信息密度与留白、动态状态（瞬时感）、后期处理与数字痕迹、符号化特征。
+
+输出要求：
+1. 使用中文输出。
+2. 请按以下两个标题输出：
+【图像内容详述】
+【通用风格 Prompt】
+3. 【图像内容详述】要具体、细致、保留主体、可用于还原空间关系。
+4. 【通用风格 Prompt】必须在开头或核心位置使用“[在此处替换为您想要生成的主体内容]”作为占位符。
+5. 【通用风格 Prompt】要高度通用，用户只需更换占位符内容，即可在保持原图质感的同时生成全新的画面。
+6. 不要输出推理过程、免责声明或与图片无关的内容。"""
+
+ASSISTANT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read_prompt",
+            "description": "Read the current txt2img/img2img prompt, prompt_hash, and selected WebUI Styles details. Must be called before edit_prompt.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "enum": ["active", "txt2img", "img2img"]},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_prompt",
+            "description": "Patch the prompt after read_prompt. Prefer diff using SEARCH/REPLACE blocks; include base_hash from read_prompt.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "enum": ["active", "txt2img", "img2img"]},
+                    "base_hash": {"type": "string", "description": "prompt_hash returned by the latest read_prompt for this target"},
+                    "diff": {
+                        "type": "string",
+                        "description": "One or more blocks: <<<<<<< SEARCH\nold exact text\n=======\nnew exact text\n>>>>>>> REPLACE",
+                    },
+                    "patches": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "operation": {"type": "string", "enum": ["replace", "replace_all", "replace_n", "insert_after", "insert_before", "append", "prepend", "delete"]},
+                                "find": {"type": "string"},
+                                "replace": {"type": "string"},
+                                "text": {"type": "string"},
+                                "separator": {"type": "string"},
+                                "count": {"type": "integer"},
+                                "allow_multiple": {"type": "boolean"},
+                            },
+                            "required": ["operation"],
+                        },
+                    },
+                    "return_prompt": {"type": "boolean"},
+                },
+                "required": ["target", "base_hash"],
+            },
+        },
+    },
+]
+
+TAGGER_MODELS = {
+    "WD EVA02 large v3": "SmilingWolf/wd-eva02-large-tagger-v3",
+    "WD ViT v3": "SmilingWolf/wd-vit-tagger-v3",
+    "WD ViT large v3": "SmilingWolf/wd-vit-large-tagger-v3",
+    "WD SwinV2 v3": "SmilingWolf/wd-swinv2-tagger-v3",
+    "WD ConvNeXt v3": "SmilingWolf/wd-convnext-tagger-v3",
+}
+
+KAOMOJI_TAGS = {
+    "0_0",
+    "(o)_(o)",
+    "+_+",
+    "+_-",
+    "._.",
+    "_",
+    "<|>_<|>",
+    "=_=",
+    ">_<",
+    "3_3",
+    "6_9",
+    ">_o",
+    "@_@",
+    "^_^",
+    "o_o",
+    "u_u",
+    "x_x",
+    "|_|",
+    "||_||",
+}
+STYLE_EXTRACTION_TEMPLATE = """Act as a top-tier AI image prompt specialist and analyze the visual style of the provided image.
+
+Goal: extract and reverse-engineer the image's artistic style into a universal prompt. The prompt must remove the original image's specific character, readable text, named identity, and concrete story event, keeping only its aesthetic essence.
+
+Hard subject-removal rule: do not name or describe the original subject category, species, role, clothing, props, pose, facial features, body parts, character identity, or any concrete object that would recreate the source content. Replace the whole subject with the exact placeholder "[replace with your desired subject here]" and describe only how that placeholder should be rendered.
+
+Required style dimensions: image style, visual component structure, composition method, shot/framing type, light and shadow qualities, tone and color science, medium and material texture, emotion and atmosphere, rendering or camera parameters, period feeling and cultural context, spatial logic and perspective, information density and negative space, dynamic instantaneity, post-processing and digital artifacts, symbolic visual traits.
+
+Output requirements:
+1. Output one complete, high-quality English prompt only.
+2. Put the placeholder "[replace with your desired subject here]" at the beginning or core position of the prompt.
+3. Make the prompt highly reusable: the user should only need to replace the placeholder to generate a new image with the same visual texture.
+4. Do not output analysis, headings, labels, markdown, or explanations; output the final prompt text only."""
+
+
+NL_PROMPT_TEMPLATES = {
+    "通用图像提示词": "standard",
+    "美学风格抽取（Anima 英文）": STYLE_EXTRACTION_TEMPLATE,
+}
