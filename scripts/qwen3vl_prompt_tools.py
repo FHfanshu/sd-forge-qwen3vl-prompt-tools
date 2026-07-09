@@ -5,10 +5,12 @@ from pathlib import Path
 import gradio as gr
 
 from lib_qwen3vl_prompt_tools.generation import caption, enhance
+from lib_qwen3vl_prompt_tools.i18n import tr, translation_bundle
 from lib_qwen3vl_prompt_tools.generic import (
     TAGGER,
     TAGGER_MODELS,
     DEFAULT_VISION_MODEL_PRESET,
+    DEFAULT_LOCAL_CONTEXT_TOKENS,
     VISION_MODEL_PRESET_CUSTOM,
     VISION_MODEL_PRESETS,
     analyze_reference_image,
@@ -112,6 +114,10 @@ def _assistant_api(_: gr.Blocks, app):
         except Exception as error:
             raise HTTPException(status_code=500, detail=str(error)) from error
 
+    @app.get("/qwen3vl-prompt-tools/i18n")
+    async def qwen3vl_i18n(locale: str | None = None):
+        return translation_bundle(locale)
+
     @app.get("/qwen3vl-prompt-tools/prompt-styles")
     async def qwen3vl_prompt_styles():
         try:
@@ -142,9 +148,9 @@ def _after_component(component, **kwargs):
     PROMPT_COMPONENTS[elem_id] = component
     with gr.Row(elem_classes=["q3vl-inline-actions"]):
         gr.HTML("<span class='q3vl-inline-label'>Qwen3-VL</span>")
-        refine = gr.Button("精炼", size="sm", variant="secondary")
-        expand = gr.Button("扩写", size="sm", variant="secondary")
-        stylize = gr.Button("风格化", size="sm", variant="secondary")
+        refine = gr.Button(tr("inline.refine"), size="sm", variant="secondary")
+        expand = gr.Button(tr("inline.expand"), size="sm", variant="secondary")
+        stylize = gr.Button(tr("inline.stylize"), size="sm", variant="secondary")
 
     for button, task in ((refine, "refine"), (expand, "expand"), (stylize, "stylize")):
         button.click(
@@ -527,6 +533,7 @@ def _vision_preset_update(preset: str):
 
 
 def _ui_tab():
+    _ = tr
     gguf_choices = _llm_choices("model")
     mmproj_choices = _llm_choices("mmproj")
     default_vision_model, default_vision_mmproj, default_vision_alias = find_vision_preset_files(DEFAULT_VISION_MODEL_PRESET)
@@ -537,71 +544,71 @@ def _ui_tab():
     with gr.Blocks(analytics_enabled=False) as interface:
         with gr.Column(elem_id="q3vl-workbench"):
             gr.HTML(
-                "<div class='q3vl-heading'><div><span class='q3vl-kicker'>IMAGE TO PROMPT</span>"
-                "<h1>把图像读回提示词</h1><p>默认用 WD tagger + llama.cpp 生成 tags 和 NL；Krea2/Qwen3-VL 保留为备用模式。</p></div>"
+                f"<div class='q3vl-heading'><div><span class='q3vl-kicker'>{_('ui.kicker')}</span>"
+                f"<h1>{_('ui.heading.title')}</h1><p>{_('ui.heading.description')}</p></div>"
                 "<div class='q3vl-rail' aria-hidden='true'></div></div>"
             )
-            mode = gr.Radio(["WD tagger + lmcpp", "Krea2 / Qwen3-VL"], value="WD tagger + lmcpp", label="反推模式")
+            mode = gr.Radio(["WD tagger + lmcpp", "Krea2 / Qwen3-VL"], value="WD tagger + lmcpp", label=_("ui.mode"))
             with gr.Row(equal_height=False, elem_classes=["q3vl-grid"]):
                 with gr.Column(scale=5, min_width=320, elem_classes=["q3vl-panel"]):
-                    image = gr.Image(type="pil", label="参考图像", height=430, sources=["upload", "clipboard"])
+                    image = gr.Image(type="pil", label=_("ui.image"), height=430, sources=["upload", "clipboard"])
                     with gr.Group(visible=False) as krea_controls:
-                        task = gr.Radio(list(CAPTION_TASKS), value="完整反推", label="读取重点")
+                        task = gr.Radio(list(CAPTION_TASKS), value="完整反推", label=_("ui.read_focus"))
                     with gr.Group(visible=True) as wd_controls:
-                        tagger_model = gr.Dropdown(list(TAGGER_MODELS), value="WD EVA02 large v3", label="Tagger 模型")
+                        tagger_model = gr.Dropdown(list(TAGGER_MODELS), value="WD EVA02 large v3", label=_("ui.tagger_model"))
                         with gr.Row():
-                            load_tagger = gr.Button("加载/下载 tagger", variant="secondary")
-                            unload_tagger = gr.Button("释放 tagger", variant="secondary")
-                        tagger_status = gr.Textbox(label="Tagger 状态", interactive=False)
+                            load_tagger = gr.Button(_("ui.load_tagger"), variant="secondary")
+                            unload_tagger = gr.Button(_("ui.unload_tagger"), variant="secondary")
+                        tagger_status = gr.Textbox(label=_("ui.tagger_status"), interactive=False)
                     guidance = gr.Textbox(
-                        label="额外要求",
-                        placeholder="例如：重点描述服装剪裁；输出 Anima 可用 prompt；保留画面中的英文文字……",
+                        label=_("ui.extra_guidance"),
+                        placeholder=_("ui.extra_guidance.placeholder"),
                         lines=2,
                     )
                     prompt_template = gr.Dropdown(
                         PROMPT_TEMPLATE_CHOICES,
                         value="美学风格抽取（Anima 英文）",
-                        label="提示词模板",
+                        label=_("ui.prompt_template"),
                     )
                     with gr.Row():
-                        run = gr.Button("开始反推", variant="primary", elem_classes=["q3vl-run"])
-                        run_tags = gr.Button("仅打 Tags", variant="secondary", visible=True)
-                        run_nl = gr.Button("生成 NL", variant="secondary", visible=True)
-                    live_log = gr.Textbox(label="实时 log", lines=7, interactive=False, elem_classes=["q3vl-live-log"])
+                        run = gr.Button(_("ui.run"), variant="primary", elem_classes=["q3vl-run"])
+                        run_tags = gr.Button(_("ui.run_tags"), variant="secondary", visible=True)
+                        run_nl = gr.Button(_("ui.run_nl"), variant="secondary", visible=True)
+                    live_log = gr.Textbox(label=_("ui.live_log"), lines=7, interactive=False, elem_classes=["q3vl-live-log"])
                 with gr.Column(scale=6, min_width=360, elem_classes=["q3vl-panel", "q3vl-output-panel"]):
                     tags = gr.Textbox(label="Tags", lines=6, show_copy_button=True, visible=True)
                     with gr.Group(visible=True) as wd_output:
                         with gr.Row():
-                            characters = gr.Textbox(label="Characters", lines=2, show_copy_button=True)
-                            rating = gr.Textbox(label="Rating", lines=2)
+                            characters = gr.Textbox(label=_("ui.characters"), lines=2, show_copy_button=True)
+                            rating = gr.Textbox(label=_("ui.rating"), lines=2)
                         nl = gr.Textbox(label="Natural language", lines=7, show_copy_button=True)
-                        combine_mode = gr.Radio(["Tags + NL", "Tags only", "NL only"], value="Tags + NL", label="合并格式")
-                        combine = gr.Button("合并输出", variant="secondary")
-                        with gr.Accordion("Tag scores / debug", open=False):
+                        combine_mode = gr.Radio(["Tags + NL", "Tags only", "NL only"], value="Tags + NL", label=_("ui.combine_format"))
+                        combine = gr.Button(_("ui.combine"), variant="secondary")
+                        with gr.Accordion(_("ui.debug"), open=False):
                             raw_json = gr.Code(label="Tag scores JSON", language="json", lines=7)
-                    output = gr.Textbox(label="反推结果", placeholder="结果会出现在这里。你可以直接修改，再发送到生成页。", lines=12, show_copy_button=True, elem_id="q3vl_reverse_output")
-                    status = gr.HTML("<span class='q3vl-status-idle'>等待图像</span>")
+                    output = gr.Textbox(label=_("ui.output"), placeholder=_("ui.output.placeholder"), lines=12, show_copy_button=True, elem_id="q3vl_reverse_output")
+                    status = gr.HTML(f"<span class='q3vl-status-idle'>{_('ui.status.waiting')}</span>")
                     with gr.Row():
-                        send_txt = gr.Button("发送到 txt2img", variant="secondary", elem_id="q3vl_send_txt2img")
-                        send_img = gr.Button("发送到 img2img", variant="secondary", elem_id="q3vl_send_img2img")
+                        send_txt = gr.Button(_("ui.send_txt2img"), variant="secondary", elem_id="q3vl_send_txt2img")
+                        send_img = gr.Button(_("ui.send_img2img"), variant="secondary", elem_id="q3vl_send_img2img")
 
             with gr.Group(visible=False) as krea_settings:
-                with gr.Accordion("Krea2 / Qwen3-VL 设置", open=False):
+                with gr.Accordion(_("ui.accordion.krea"), open=False):
                     with gr.Row():
-                        language = gr.Dropdown(["English", "中文"], value="English", label="输出语言")
-                        max_side = gr.Slider(448, 1344, value=768, step=64, label="视觉分辨率上限", info="越高越能读取细节，也越慢")
-                        max_tokens = gr.Slider(64, 768, value=320, step=16, label="最大输出 tokens")
+                        language = gr.Dropdown(["English", "中文"], value="English", label=_("ui.language"))
+                        max_side = gr.Slider(448, 1344, value=768, step=64, label=_("ui.max_side"), info=_("ui.max_side.info"))
+                        max_tokens = gr.Slider(64, 768, value=320, step=16, label=_("ui.max_tokens"))
                     with gr.Row():
                         temperature = gr.Slider(0, 1.5, value=0.65, step=0.05, label="Temperature")
                         top_k = gr.Slider(0, 100, value=20, step=1, label="Top K")
                         top_p = gr.Slider(0.1, 1.0, value=0.85, step=0.05, label="Top P")
-                        repetition_penalty = gr.Slider(1.0, 1.3, value=1.05, step=0.01, label="重复惩罚")
+                        repetition_penalty = gr.Slider(1.0, 1.3, value=1.05, step=0.01, label=_("ui.repetition_penalty"))
                     with gr.Row():
                         seed = gr.Number(value=42, precision=0, label="Seed")
-                        release_after = gr.Checkbox(value=True, label="完成后释放模型显存", info="推荐 24GB 显卡开启")
+                        release_after = gr.Checkbox(value=True, label=_("ui.release_after"), info=_("ui.release_after.info"))
 
             with gr.Group(visible=True) as wd_settings:
-                with gr.Accordion("WD tagger + lmcpp 设置", open=True):
+                with gr.Accordion(_("ui.accordion.wd"), open=True):
                     with gr.Row():
                         general_threshold = gr.Slider(0, 1, value=0.5, step=0.01, label="General threshold")
                         general_mcut = gr.Checkbox(False, label="General MCut")
@@ -609,53 +616,50 @@ def _ui_tab():
                         character_threshold = gr.Slider(0, 1, value=0.85, step=0.01, label="Character threshold")
                         character_mcut = gr.Checkbox(False, label="Character MCut")
                     with gr.Row():
-                        include_character_tags = gr.Checkbox(True, label="把角色 tag 放入 tags")
-                        limit_tags = gr.Slider(0, 120, value=60, step=1, label="最多 general tags", info="0 = 不限制")
+                        include_character_tags = gr.Checkbox(True, label=_("ui.include_character_tags"))
+                        limit_tags = gr.Slider(0, 120, value=60, step=1, label=_("ui.limit_tags"), info=_("ui.limit_tags.info"))
                     vision_preset = gr.Dropdown(
                         _vision_preset_choices(),
                         value=DEFAULT_VISION_MODEL_PRESET,
-                        label="本地 VLM 预设",
-                        info="用于图片反推/附件视觉分析：Gemma 4 12B、Qwen3.5 原版 9B、Qwen3.5 破限版 9B。",
+                        label=_("ui.vision_preset"),
+                        info=_("ui.vision_preset.info"),
                     )
                     with gr.Row():
                         lmcpp_endpoint = gr.Textbox(value="http://127.0.0.1:8080", label="lmcpp / OpenAI endpoint")
-                        lmcpp_model = gr.Textbox(value=default_vision_alias, label="Model 名称", placeholder="例如 gemma-4-12b-it")
-                    nl_backend = gr.Radio(["Local GGUF once", "OpenAI endpoint"], value="Local GGUF once", label="NL 后端")
+                        lmcpp_model = gr.Textbox(value=default_vision_alias, label=_("ui.model_name"), placeholder=_("ui.model_name.placeholder"))
+                    nl_backend = gr.Radio(["Local GGUF once", "OpenAI endpoint"], value="Local GGUF once", label=_("ui.nl_backend"))
                     with gr.Group(visible=False) as endpoint_settings:
-                        gr.Markdown("批量/频繁反推时使用：连接已经运行的 llama.cpp server，避免每次重新加载模型，但会常驻占用显存。")
+                        gr.Markdown(_("ui.endpoint_help"))
                     with gr.Group(visible=True) as local_gguf_settings:
-                        gr.Markdown(
-                            "兼容兜底：Forge Neo 当前 llama-cpp-python 太旧，不能直接加载 qwen35 GGUF；"
-                            "此模式会临时启动下面的新版 llama-server.exe，完成后自动关闭并释放显存，适合偶尔反推。"
-                        )
+                        gr.Markdown(_("ui.local_gguf_help"))
                         gguf_path = gr.Dropdown(
                             choices=gguf_choices,
                             value=default_vision_model or _preferred_choice(gguf_choices),
-                            label="GGUF 模型路径",
+                            label=_("ui.gguf_path"),
                             allow_custom_value=True,
                         )
                         mmproj_path = gr.Dropdown(
                             choices=mmproj_choices,
                             value=default_vision_mmproj or _preferred_choice(mmproj_choices),
-                            label="mmproj 路径",
+                            label=_("ui.mmproj_path"),
                             allow_custom_value=True,
                         )
                         llama_server_path = gr.Textbox(
                             value=find_default_llama_server(),
-                            label="llama-server.exe 路径",
+                            label=_("ui.llama_server_path"),
                         )
                         with gr.Row():
-                            chat_format = gr.Textbox(value="", label="Chat format", placeholder="留空自动读取；需要时可填 qwen")
-                            n_ctx = gr.Slider(1024, 32768, value=4096, step=1024, label="n_ctx")
+                            chat_format = gr.Textbox(value="", label="Chat format", placeholder=_("ui.chat_format.placeholder"))
+                            n_ctx = gr.Slider(1024, 32768, value=DEFAULT_LOCAL_CONTEXT_TOKENS, step=1024, label="n_ctx")
                             n_gpu_layers = gr.Slider(-1, 200, value=-1, step=1, label="n_gpu_layers", info="-1 = 尽量上 GPU")
                     with gr.Row():
-                        lmcpp_language = gr.Dropdown(["English", "中文"], value="English", label="NL 语言")
+                        lmcpp_language = gr.Dropdown(["English", "中文"], value="English", label=_("ui.nl_language"))
                         lmcpp_max_tokens = gr.Slider(64, 1024, value=320, step=16, label="Max tokens")
                     with gr.Row():
                         lmcpp_temperature = gr.Slider(0, 1.5, value=0.55, step=0.05, label="Temperature")
                         lmcpp_top_p = gr.Slider(0.1, 1.0, value=0.9, step=0.05, label="Top P")
                         lmcpp_timeout = gr.Slider(5, 300, value=120, step=5, label="Timeout")
-                        enable_thinking = gr.Checkbox(value=False, label="启用 thinking", info="可手动开启；若只返回 reasoning 或超时，请关闭。")
+                        enable_thinking = gr.Checkbox(value=False, label=_("ui.thinking"), info=_("ui.thinking.info"))
 
         mode.change(fn=_mode_visibility, inputs=[mode], outputs=[krea_controls, krea_settings, wd_controls, wd_settings], show_progress=False)
         mode.change(fn=lambda selected: gr.update(visible=selected == "WD tagger + lmcpp"), inputs=[mode], outputs=[run_nl], show_progress=False)
@@ -766,7 +770,7 @@ def _ui_tab():
         else:
             send_img.visible = False
 
-    return [(interface, "反推提示词", "qwen3vl_prompt_tools")]
+    return [(interface, tr("ui.tab"), "qwen3vl_prompt_tools")]
 
 
 script_callbacks.on_after_component(_after_component, name="qwen3vl-prompt-actions")

@@ -8,6 +8,7 @@ from typing import Any
 from PIL import Image
 
 from .constants import (
+    DEFAULT_LOCAL_CONTEXT_TOKENS,
     DEFAULT_LOCAL_ASSISTANT_MODEL,
     DEFAULT_VISION_MODEL_PRESET,
     REFERENCE_IMAGE_ANALYSIS_SYSTEM,
@@ -78,7 +79,7 @@ def analyze_reference_image(payload: dict[str, Any]) -> dict[str, Any]:
             "-ngl",
             "all",
             "-c",
-            str(int(payload.get("n_ctx") or 8192)),
+            str(int(payload.get("n_ctx") or DEFAULT_LOCAL_CONTEXT_TOKENS)),
             "-fa",
             "on",
             "-np",

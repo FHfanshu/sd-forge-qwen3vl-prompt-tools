@@ -5,7 +5,7 @@ import subprocess
 from typing import Any
 
 from .assistant_common import _assistant_request_messages, _extract_tool_calls
-from .constants import DEFAULT_LOCAL_TEXT_PRESET
+from .constants import DEFAULT_LOCAL_CONTEXT_TOKENS, DEFAULT_LOCAL_TEXT_PRESET
 from .llama_runtime import _free_port, _post_local_chat, _wait_server
 from .model_paths import resolve_llama_server, resolve_vision_model_pair
 from .response_text import _clean_response_text, _extract_message_text
@@ -30,7 +30,7 @@ def _prompt_assistant_chat_local_once(payload: dict[str, Any]) -> dict[str, Any]
             "-ngl",
             "all" if str(n_gpu_layers).strip() in {"", "-1", "all"} else str(int(n_gpu_layers)),
             "-c",
-            str(int(payload.get("local_n_ctx") or payload.get("n_ctx") or 8192)),
+            str(int(payload.get("local_n_ctx") or payload.get("n_ctx") or DEFAULT_LOCAL_CONTEXT_TOKENS)),
             "-fa",
             "on",
             "-np",

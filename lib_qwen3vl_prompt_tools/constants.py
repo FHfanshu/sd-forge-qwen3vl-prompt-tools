@@ -18,6 +18,7 @@ DEFAULT_ASSISTANT_FALLBACK_ENDPOINT = "https://hk-api.moyuu.cc"
 DEFAULT_ASSISTANT_MODEL = "gemini-3.1-pro-high"
 DEFAULT_LOCAL_ASSISTANT_ENDPOINT = "http://127.0.0.1:8080/v1"
 DEFAULT_LOCAL_ASSISTANT_MODEL = "hauhau-qwen3.5-9b-uncensored"
+DEFAULT_LOCAL_CONTEXT_TOKENS = 16384
 DEFAULT_LOCAL_TEXT_PRESET = "Qwen3.5 破限版 9B"
 VISION_MODEL_PRESET_CUSTOM = "自定义"
 DEFAULT_VISION_MODEL_PRESET = "Qwen3.5 破限版 9B"
@@ -78,6 +79,7 @@ Rules:
 - Keep characters visually distinguishable. Assign clear traits per position instead of blending attributes.
 - Preserve the user's core idea, but improve clarity, composition, style terms, and model-friendly wording.
 - If reference-image observations are present, use them as factual visual context and reusable style guidance. Do not mention that an image was analyzed in the final prompt.
+- You are paired with a stronger Gemini teacher. If you are uncertain about composition, ambiguous user intent, difficult image interpretation, sensitive placeholder handling, or the exact edit plan, proactively call ask_teacher with sanitized context before finalizing. Do not guess when teacher consultation would materially improve the result.
 - When revising an existing prompt, return the improved prompt only unless the user asks for explanation.
 - Avoid moralizing or unrelated commentary. Do not include markdown unless asked.
 
@@ -85,7 +87,7 @@ Available UI tools:
 - If native tool calling is available, use tool calls instead of writing tool JSON in normal text.
 - If native tool calling is not available through the current API relay, emit the tool request as JSON text. It may be preceded by one short natural-language sentence, but the JSON must be complete and valid.
 - Some prompt text may contain SAFE_SLOT_### placeholders. Treat them as opaque exact text: preserve them in SEARCH/REPLACE blocks, never expand or reinterpret them.
-- To consult the remote Gemini teacher after local redaction, use ask_teacher with a sanitized question and relevant context. Never send raw sensitive text; preserve SAFE_SLOT_### placeholders exactly.
+- To consult the remote Gemini teacher after local redaction, use ask_teacher with a sanitized question and relevant context. Use it proactively when confidence is low. Never send raw sensitive text; preserve SAFE_SLOT_### placeholders exactly.
 - To read the current prompt, reply with exactly: {"tool":"read_prompt","arguments":{"target":"active"}}
 - To edit the prompt, use edit_prompt with base_hash and a diff. Preferred diff format is a SEARCH/REPLACE block with markers named SEARCH, separator line =======, and ending marker REPLACE.
 - target can be "active", "txt2img", or "img2img".
@@ -138,7 +140,7 @@ ASSISTANT_TOOLS = [
         "type": "function",
         "function": {
             "name": "ask_teacher",
-            "description": "Ask the remote Gemini teacher for a second opinion after local Qwen redaction. Send only sanitized context and preserve SAFE_SLOT_### placeholders.",
+            "description": "Ask the remote Gemini teacher for a second opinion after local Qwen redaction, especially when local Qwen is uncertain. Send only sanitized context and preserve SAFE_SLOT_### placeholders.",
             "parameters": {
                 "type": "object",
                 "properties": {
