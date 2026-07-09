@@ -156,7 +156,7 @@
     };
 
     function defaultVisionPreset() {
-        return "Gemma 4 12B";
+        return "Qwen3.5 破限版 9B";
     }
 
     function visionModelForPreset(preset) {
@@ -232,6 +232,7 @@
             vision_mmproj_path: get("vision_mmproj_path", ""),
             vision_thinking: configBool(get("vision_thinking", "0")),
             sanitize_sensitive: configBool(get("sanitize_sensitive", "1")),
+            teacher_mode: get("teacher_mode", "qwen-redact"),
             temperature: 0.35,
             top_p: 0.9,
             max_tokens: normalizeAssistantMaxTokens(get("max_tokens", "8192")),
@@ -304,9 +305,10 @@
         if (!panel) return;
         const backend = panel.querySelector('[data-q3vl-setting="backend"]')?.value || "moyuu";
         const visionPreset = panel.querySelector('[data-q3vl-setting="vision_preset"]')?.value || defaultVisionPreset();
+        const teacherMode = panel.querySelector('[data-q3vl-setting="teacher_mode"]')?.value || "qwen-redact";
         const localEndpoint = backend === "local-lmcpp";
         const localText = localEndpoint || backend === "local-qwen-once";
-        const localVision = backend !== "moyuu";
+        const localVision = backend !== "moyuu" || (backend === "moyuu" && teacherMode === "qwen-redact");
         panel.querySelector('[data-q3vl-setting="api_key"]')?.toggleAttribute("hidden", localText);
         panel.querySelector('[data-q3vl-setting="api_key"]')?.toggleAttribute("disabled", localText);
         panel.querySelectorAll('[data-q3vl-field="remote"]').forEach(function (element) {

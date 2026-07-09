@@ -471,7 +471,7 @@
         const title = document.createElement("strong");
         title.textContent = assistantState.attachment.name || "reference image";
         const hint = document.createElement("span");
-        hint.textContent = "发送时由本地 Qwen3.5 VLM 先分析";
+        hint.textContent = "本地 Qwen3.5 VLM 先分析/脱敏，再给 Gemini 教师";
         meta.appendChild(title);
         meta.appendChild(hint);
         const remove = document.createElement("button");
@@ -613,6 +613,7 @@
 
     function assistantSupportsNativeImages(config) {
         const backend = String(config && config.backend || "");
+        if (backend === "moyuu" && String(config && config.teacher_mode || "qwen-redact") === "qwen-redact") return true;
         const model = String(config && config.model || "").toLowerCase();
         const endpoint = String(config && config.endpoint || "");
         if (backend === "moyuu" || model.includes("gemini")) return true;

@@ -47,9 +47,9 @@
         const panel = document.createElement("div");
         panel.id = "q3vl_assistant_panel";
         panel.innerHTML = `
-            <div class="q3vl-assistant-head"><div><strong>LLM 提示词助手</strong><span>Gemini 原生多模态 + 工具编辑</span></div><button type="button" id="q3vl_assistant_close" class="q3vl-assistant-close" title="关闭">×</button></div>
+            <div class="q3vl-assistant-head"><div><strong>LLM 提示词助手</strong><span>本地 Qwen 脱敏 + Gemini 教师</span></div><button type="button" id="q3vl_assistant_close" class="q3vl-assistant-close" title="关闭">×</button></div>
             <details class="q3vl-assistant-config">
-                <summary><span>设置</span><span class="q3vl-assistant-config-hint">Moyuu Gemini 原生多模态</span></summary>
+                <summary><span>设置</span><span class="q3vl-assistant-config-hint">Qwen 预处理后发给 Gemini</span></summary>
                 <div class="q3vl-assistant-settings q3vl-assistant-settings-basic">
                     <select data-q3vl-setting="backend">
                         <option value="moyuu">文本: Moyuu Gemini</option>
@@ -67,6 +67,10 @@
                     <select data-q3vl-setting="vision_thinking" data-q3vl-field="local-vision" title="仅本地视觉 fallback 使用">
                         <option value="0">本地视觉 thinking off</option>
                         <option value="1">本地视觉 thinking on</option>
+                    </select>
+                    <select data-q3vl-setting="teacher_mode" data-q3vl-field="remote" title="Gemini 教师前置脱敏策略">
+                        <option value="qwen-redact">Gemini 教师: 本地 Qwen 脱敏</option>
+                        <option value="regex">Gemini 教师: 仅占位符脱敏</option>
                     </select>
                 </div>
                 <details class="q3vl-assistant-advanced">
@@ -129,6 +133,7 @@
         loadAssistantApiKey(panel, backend.value);
         panel.querySelector('[data-q3vl-setting="max_tokens"]').value = String(normalizeAssistantMaxTokens(localStorage.getItem("q3vl_assistant_max_tokens") || "8192"));
         panel.querySelector('[data-q3vl-setting="sanitize_sensitive"]').value = localStorage.getItem("q3vl_assistant_sanitize_sensitive") || "1";
+        panel.querySelector('[data-q3vl-setting="teacher_mode"]').value = localStorage.getItem("q3vl_assistant_teacher_mode") || "qwen-redact";
         panel.querySelector('[data-q3vl-setting="reasoning_effort"]').value = localStorage.getItem("q3vl_assistant_reasoning_effort") || "high";
         panel.querySelector('[data-q3vl-setting="local_endpoint"]').value = localStorage.getItem("q3vl_assistant_local_endpoint") || "http://127.0.0.1:8080/v1";
         panel.querySelector('[data-q3vl-setting="local_model"]').value = localStorage.getItem("q3vl_assistant_local_model") || "hauhau-qwen3.5-9b-uncensored";

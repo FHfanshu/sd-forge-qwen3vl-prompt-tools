@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import urllib.parse
 from typing import Any
 
@@ -28,7 +29,7 @@ def prompt_assistant_chat(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         endpoint = str(payload.get("endpoint") or DEFAULT_ASSISTANT_ENDPOINT).strip().rstrip("/")
         model = str(payload.get("model") or DEFAULT_ASSISTANT_MODEL).strip()
-        api_key = str(payload.get("api_key") or "").strip()
+        api_key = _assistant_api_key(payload, backend)
     messages = payload.get("messages") or []
     if not isinstance(messages, list):
         raise RuntimeError("messages must be a list")
@@ -97,7 +98,7 @@ def prompt_assistant_stream(payload: dict[str, Any]):
     else:
         endpoint = str(payload.get("endpoint") or DEFAULT_ASSISTANT_ENDPOINT).strip().rstrip("/")
         model = str(payload.get("model") or DEFAULT_ASSISTANT_MODEL).strip()
-        api_key = str(payload.get("api_key") or "").strip()
+        api_key = _assistant_api_key(payload, backend)
     if _assistant_use_gemini_native(backend, endpoint, model):
         yield from _prompt_assistant_stream_gemini(payload, endpoint, model, api_key)
         return
@@ -106,3 +107,15 @@ def prompt_assistant_stream(payload: dict[str, Any]):
         yield _assistant_stream_event("done", result)
     except Exception as exc:  # noqa: BLE001
         yield _assistant_stream_event("error", {"error": str(exc)})
+
+
+def _assistant_api_key(payload: dict[str, Any], backend: str) -> str:
+    explicit = str(payload.get("api_key") or "").strip()
+    if explicit:
+        return explicit
+    names = ["DEEPSEEK_API_KEY"] if backend == "deepseek" else ["Q3VL_MOYUU_API_KEY", "MOYUU_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"]
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""

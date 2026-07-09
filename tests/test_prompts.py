@@ -1,8 +1,11 @@
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 
 from lib_qwen3vl_prompt_tools.generic import _PromptSanitizer, _restore_gemini_result
+from lib_qwen3vl_prompt_tools.assistant_gemini import _prompt_assistant_chat_gemini
+from lib_qwen3vl_prompt_tools.assistant_teacher import qwen_teacher_enabled
 from lib_qwen3vl_prompt_tools.images import prepare_image
 from lib_qwen3vl_prompt_tools.prompts import build_caption_chat, build_enhance_chat, clean_generation
 
@@ -50,6 +53,26 @@ class PromptToolsTests(unittest.TestCase):
         self.assertIn("precum", diff)
         self.assertNotIn("SAFE_SLOT", diff)
         self.assertEqual(restored["sanitized_slots"], 2)
+
+    def test_regex_teacher_mode_disables_qwen_preprocess(self):
+        self.assertFalse(qwen_teacher_enabled({"teacher_mode": "regex"}))
+
+    def test_gemini_chat_uses_teacher_preprocessor(self):
+        payload = {"messages": [{"role": "user", "content": "nude SAFE_SLOT_001"}], "teacher_mode": "qwen-redact"}
+        with patch(
+            "lib_qwen3vl_prompt_tools.assistant_gemini.prepare_teacher_messages",
+            return_value=([{"role": "user", "content": "teacher safe briefing SAFE_SLOT_001"}], {"teacher_mode": "local-qwen-redact", "teacher_model": "qwen"}),
+        ) as prepare, patch(
+            "lib_qwen3vl_prompt_tools.assistant_gemini._gemini_post_generate",
+            return_value={"text": "ok", "tool_calls": []},
+        ) as post:
+            result = _prompt_assistant_chat_gemini(payload, "https://moyuu.cc", "gemini-3.1-pro-high", "test-key")
+
+        prepare.assert_called_once()
+        body = post.call_args.args[3]
+        self.assertEqual(body["contents"][0]["parts"][0]["text"], "teacher safe briefing SAFE_SLOT_001")
+        self.assertEqual(result["teacher_mode"], "local-qwen-redact")
+        self.assertEqual(result["teacher_model"], "qwen")
 
 
 if __name__ == "__main__":

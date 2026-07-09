@@ -17,7 +17,7 @@ The main workflow is `WD tagger + llama.cpp`: generate WD tags from an image, th
 - Prompt assistant defaults to Moyuu Gemini native API, and can also use DeepSeek/OpenAI-compatible APIs or local llama.cpp backends.
 - Prompt assistant can read and replace the current txt2img/img2img prompt through UI tools.
 - Prompt assistant can read/write the WebUI style template / trigger-word template when the field is present.
-- Prompt assistant image attachments go directly to Gemini-native multimodal requests. Text-only backends use a selectable local GGUF VLM first and receive only the visual notes.
+- Prompt assistant image attachments and sensitive prompt context can be processed by the local Qwen GGUF first; Gemini receives only a teacher-safe briefing by default.
 
 ## Default Model
 
@@ -62,9 +62,11 @@ Moyuu Gemini requests use Gemini native `v1beta` `generateContent` / `streamGene
 
 Older `https://api.deepseek.com/v1` DeepSeek-style endpoints remain accepted; the assistant will append `/chat/completions` to whichever base you configure. Local llama.cpp/OpenAI-compatible endpoints still normally use `/v1`.
 
-You can switch the text assistant to `DeepSeek`, `本地 Qwen 一次性`, or `本地 llama.cpp endpoint`, but Moyuu Gemini remains the default text assistant. `本地 Qwen 一次性` starts a local llama.cpp server for one assistant request and then terminates it, releasing VRAM instead of keeping a resident session. With Gemini, image attachments are sent directly to the native multimodal request. The separate local VLM configuration remains available for local/offline or non-multimodal text backends, with presets for `Gemma 4 12B`, `Qwen3.5 原版 9B`, `Qwen3.5 破限版 9B`, plus `自定义`. The local VLM thinking switch is optional and off by default.
+You can switch the text assistant to `DeepSeek`, `本地 Qwen 一次性`, or `本地 llama.cpp endpoint`, but Moyuu Gemini remains the default teacher model. By default, Gemini requests first run through local Qwen redaction: the local uncensored Qwen GGUF reads the conversation and any attached reference image, preserves `SAFE_SLOT_###` placeholders, abstracts sensitive prompt fragments, and sends Gemini only a teacher-safe briefing. `本地 Qwen 一次性` starts a local llama.cpp server for one assistant request and then terminates it, releasing VRAM instead of keeping a resident session. The local VLM configuration uses `Qwen3.5 破限版 9B` by default, with presets for `Gemma 4 12B`, `Qwen3.5 原版 9B`, `Qwen3.5 破限版 9B`, plus `自定义`. The local VLM thinking switch is optional and off by default.
 
 The floating settings panel keeps common controls visible by default. API keys are stored per text provider, so switching between Moyuu and DeepSeek does not overwrite the other provider's key. Endpoint/model/path overrides are under `高级` and are hidden unless relevant.
+
+For disposable remote testing, the backend also reads `Q3VL_MOYUU_API_KEY`, `MOYUU_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY` when the UI API key field is empty.
 
 For local text-assistant testing, an endpoint can still be configured, for example:
 
@@ -75,7 +77,7 @@ hauhau-qwen3.5-9b-uncensored
 
 The assistant is instructed to generate and revise image-generation prompts, especially multi-character spatial layouts such as left / center / right, foreground / background, interactions, and distinct per-character traits.
 
-Use `附图` to attach a reference image. For Gemini-native text assistants, the image is sent directly to the assistant request. For text-only backends, the extension first asks the selected local GGUF VLM to produce a detailed Chinese image caption with subject/spatial facts plus a subject-agnostic reusable style prompt, then sends those visual notes into the assistant conversation.
+Use `附图` to attach a reference image. In the default Gemini teacher mode, the image stays local: the selected local Qwen/GGUF VLM produces visual notes and a redacted teacher briefing before Gemini is called. If you switch the advanced teacher mode to `仅占位符脱敏`, Gemini can use the older native multimodal path.
 
 The model can request UI tools by returning exact JSON. The prompt-edit harness exposes only read and edit operations:
 

@@ -20,7 +20,7 @@ DEFAULT_LOCAL_ASSISTANT_ENDPOINT = "http://127.0.0.1:8080/v1"
 DEFAULT_LOCAL_ASSISTANT_MODEL = "hauhau-qwen3.5-9b-uncensored"
 DEFAULT_LOCAL_TEXT_PRESET = "Qwen3.5 破限版 9B"
 VISION_MODEL_PRESET_CUSTOM = "自定义"
-DEFAULT_VISION_MODEL_PRESET = "Gemma 4 12B"
+DEFAULT_VISION_MODEL_PRESET = "Qwen3.5 破限版 9B"
 VISION_MODEL_PRESETS: dict[str, dict[str, Any]] = {
     "Gemma 4 12B": {
         "alias": "gemma-4-12b-it",

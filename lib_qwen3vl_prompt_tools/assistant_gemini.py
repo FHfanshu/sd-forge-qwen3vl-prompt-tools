@@ -8,6 +8,7 @@ from typing import Any
 import requests
 
 from .assistant_common import _assistant_estimate_tokens, _assistant_stream_event
+from .assistant_teacher import prepare_teacher_messages
 from .constants import ASSISTANT_TOOLS, DEFAULT_ASSISTANT_FALLBACK_ENDPOINT, PROMPT_ASSISTANT_SYSTEM
 from .image_payloads import _data_url_inline_data
 from .response_text import _clean_response_text, _response_json_utf8, _response_text_utf8
@@ -320,11 +321,14 @@ def _prompt_assistant_chat_gemini(payload: dict[str, Any], endpoint: str, model:
     if not isinstance(messages, list):
         raise RuntimeError("messages must be a list")
     sanitizer = _PromptSanitizer(_payload_bool(payload.get("sanitize_sensitive"), True))
-    body, input_tokens = _gemini_request_body(payload, sanitizer.sanitize_messages(messages))
+    teacher_messages, teacher_info = prepare_teacher_messages(payload, sanitizer.sanitize_messages(messages))
+    body, input_tokens = _gemini_request_body(payload, teacher_messages)
     errors = []
     for candidate_endpoint in _assistant_remote_endpoints(endpoint, payload):
         try:
-            return _gemini_post_generate(candidate_endpoint, model, api_key, body, int(payload.get("timeout") or 120), input_tokens, sanitizer)
+            result = _gemini_post_generate(candidate_endpoint, model, api_key, body, int(payload.get("timeout") or 120), input_tokens, sanitizer)
+            result.update(teacher_info)
+            return result
         except (requests.RequestException, RuntimeError, json.JSONDecodeError) as exc:
             errors.append(f"{candidate_endpoint}: {exc}")
             if str(exc).startswith(("401 ", "403 ")):
@@ -339,7 +343,8 @@ def _prompt_assistant_stream_gemini(payload: dict[str, Any], endpoint: str, mode
         return
     try:
         sanitizer = _PromptSanitizer(_payload_bool(payload.get("sanitize_sensitive"), True))
-        body, input_tokens = _gemini_request_body(payload, sanitizer.sanitize_messages(messages))
+        teacher_messages, teacher_info = prepare_teacher_messages(payload, sanitizer.sanitize_messages(messages))
+        body, input_tokens = _gemini_request_body(payload, teacher_messages)
     except Exception as exc:  # noqa: BLE001
         yield _assistant_stream_event("error", {"error": str(exc)})
         return
@@ -390,12 +395,13 @@ def _prompt_assistant_stream_gemini(payload: dict[str, Any], endpoint: str, mode
                     try:
                         retry = _gemini_post_generate(candidate_endpoint, model, api_key, body, int(payload.get("timeout") or 120), input_tokens, sanitizer)
                         retry["stream_retry"] = True
+                        retry.update(teacher_info)
                         yield _assistant_stream_event("done", retry)
                         return
                     except Exception as exc:  # noqa: BLE001
                         errors.append(f"{candidate_endpoint} stream empty, non-stream retry failed: {exc}")
                         continue
-                result = {"text": text, "tool_calls": tool_calls, "model": model, "endpoint": candidate_endpoint, "usage": usage}
+                result = {"text": text, "tool_calls": tool_calls, "model": model, "endpoint": candidate_endpoint, "usage": usage, **teacher_info}
                 yield _assistant_stream_event("done", _restore_gemini_result(result, sanitizer))
                 return
         except (requests.RequestException, RuntimeError, json.JSONDecodeError) as exc:

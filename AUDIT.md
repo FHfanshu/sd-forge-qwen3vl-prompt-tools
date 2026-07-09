@@ -34,3 +34,10 @@ Goal: split oversized backend and browser files, keep files under 1000 lines, an
 - Final unittest/compile/browser checks passed after all commits.
 - Local Qwen one-shot assistant was exercised with `local-qwen-once` and returned `local qwen assistant ok` from source `one-shot-local-qwen`.
 - Moyuu/Gemini route was exercised without a token and reached the remote API, which returned 401 `Invalid token`; live Gemini teacher inquiry requires a configured API key.
+
+## 2026-07-09 Local Qwen Teacher Redaction
+
+- Gemini teacher mode now defaults to local Qwen redaction before remote calls.
+- Browser attachments no longer go directly to Gemini in the default mode; local Qwen VLM analyzes/redacts first.
+- `teacher_mode=regex` remains available as an advanced fallback for placeholder-only redaction.
+- Default local VLM preset is `Qwen3.5 破限版 9B` to match the local testing model path.
