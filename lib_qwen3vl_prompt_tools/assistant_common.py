@@ -7,13 +7,43 @@ from typing import Any
 from .constants import PROMPT_ASSISTANT_SYSTEM
 from .response_text import _clean_response_text
 
-def _assistant_request_messages(messages: list[Any]) -> list[dict[str, str]]:
-    request_messages = [{"role": "system", "content": PROMPT_ASSISTANT_SYSTEM}]
+TOOLS_DISABLED_INSTRUCTION = "\n\nTools are disabled for this convergence turn. Do not emit tool calls or tool-call JSON. Answer the user's original request directly using the tool results already in the conversation."
+
+
+def _assistant_message_content(item: dict[str, Any]) -> str | list[dict[str, Any]]:
+    raw_content = item.get("content", "")
+    parts: list[dict[str, Any]] = []
+    if isinstance(raw_content, list):
+        for part in raw_content:
+            if not isinstance(part, dict):
+                if part:
+                    parts.append({"type": "text", "text": str(part)})
+                continue
+            part_type = str(part.get("type") or "")
+            if part_type == "text" and part.get("text"):
+                parts.append({"type": "text", "text": str(part["text"])})
+            elif part_type == "image_url" and part.get("image_url"):
+                parts.append({"type": "image_url", "image_url": part["image_url"]})
+    else:
+        text = str(raw_content or "").strip()
+        if text:
+            parts.append({"type": "text", "text": text})
+    image = str(item.get("image") or item.get("data_url") or "").strip()
+    if image:
+        parts.append({"type": "image_url", "image_url": {"url": image}})
+    if not image and not isinstance(raw_content, list):
+        return str(raw_content or "").strip()
+    return parts
+
+
+def _assistant_request_messages(messages: list[Any], disable_tools: bool = False) -> list[dict[str, Any]]:
+    system_prompt = PROMPT_ASSISTANT_SYSTEM + (TOOLS_DISABLED_INSTRUCTION if disable_tools else "")
+    request_messages = [{"role": "system", "content": system_prompt}]
     for item in messages[-20:]:
         if not isinstance(item, dict):
             continue
         role = str(item.get("role") or "").strip()
-        content = str(item.get("content") or "").strip()
+        content = _assistant_message_content(item)
         if role in {"user", "assistant"} and content:
             request_messages.append({"role": role, "content": content})
     if len(request_messages) == 1:

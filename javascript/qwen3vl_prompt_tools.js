@@ -47,6 +47,17 @@
         return select ? select.value : "";
     }
 
+    function currentCheckpoint() {
+        const root = q3vlApp().querySelector("#setting_sd_model_checkpoint");
+        if (!root) return "";
+        const checked = root.querySelector("input:checked");
+        if (checked) return String(checked.value || "");
+        const input = root.querySelector("input");
+        if (input) return String(input.value || "");
+        const select = root.querySelector("select");
+        return select ? String(select.value || "") : "";
+    }
+
     function syncQwenPromptActions() {
         const visible = currentForgePreset() === "krea";
         q3vlApp().querySelectorAll(".q3vl-inline-actions").forEach(function (row) {
@@ -154,7 +165,8 @@
         attachment: null,
         promptReads: {},
         promptStyles: null,
-        apiKeyBackend: "moyuu",
+        loadedPromptSkills: {},
+        resourceMutationAllowed: false,
         running: null
     };
 
@@ -182,15 +194,14 @@
     const MOYUU_ASSISTANT_FALLBACK_ENDPOINT = "https://hk-api.moyuu.cc";
     const MOYUU_ASSISTANT_MODEL = "gemini-3.5-flash-preview";
     const OPENAI_COMPATIBLE_ASSISTANT_MODEL = "gemini-3.5-flash-preview";
+    const DEFAULT_ASSISTANT_BACKEND = "moyuu";
+    const DEFAULT_ASSISTANT_FALLBACK_BACKEND = "openai";
+    const DEFAULT_ASSISTANT_FALLBACK_MODEL = "grok-4.5";
     const DEEPSEEK_ASSISTANT_ENDPOINT = "https://api.deepseek.com";
     const DEEPSEEK_ASSISTANT_MODEL = "deepseek-v4-pro";
     const DEFAULT_QWEN_VISION_MODEL_PATH = "E:\\AI\\lmcpp\\models\\Qwen3.5-9B-GGUF\\Qwen3.5-9B-UD-Q6_K_XL.gguf";
     const DEFAULT_QWEN_VISION_MMPROJ_PATH = "E:\\AI\\lmcpp\\models\\Qwen3.5-9B-GGUF\\mmproj-F16.gguf";
     const DEFAULT_LOCAL_CONTEXT_TOKENS = 16384;
-    const KNOWN_ASSISTANT_ENDPOINTS = [MOYUU_ASSISTANT_ENDPOINT, MOYUU_ASSISTANT_FALLBACK_ENDPOINT, DEEPSEEK_ASSISTANT_ENDPOINT];
-    const REMOTE_ASSISTANT_PRESETS = { "gemini-3.5-flash-preview": { backend: "openai", model: "gemini-3.5-flash-preview" }, "gemini-3.5-flash-high": { backend: "openai", model: "gemini-3.5-flash-high" }, "grok-4.5": { backend: "openai", model: "grok-4.5" } };
-    const KNOWN_ASSISTANT_MODELS = [MOYUU_ASSISTANT_MODEL, OPENAI_COMPATIBLE_ASSISTANT_MODEL, "gemini-3.5-flash-high", "grok-4.5", DEEPSEEK_ASSISTANT_MODEL, "deepseekv4-pro", "deepseek-chat", "deepseek-reasoner"];
-
     function defaultVisionModelPathForPreset(preset) {
         return preset === defaultVisionPreset() ? DEFAULT_QWEN_VISION_MODEL_PATH : "";
     }
@@ -199,57 +210,53 @@
         return preset === defaultVisionPreset() ? DEFAULT_QWEN_VISION_MMPROJ_PATH : "";
     }
 
-    function assistantApiKeyBackend(backend) {
-        return backend === "deepseek" || backend === "openai" || backend === "local-lmcpp" || backend === "local-qwen-once" ? backend : "moyuu";
+    function assistantOption(name, fallback) {
+        const stored = localStorage.getItem(`q3vl_assistant_${name}`);
+        if (stored !== null) return stored;
+        if (typeof opts === "object" && opts !== null) {
+            const key = `q3vl_assistant_${name}`;
+            if (Object.prototype.hasOwnProperty.call(opts, key)) return opts[key];
+        }
+        return fallback;
     }
 
-    function assistantApiKeyStorageKey(backend) {
-        return `q3vl_assistant_api_key_${assistantApiKeyBackend(backend)}`;
+    function assistantApiKey(backend) {
+        if (backend === "local-lmcpp" || backend === "local-qwen-once") return "";
+        const provider = backend === "deepseek" ? "deepseek" : backend === "moyuu" ? "moyuu" : "openai";
+        return String(assistantOption(`api_key_${provider}`, "") || "");
     }
 
-    function storedAssistantApiKey(backend) {
-        return localStorage.getItem(assistantApiKeyStorageKey(backend)) || localStorage.getItem("q3vl_assistant_api_key") || "";
-    }
-
-    function currentAssistantApiKey(panel, backend) {
-        panel = panel || settingsPanel() || assistantPanel();
-        const input = panel?.querySelector('[data-q3vl-setting="api_key"]');
-        if (input && assistantApiKeyBackend(backend) === assistantState.apiKeyBackend) return input.value || "";
-        return storedAssistantApiKey(backend);
-    }
-
-    function storeAssistantApiKey(panel, backend) {
-        panel = panel || settingsPanel() || assistantPanel();
-        const input = panel?.querySelector('[data-q3vl-setting="api_key"]');
-        if (!input) return;
-        localStorage.setItem(assistantApiKeyStorageKey(backend), input.value || "");
-    }
-
-    function loadAssistantApiKey(panel, backend) {
-        panel = panel || settingsPanel() || assistantPanel();
-        const input = panel?.querySelector('[data-q3vl-setting="api_key"]');
-        if (!input) return;
-        assistantState.apiKeyBackend = assistantApiKeyBackend(backend);
-        input.value = storedAssistantApiKey(backend);
-        input.placeholder = backend === "deepseek" ? "DeepSeek API key" : backend === "local-lmcpp" || backend === "local-qwen-once" ? t("settings.local_no_api_key", "本地后端无需 API key") : "OpenAI-compatible API key";
-    }
-
-    function assistantConfig() {
-        const panel = settingsPanel() || assistantPanel();
+    function assistantConfig(routeOverride) {
         const get = function (name, fallback) {
-            const value = panel ? panel.querySelector(`[data-q3vl-setting="${name}"]`)?.value : localStorage.getItem(`q3vl_assistant_${name}`);
-            return value || fallback;
+            const value = assistantOption(name, fallback);
+            return value === undefined || value === null || value === "" ? fallback : value;
         };
-        const endpoint = get("endpoint", MOYUU_ASSISTANT_ENDPOINT);
         const visionPreset = get("vision_preset", defaultVisionPreset());
-        const backend = get("backend", "openai");
+        const backend = get("backend", DEFAULT_ASSISTANT_BACKEND);
+        const fallbackBackend = get("fallback_backend", DEFAULT_ASSISTANT_FALLBACK_BACKEND);
+        const configuredEndpoint = get("endpoint", MOYUU_ASSISTANT_ENDPOINT);
+        const endpoint = backend === "deepseek" && configuredEndpoint === MOYUU_ASSISTANT_ENDPOINT ? DEEPSEEK_ASSISTANT_ENDPOINT : configuredEndpoint;
+        const configuredModel = get("model", MOYUU_ASSISTANT_MODEL);
+        const model = backend === "deepseek" && configuredModel === MOYUU_ASSISTANT_MODEL ? DEEPSEEK_ASSISTANT_MODEL : configuredModel;
         const localContext = normalizeAssistantContextTokens(get("n_ctx", String(DEFAULT_LOCAL_CONTEXT_TOKENS)));
-        return {
+        const localTemperature = Number(get("local_temperature", 0.25));
+        const localTopP = Number(get("local_top_p", 0.9));
+        const localTimeout = Number(get("local_timeout", 180));
+        const localGpuLayers = Number(get("local_n_gpu_layers", -1));
+        const localText = backend === "local-lmcpp" || backend === "local-qwen-once";
+        const fallbackUsesMoyuuKey = fallbackBackend === "openai" && /(^|\.)moyuu\.cc$/i.test((function () {
+            try { return new URL(endpoint).hostname; } catch (_error) { return ""; }
+        })());
+        const config = {
             backend: backend,
             endpoint: endpoint,
             fallback_endpoint: get("fallback_endpoint", backend === "moyuu" ? MOYUU_ASSISTANT_FALLBACK_ENDPOINT : ""),
-            model: normalizeAssistantModel(endpoint, get("model", MOYUU_ASSISTANT_MODEL)),
-            api_key: currentAssistantApiKey(panel, backend),
+            model: normalizeAssistantModel(endpoint, model),
+            api_key: assistantApiKey(backend),
+            fallback_backend: fallbackBackend,
+            fallback_model: get("fallback_model", DEFAULT_ASSISTANT_FALLBACK_MODEL),
+            fallback_model_endpoint: endpoint,
+            fallback_api_key: fallbackUsesMoyuuKey ? (assistantApiKey("moyuu") || assistantApiKey("openai")) : (assistantApiKey(fallbackBackend) || assistantApiKey(backend)),
             local_endpoint: get("local_endpoint", "http://127.0.0.1:8080/v1"),
             local_model: get("local_model", "hauhau-qwen3.5-9b-uncensored"),
             vision_preset: visionPreset,
@@ -261,17 +268,28 @@
             local_model_path: get("vision_model_path", defaultVisionModelPathForPreset(visionPreset)),
             local_text_thinking: configBool(get("local_text_thinking", "0")),
             vision_thinking: configBool(get("vision_thinking", "0")),
+            llama_server_path: get("llama_server_path", ""),
+            local_n_gpu_layers: localGpuLayers,
+            n_gpu_layers: localGpuLayers,
+            teacher_n_gpu_layers: localGpuLayers,
             n_ctx: localContext,
             local_n_ctx: localContext,
             teacher_n_ctx: localContext,
             sanitize_sensitive: configBool(get("sanitize_sensitive", "1")),
             teacher_mode: get("teacher_mode", "qwen-redact"),
-            temperature: 0.35,
-            top_p: 0.9,
+            temperature: localText ? localTemperature : 0.35,
+            top_p: localText ? localTopP : 0.9,
+            teacher_temperature: localTemperature,
+            teacher_top_p: localTopP,
+            teacher_timeout: localTimeout,
             max_tokens: normalizeAssistantMaxTokens(backend === "local-qwen-once" ? get("local_max_tokens", "8192") : get("max_tokens", "8192")),
-            reasoning_effort: get("reasoning_effort", "high"),
-            timeout: 120
+            reasoning_effort: get("reasoning_effort", "low"),
+            timeout: localText ? localTimeout : 120
         };
+        const route = routeOverride || get("chat_model_route", "primary");
+        if (route === "fallback") Object.assign(config, { backend: config.fallback_backend, endpoint: config.fallback_model_endpoint, model: config.fallback_model, api_key: config.fallback_api_key, disable_model_fallback: true });
+        if (route === "local") Object.assign(config, { backend: "local-qwen-once", model: config.vision_preset, api_key: "", temperature: localTemperature, top_p: localTopP, max_tokens: normalizeAssistantMaxTokens(get("local_max_tokens", "8192")), timeout: localTimeout, disable_model_fallback: true });
+        return config;
     }
 
     function normalizeAssistantModel(endpoint, model) {
@@ -283,44 +301,6 @@
             if (url.hostname === "api.deepseek.com" && cleaned === "deepseek-reasoner") return "deepseek-v4-pro";
         } catch (_error) { }
         return cleaned;
-    }
-
-    function defaultAssistantEndpointForBackend(backend) {
-        if (backend === "deepseek") return DEEPSEEK_ASSISTANT_ENDPOINT;
-        if (backend === "openai") return localStorage.getItem("q3vl_assistant_endpoint") || MOYUU_ASSISTANT_ENDPOINT;
-        return MOYUU_ASSISTANT_ENDPOINT;
-    }
-
-    function defaultAssistantModelForBackend(backend) {
-        if (backend === "deepseek") return DEEPSEEK_ASSISTANT_MODEL;
-        if (backend === "openai") return OPENAI_COMPATIBLE_ASSISTANT_MODEL;
-        return MOYUU_ASSISTANT_MODEL;
-    }
-
-    function storedAssistantEndpoint() {
-        const stored = localStorage.getItem("q3vl_assistant_endpoint");
-        return !stored || stored === DEEPSEEK_ASSISTANT_ENDPOINT ? MOYUU_ASSISTANT_ENDPOINT : stored;
-    }
-
-    function storedAssistantModel(endpoint) {
-        const stored = localStorage.getItem("q3vl_assistant_model");
-        const model = !stored || (KNOWN_ASSISTANT_ENDPOINTS.includes(endpoint) && KNOWN_ASSISTANT_MODELS.includes(stored)) ? OPENAI_COMPATIBLE_ASSISTANT_MODEL : stored;
-        return normalizeAssistantModel(endpoint, model);
-    }
-
-    function syncAssistantBackendDefaults(panel) {
-        panel = panel || settingsPanel() || assistantPanel();
-        if (!panel) return;
-        const backend = panel.querySelector('[data-q3vl-setting="backend"]')?.value || "openai";
-        const endpointInput = panel.querySelector('[data-q3vl-setting="endpoint"]');
-        const modelInput = panel.querySelector('[data-q3vl-setting="model"]');
-        if (!endpointInput || !modelInput) return;
-        if (!endpointInput.value || KNOWN_ASSISTANT_ENDPOINTS.includes(endpointInput.value)) {
-            endpointInput.value = defaultAssistantEndpointForBackend(backend);
-        }
-        if (!modelInput.value || KNOWN_ASSISTANT_MODELS.includes(modelInput.value)) {
-            modelInput.value = defaultAssistantModelForBackend(backend);
-        }
     }
 
     function normalizeAssistantMaxTokens(value) {
@@ -335,55 +315,6 @@
         return Math.min(parsed, 32768);
     }
 
-    function saveAssistantConfig() {
-        const panel = settingsPanel() || assistantPanel();
-        if (!panel) return;
-        storeAssistantApiKey(panel, assistantState.apiKeyBackend);
-        panel.querySelectorAll("[data-q3vl-setting]").forEach(function (input) {
-            if (input.dataset.q3vlSetting === "api_key") return;
-            localStorage.setItem(`q3vl_assistant_${input.dataset.q3vlSetting}`, input.value || "");
-        });
-    }
-
-    function setAssistantSettingsVisibility(panel) {
-        panel = panel || settingsPanel() || assistantPanel();
-        if (!panel) return;
-        const backend = panel.querySelector('[data-q3vl-setting="backend"]')?.value || "moyuu";
-        const visionPreset = panel.querySelector('[data-q3vl-setting="vision_preset"]')?.value || defaultVisionPreset();
-        const teacherMode = panel.querySelector('[data-q3vl-setting="teacher_mode"]')?.value || "qwen-redact";
-        const localEndpoint = backend === "local-lmcpp";
-        const localOnce = backend === "local-qwen-once";
-        const localText = localEndpoint || localOnce;
-        const localVision = backend !== "moyuu" || (backend === "moyuu" && teacherMode === "qwen-redact");
-        const localAgent = localText || localVision;
-        const apiKey = panel.querySelector('[data-q3vl-setting="api_key"]');
-        const apiKeyField = apiKey?.closest(".q3vl-settings-field");
-        if (apiKeyField) apiKeyField.hidden = localText;
-        apiKey?.toggleAttribute("hidden", localText);
-        apiKey?.toggleAttribute("disabled", localText);
-        panel.querySelectorAll('[data-q3vl-field="remote"]').forEach(function (element) {
-            element.hidden = localText;
-        });
-        panel.querySelectorAll('[data-q3vl-field="local-agent"]').forEach(function (element) {
-            element.hidden = !localAgent;
-        });
-        panel.querySelectorAll('[data-q3vl-field="local-once"]').forEach(function (element) {
-            element.hidden = !localOnce;
-        });
-        panel.querySelectorAll('[data-q3vl-field="local-endpoint"]').forEach(function (element) {
-            element.hidden = !localEndpoint;
-        });
-        panel.querySelectorAll('[data-q3vl-field="local-vision"]').forEach(function (element) {
-            element.hidden = !localVision;
-        });
-        panel.querySelectorAll('[data-q3vl-field="vision-advanced"]').forEach(function (element) {
-            element.hidden = !localEndpoint;
-        });
-        panel.querySelectorAll('[data-q3vl-field="vision-custom"]').forEach(function (element) {
-            element.hidden = !localAgent;
-        });
-    }
-
     function activePromptTarget() {
         const tabs = q3vlApp().querySelector("#tabs");
         const selected = tabs ? Array.from(tabs.querySelectorAll("button")).find(function (button) {
@@ -393,12 +324,19 @@
         return text.includes("img2img") ? "img2img" : "txt2img";
     }
 
-    function promptRootForTarget(target) {
+    function promptFieldRootForTarget(target, field) {
         const resolved = target === "active" || !target ? activePromptTarget() : target;
+        const normalizedField = field === "negative" ? "negative" : "positive";
+        const suffix = normalizedField === "negative" ? "_neg_prompt" : "_prompt";
         return {
             target: resolved,
-            root: q3vlApp().querySelector(resolved === "img2img" ? "#img2img_prompt" : "#txt2img_prompt")
+            field: normalizedField,
+            root: q3vlApp().querySelector(`#${resolved}${suffix}`)
         };
+    }
+
+    function promptRootForTarget(target) {
+        return promptFieldRootForTarget(target, "positive");
     }
 
     function normalizedLabelText(value) {
@@ -422,8 +360,9 @@
         const ignored = new Set(["styles", "style", "风格", "风格模板", "风格模版", ""]);
         const candidates = [];
         root.querySelectorAll("[data-testid='selected-option'], [data-testid='token'], .token, .selected, button, span").forEach(function (node) {
-            const text = normalizedLabelText(node.textContent);
-            if (!ignored.has(text)) candidates.push(visibleText(node));
+            const value = visibleText(node).replace(/^✓\s*|\s*✓$/g, "").trim();
+            const text = normalizedLabelText(value);
+            if (!ignored.has(text)) candidates.push(value);
         });
         if (candidates.length) return Array.from(new Set(candidates)).join(", ");
 
@@ -568,21 +507,56 @@
         return `fnv1a:${(hash >>> 0).toString(16).padStart(8, "0")}:${value.length}`;
     }
 
+    function promptContextSnapshot(target, styleSelector) {
+        const positiveItem = promptFieldRootForTarget(target || "active", "positive");
+        const negativeItem = promptFieldRootForTarget(positiveItem.target, "negative");
+        const positive = textboxValue(positiveItem.root);
+        const negative = textboxValue(negativeItem.root);
+        const styles = styleSelector === undefined ? styleSelectorValue(positiveItem.target) : String(styleSelector || "");
+        const forgePreset = currentForgePreset();
+        const checkpoint = currentCheckpoint();
+        const contextHash = promptHash(JSON.stringify({ positive, negative, styles, forgePreset, checkpoint }));
+        return {
+            target: positiveItem.target,
+            positive: positive,
+            negative: negative,
+            positive_hash: promptHash(positive),
+            negative_hash: promptHash(negative),
+            context_hash: contextHash,
+            style_selector: styles,
+            forge_preset: forgePreset,
+            checkpoint: checkpoint
+        };
+    }
+
     async function readPromptTool(target) {
         const item = promptRootForTarget(target || "active");
-        const prompt = textboxValue(item.root);
-        const hash = promptHash(prompt);
         const template = await styleTemplateInfo(item.target);
+        const context = promptContextSnapshot(item.target, template.style_selector);
         assistantState.promptReads[item.target] = {
-            hash: hash,
-            prompt: prompt,
+            hash: context.positive_hash,
+            prompt: context.positive,
+            positive: context.positive,
+            negative: context.negative,
+            positive_hash: context.positive_hash,
+            negative_hash: context.negative_hash,
+            context_hash: context.context_hash,
+            style_selector: context.style_selector,
             at: Date.now()
         };
         return {
             ok: true,
             target: item.target,
-            prompt: prompt,
-            prompt_hash: hash,
+            prompt: context.positive,
+            prompt_hash: context.positive_hash,
+            positive_prompt: context.positive,
+            negative_prompt: context.negative,
+            positive_prompt_hash: context.positive_hash,
+            negative_prompt_hash: context.negative_hash,
+            context_hash: context.context_hash,
+            forge_preset: context.forge_preset,
+            checkpoint: context.checkpoint,
+            loaded_prompt_skills: Object.keys(assistantState.loadedPromptSkills || {}),
             style_template_found: template.found,
             style_template: template.template,
             style_selector: template.style_selector,
@@ -818,8 +792,11 @@
     }
 
     function editPromptTool(args, patches) {
-        const item = promptRootForTarget(args.target || "active");
+        const field = args.field === "negative" ? "negative" : "positive";
+        const item = promptFieldRootForTarget(args.target || "active", field);
         const readState = assistantState.promptReads[item.target];
+        const fieldHash = field === "negative" ? "negative_hash" : "positive_hash";
+        const fieldText = field === "negative" ? "negative" : "positive";
         const baseHash = String(args.base_hash || args.prompt_hash || "").trim();
         const patchSource = args.patches !== undefined ? args.patches : args.operations !== undefined ? args.operations : args.patch !== undefined ? args.patch : patches;
         let patchList;
@@ -832,14 +809,14 @@
             return { ok: false, target: item.target, error: "must call read_prompt for this target before edit_prompt" };
         }
         if (!baseHash) {
-            return { ok: false, target: item.target, error: "edit_prompt requires base_hash from read_prompt", last_read_hash: readState.hash };
+            return { ok: false, target: item.target, field: field, error: "edit_prompt requires base_hash from read_prompt", last_read_hash: readState[fieldHash] };
         }
-        if (baseHash !== readState.hash) {
-            return { ok: false, target: item.target, error: "base_hash does not match the latest read_prompt result; read again", last_read_hash: readState.hash };
+        if (baseHash !== readState[fieldHash]) {
+            return { ok: false, target: item.target, field: field, error: "base_hash does not match the latest read_prompt result; read again", last_read_hash: readState[fieldHash] };
         }
         if ((!Array.isArray(patchList) || !patchList.length) && args.prompt !== undefined) {
             const prompt = String(args.prompt || "");
-            patchList = readState.prompt ? [{ operation: "replace", find: readState.prompt, replace: prompt }] : [{ operation: "append", text: prompt }];
+            patchList = readState[fieldText] ? [{ operation: "replace", find: readState[fieldText], replace: prompt }] : [{ operation: "append", text: prompt }];
         }
         if (!Array.isArray(patchList) || !patchList.length) {
             return { ok: false, target: item.target, error: "edit_prompt requires diff or patches" };
@@ -848,22 +825,25 @@
         const result = compactPromptPatchResult(rawResult, Boolean(args.return_prompt));
         if (result.ok) {
             switchMainTab(item.target);
-            assistantState.promptReads[item.target] = {
-                hash: result.prompt_hash,
-                prompt: rawResult.prompt || "",
-                at: Date.now()
-            };
+            readState[fieldText] = rawResult.prompt || "";
+            readState[fieldHash] = result.prompt_hash;
+            readState.prompt = readState.positive;
+            readState.hash = readState.positive_hash;
+            const current = promptContextSnapshot(item.target);
+            readState.context_hash = current.context_hash;
+            readState.style_selector = current.style_selector;
+            readState.at = Date.now();
         }
-        return Object.assign({ target: item.target }, result);
+        return Object.assign({ target: item.target, field: field, context_hash: readState.context_hash }, result);
     }
 
     async function askTeacherTool(args, signal) {
         const config = assistantConfig();
         const payload = Object.assign({}, config, args || {}, {
             backend: "moyuu",
-            api_key: storedAssistantApiKey("moyuu") || config.api_key,
-            endpoint: config.endpoint || MOYUU_ASSISTANT_ENDPOINT,
-            fallback_endpoint: config.fallback_endpoint || MOYUU_ASSISTANT_FALLBACK_ENDPOINT,
+            api_key: assistantApiKey("moyuu") || config.api_key,
+            endpoint: MOYUU_ASSISTANT_ENDPOINT,
+            fallback_endpoint: MOYUU_ASSISTANT_FALLBACK_ENDPOINT,
             model: MOYUU_ASSISTANT_MODEL,
             question: String(args?.question || args?.prompt || args?.query || ""),
             context: String(args?.context || args?.briefing || ""),
@@ -909,6 +889,11 @@
         if (name === "set_style_template") {
             return { ok: false, error: "set_style_template is disabled to avoid blind overwrites. Use read_prompt and edit the normal prompt with edit_prompt." };
         }
+        const resourceExecutor = window.q3vlPromptTools && window.q3vlPromptTools.executeResourceTool;
+        if (typeof resourceExecutor === "function") {
+            const resourceResult = await resourceExecutor(tool, signal);
+            if (resourceResult !== undefined) return resourceResult;
+        }
         return { ok: false, error: `unknown tool: ${name}` };
     }
 
@@ -924,6 +909,7 @@
         settingsPanel,
         removeAssistantWindow,
         currentForgePreset,
+        currentCheckpoint,
         syncQwenPromptActions,
         setupQwenPresetGate,
         textboxValue,
@@ -943,32 +929,22 @@
         OPENAI_COMPATIBLE_ASSISTANT_MODEL,
         DEEPSEEK_ASSISTANT_ENDPOINT,
         DEEPSEEK_ASSISTANT_MODEL,
-        REMOTE_ASSISTANT_PRESETS,
+        DEFAULT_ASSISTANT_BACKEND,
+        DEFAULT_ASSISTANT_FALLBACK_BACKEND,
+        DEFAULT_ASSISTANT_FALLBACK_MODEL,
         DEFAULT_QWEN_VISION_MODEL_PATH,
         DEFAULT_QWEN_VISION_MMPROJ_PATH,
         DEFAULT_LOCAL_CONTEXT_TOKENS,
-        KNOWN_ASSISTANT_ENDPOINTS,
-        KNOWN_ASSISTANT_MODELS,
         defaultVisionModelPathForPreset,
         defaultVisionMmprojPathForPreset,
-        assistantApiKeyBackend,
-        assistantApiKeyStorageKey,
-        storedAssistantApiKey,
-        currentAssistantApiKey,
-        storeAssistantApiKey,
-        loadAssistantApiKey,
+        assistantOption,
+        assistantApiKey,
         assistantConfig,
         normalizeAssistantModel,
-        defaultAssistantEndpointForBackend,
-        defaultAssistantModelForBackend,
-        storedAssistantEndpoint,
-        storedAssistantModel,
-        syncAssistantBackendDefaults,
         normalizeAssistantMaxTokens,
         normalizeAssistantContextTokens,
-        saveAssistantConfig,
-        setAssistantSettingsVisibility,
         activePromptTarget,
+        promptFieldRootForTarget,
         promptRootForTarget,
         normalizedLabelText,
         visibleText,
@@ -980,6 +956,7 @@
         styleTemplateInfo,
         optionValue,
         promptHash,
+        promptContextSnapshot,
         readPromptTool,
         normalizePatchSeparator,
         applyPromptPatchText,

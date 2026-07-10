@@ -15,8 +15,8 @@ The main workflow is `WD tagger + llama.cpp`: generate WD tags from an image, th
 - Auto-downloads a Windows x64 llama.cpp release backend when `llama-server.exe` is missing.
 - Floating LLM prompt assistant for character layout, spatial relationships, and prompt rewriting.
 - Prompt assistant defaults to the best evaluated OpenAI-compatible remote preset, and can also use DeepSeek, Gemini native APIs, or local llama.cpp backends.
-- Prompt assistant can read and replace the current txt2img/img2img prompt through UI tools.
-- Prompt assistant can read/write the WebUI style template / trigger-word template when the field is present.
+- Prompt assistant can safely read and edit positive/negative txt2img/img2img prompts through hash-guarded UI tools.
+- Prompt assistant can search installed Wildcards, WebUI Styles, and LoRAs, then apply their native Forge references after an explicit user request.
 - Prompt assistant image attachments and sensitive prompt context can be processed by the local Qwen GGUF first; Gemini receives only a teacher-safe briefing by default.
 
 ## Default Model
@@ -54,15 +54,16 @@ You can also set `LLAMA_SERVER_EXE` or fill the path manually in the UI.
 
 The `LLM 助手` button opens a floating chat window. Text-assistant defaults:
 
-- Remote preset: `gemini-3.5-flash-preview`
-- Base URL: configurable in the settings panel
+- Primary route: Moyuu Gemini native / `gemini-3.5-flash-preview`
+- Model fallback: OpenAI-compatible / `grok-4.5` on the same Moyuu Base URL
+- Base URL and backup Base URL: configurable in the settings panel
 - Local fallback preset: `Qwen3.5 原版 9B`
 
 OpenAI-compatible remote presets keep the Base URL separate from the selected model, so the same presets can be used with any compatible relay. Moyuu Gemini native mode remains available for Gemini `v1beta` `generateContent` / `streamGenerateContent`. The assistant status line streams token counters in the form `↑input tokens ↓output tokens`; final Gemini `usageMetadata` replaces the local estimate when the endpoint provides it. Before text is sent to Gemini native mode, sensitive prompt fragments are replaced with `SAFE_SLOT_###` placeholders and restored locally in the returned tool arguments, so `edit_prompt` still patches the real WebUI prompt while Gemini sees a safer prompt.
 
 Older `https://api.deepseek.com/v1` DeepSeek-style endpoints remain accepted; the assistant will append `/chat/completions` to whichever base you configure. Local llama.cpp/OpenAI-compatible endpoints still normally use `/v1`.
 
-You can switch the text assistant to `DeepSeek`, `Moyuu Gemini native`, `本地 Qwen 一次性`, or `本地 llama.cpp endpoint`. The remote preset menu contains the top evaluated editing models: `gemini-3.5-flash-preview`, `gemini-3.5-flash-high`, and `grok-4.5`; changing the preset updates the model without overwriting the Base URL. `本地 Qwen 一次性` starts a local llama.cpp server for one assistant request and then terminates it, releasing VRAM instead of keeping a resident session. The local VLM/text fallback uses `Qwen3.5 原版 9B` by default, with presets for `Gemma 4 12B`, `Qwen3.5 原版 9B`, `Qwen3.5 破限版 9B`, plus `自定义`. The local VLM thinking switch is optional and off by default.
+You can switch the text assistant to `DeepSeek`, `Moyuu Gemini native`, `本地 Qwen 一次性`, or `本地 llama.cpp endpoint`. The default remote route uses Moyuu Gemini native first, tries both configured Moyuu domains, and falls back to `grok-4.5` through the OpenAI-compatible route only when the primary model fails before producing content. `本地 Qwen 一次性` starts a local llama.cpp server for one assistant request and then terminates it, releasing VRAM instead of keeping a resident session. The local VLM/text preset uses `Qwen3.5 原版 9B` by default, with presets for `Gemma 4 12B`, `Qwen3.5 原版 9B`, `Qwen3.5 破限版 9B`, plus `自定义`. The local VLM thinking switch is optional and off by default.
 
 The floating settings panel keeps common controls visible by default. API keys are stored per text provider, so switching between Moyuu and DeepSeek does not overwrite the other provider's key. Endpoint/model/path overrides are under `高级` and are hidden unless relevant.
 
@@ -106,6 +107,10 @@ The `ask_teacher` tool calls `/qwen3vl-prompt-tools/ask-teacher`; the teacher-si
 `edit_prompt` accepts SEARCH/REPLACE diff blocks first, plus simple unified diff hunks. It still accepts structured patch operations as a fallback: `replace`, `replace_all`, `replace_n`, `insert_after`, `insert_before`, `append`, `prepend`, and `delete`. `replace` and insert operations require a unique `find` string unless `allow_multiple` is set. Edit tools return a preview by default; pass `return_prompt: true` only when the full updated prompt is needed.
 
 The frontend executes these tools and sends the result back to the assistant. Targets are `active`, `txt2img`, or `img2img`. `read_prompt` also includes the current `txt2img_styles` / `img2img_styles` selector text as `style_selector`, maps selected style names to full prompt text in `selected_styles`, and includes Forge `neta_template_positive` as `forge_positive_template` using the settings component, global `opts`, or hidden `settings_json` as fallbacks.
+
+`read_prompt` additionally returns positive/negative prompt hashes, a combined `context_hash`, the active Forge preset/checkpoint, and loaded prompt skills. `edit_prompt` accepts `field: "positive" | "negative"`. Resource discovery uses `search_resources` and `inspect_resource`; results are paginated and expose logical IDs rather than local absolute paths. `apply_resource` keeps native syntax (`__wildcard__`, `<lora:alias:weight>`, or a WebUI Style selection), is idempotent, and refuses stale `context_hash` values. `initialize_prompt` fills only empty positive/negative fields.
+
+When the active Forge preset or checkpoint contains `Anima`, the assistant automatically loads the built-in `anima_dit` guide. The same guide can be requested with `load_prompt_skill`. Agent runs are bounded to 8 model turns and 12 tool calls, with a four-tool per-turn limit, duplicate-call fuse, paginated resource output, and 64 KiB conversation compaction.
 
 On mobile generation pages, the extension disables browser pull-to-refresh so a downward swipe at the top of txt2img/img2img does not reload the whole WebUI. For assistant edit requests, the frontend also refuses to treat a no-tool response as completion until `edit_prompt` has returned `ok:true`.
 

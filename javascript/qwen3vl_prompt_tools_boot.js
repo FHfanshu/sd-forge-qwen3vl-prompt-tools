@@ -9,30 +9,9 @@
         setupQwenPresetGate,
         setupSendButtons,
         assistantState,
-        DEEPSEEK_ASSISTANT_ENDPOINT,
-        KNOWN_ASSISTANT_MODELS,
-        MOYUU_ASSISTANT_FALLBACK_ENDPOINT,
-        REMOTE_ASSISTANT_PRESETS,
-        DEFAULT_QWEN_VISION_MODEL_PATH,
-        DEFAULT_QWEN_VISION_MMPROJ_PATH,
-        DEFAULT_LOCAL_CONTEXT_TOKENS,
-        q3vlVisionPresets,
-        storedAssistantEndpoint,
-        storedAssistantModel,
-        loadAssistantApiKey,
-        normalizeAssistantMaxTokens,
-        normalizeAssistantContextTokens,
-        defaultVisionPreset,
-        visionModelForPreset,
-        defaultVisionModelPathForPreset,
-        defaultVisionMmprojPathForPreset,
-        defaultAssistantEndpointForBackend,
-        defaultAssistantModelForBackend,
-        setAssistantSettingsVisibility,
-        syncAssistantBackendDefaults,
-        saveAssistantConfig,
-        storeAssistantApiKey,
+        assistantConfig,
         runAssistantLoop,
+        cancelAssistantRun,
         setAssistantAttachment,
         renderAssistantAttachment,
         readAssistantImageFile,
@@ -46,6 +25,329 @@
         return value && value !== key ? value : fallback;
     }
 
+    const assistantIcons = {
+        attach: '<path d="M20.5 11.5 12 20a6 6 0 0 1-8.5-8.5l9-9a4 4 0 0 1 5.7 5.6l-9 9a2 2 0 0 1-2.8-2.8l8.3-8.3"/>',
+        read: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5zM20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5z"/>',
+        clear: '<path d="M4 7h16M9 3h6l1 4H8zM7 7l1 14h8l1-14M10 11v6M14 11v6"/>',
+        send: '<path d="m3 11 18-8-8 18-2-8zM11 13 21 3"/>',
+        stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
+        model: '<path d="m12 3 1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6zM18.5 16l.8 2.7 2.7.8-2.7.8-.8 2.7-.8-2.7-2.7-.8 2.7-.8z"/>',
+        reasoning: '<rect class="q3vl-effort-low" x="4" y="14" width="3" height="6" rx="1"/><rect class="q3vl-effort-high" x="10.5" y="9" width="3" height="11" rx="1"/><rect class="q3vl-effort-max" x="17" y="4" width="3" height="16" rx="1"/>'
+    };
+
+    function assistantIcon(name) {
+        return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${assistantIcons[name] || ""}</svg>`;
+    }
+
+    function resizeAssistantInput(input) {
+        if (!input) return;
+        input.style.height = "auto";
+        input.style.height = `${Math.min(Math.max(input.scrollHeight, 58), 168)}px`;
+    }
+
+    function syncAssistantRouteLabel() {
+        const config = assistantConfig("primary");
+        const selector = document.querySelector("#q3vl_assistant_model");
+        if (selector) {
+            const route = localStorage.getItem("q3vl_assistant_chat_model_route") || "primary";
+            const models = [["primary", config.model], ["fallback", config.fallback_model], ["local", config.vision_preset]];
+            selector.replaceChildren(...models.map(function ([value, label]) { const option = document.createElement("option"); option.value = value; option.textContent = label; return option; }));
+            selector.value = models.some(function ([value]) { return value === route; }) ? route : "primary";
+            selector.title = `${t("settings.model", "模型")}: ${selector.selectedOptions[0]?.textContent || ""}`;
+        }
+        const effort = localStorage.getItem("q3vl_assistant_reasoning_effort") || config.reasoning_effort || "low";
+        const effortButton = document.querySelector("#q3vl_assistant_reasoning");
+        if (effortButton) {
+            effortButton.dataset.q3vlEffort = effort;
+            const effortLabel = effort === "max" ? t("settings.reasoning_max", "最大") : effort === "high" ? t("settings.reasoning_high", "高") : t("settings.reasoning_low", "低");
+            const text = effortButton.querySelector("span");
+            if (text) text.textContent = effort;
+            effortButton.title = `${t("settings.reasoning_effort", "推理强度")}: ${effortLabel}`;
+            effortButton.setAttribute("aria-label", effortButton.title);
+        }
+    }
+
+    const assistantSettingPages = [
+        {
+            id: "route", label: "模型路由", description: "选择主后端和发送策略。", fields: [
+                { name: "backend", label: "主后端", type: "select", value: "moyuu", options: [["openai", "OpenAI-compatible"], ["moyuu", "Moyuu Gemini native"], ["deepseek", "DeepSeek"], ["local-qwen-once", "本地模型一次性"], ["local-lmcpp", "本地接入点"]] },
+                { name: "teacher_mode", label: "教师脱敏策略", type: "select", value: "qwen-redact", options: [["qwen-redact", "本地模型脱敏"], ["regex", "仅占位符脱敏"]] },
+                { name: "sanitize_sensitive", label: "发送远端模型前脱敏提示词", type: "switch", value: "1", keywords: "敏感 隐私 占位符" }
+            ]
+        },
+        {
+            id: "remote", label: "远端模型", description: "连接、密钥和远端推理参数。", fields: [
+                { name: "endpoint", label: "Base URL", value: "https://moyuu.cc", keywords: "地址 endpoint 接入点" },
+                { name: "fallback_endpoint", label: "备用 Base URL", value: "https://hk-api.moyuu.cc", keywords: "fallback 备用地址" },
+                { name: "model", label: "远端模型名称", value: "gemini-3.5-flash-preview" },
+                { name: "fallback_backend", label: "Fallback 后端", type: "select", value: "openai", options: [["openai", "OpenAI-compatible"], ["moyuu", "Moyuu Gemini native"], ["deepseek", "DeepSeek"]] },
+                { name: "fallback_model", label: "Fallback 模型", value: "grok-4.5", keywords: "fallback 备用模型" },
+                { name: "api_key_openai", label: "OpenAI-compatible API Key", type: "password", value: "" },
+                { name: "api_key_moyuu", label: "Moyuu API Key", type: "password", value: "" },
+                { name: "api_key_deepseek", label: "DeepSeek API Key", type: "password", value: "" },
+                { name: "reasoning_effort", label: "推理强度", type: "select", value: "low", options: [["low", "低（推荐）"], ["high", "高"], ["max", "最大"]] },
+                { name: "max_tokens", label: "最大 token 数", type: "number", value: "8192", min: "512", max: "65536", step: "512" }
+            ]
+        },
+        {
+            id: "local", label: "本地推理", description: "文本代理与视觉分析共用的推理参数。", fields: [
+                { name: "local_text_thinking", label: "文本 Thinking", type: "switch", value: "0" },
+                { name: "vision_thinking", label: "视觉 Thinking", type: "switch", value: "0" },
+                { name: "local_max_tokens", label: "本地最大 token 数", type: "number", value: "8192", min: "512", max: "65536", step: "512" },
+                { name: "n_ctx", label: "上下文长度 n_ctx", type: "number", value: "16384", min: "1024", max: "32768", step: "1024" },
+                { name: "local_temperature", label: "Temperature", type: "number", value: "0.25", min: "0", max: "1.5", step: "0.05" },
+                { name: "local_top_p", label: "Top P", type: "number", value: "0.9", min: "0.1", max: "1", step: "0.05" },
+                { name: "local_n_gpu_layers", label: "GPU layers", type: "number", value: "-1", min: "-1", max: "200", step: "1", hint: "-1 = 尽可能全部加载到 GPU" },
+                { name: "local_timeout", label: "加载与请求超时（秒）", type: "number", value: "180", min: "30", max: "600", step: "10" }
+            ]
+        },
+        {
+            id: "paths", label: "模型与路径", description: "常驻服务和临时 llama-server 使用的模型文件。", fields: [
+                { name: "vision_preset", label: "共享多模态模型预设", type: "select", value: "Qwen3.5 原版 9B", options: [["Gemma 4 12B", "Gemma 4 12B"], ["Qwen3.5 原版 9B", "Qwen3.5 原版 9B"], ["Qwen3.5 破限版 9B", "Qwen3.5 破限版 9B"], ["自定义", "自定义"]] },
+                { name: "local_endpoint", label: "本地文本接入点", value: "http://127.0.0.1:8080/v1" },
+                { name: "local_model", label: "本地文本模型名称", value: "qwen3.5-9b-vlm" },
+                { name: "vision_endpoint", label: "视觉接入点", value: "http://127.0.0.1:8080/v1" },
+                { name: "vision_model", label: "视觉模型别名", value: "qwen3.5-9b-vlm" },
+                { name: "vision_model_path", label: "模型 GGUF 路径", value: "E:\\AI\\lmcpp\\models\\Qwen3.5-9B-GGUF\\Qwen3.5-9B-UD-Q6_K_XL.gguf", keywords: "model gguf 文件" },
+                { name: "vision_mmproj_path", label: "mmproj GGUF 路径", value: "E:\\AI\\lmcpp\\models\\Qwen3.5-9B-GGUF\\mmproj-F16.gguf" },
+                { name: "llama_server_path", label: "llama-server.exe 路径", value: "E:\\AI\\lmcpp\\llama.cpp\\llama-server.exe" }
+            ]
+        }
+    ];
+
+    function migrateAssistantRouteDefaults() {
+        const migrationKey = "q3vl_assistant_route_defaults_version";
+        if (localStorage.getItem(migrationKey) === "2") return false;
+        const backendKey = "q3vl_assistant_backend";
+        const modelKey = "q3vl_assistant_model";
+        const backend = localStorage.getItem(backendKey);
+        const model = localStorage.getItem(modelKey);
+        if (backend === null && model === null) return false;
+        const oldOpenAiDefault = (backend === "openai" || backend === null) && (!model || model === "gemini-3.5-flash-preview");
+        const oldMoyuuDefault = backend === "moyuu" && model === "gemini-3.1-pro-high";
+        if (oldOpenAiDefault || oldMoyuuDefault) {
+            localStorage.setItem(backendKey, "moyuu");
+            localStorage.setItem(modelKey, "gemini-3.5-flash-preview");
+        }
+        if (localStorage.getItem("q3vl_assistant_fallback_backend") === null) {
+            localStorage.setItem("q3vl_assistant_fallback_backend", "openai");
+        }
+        if (localStorage.getItem("q3vl_assistant_fallback_model") === null) {
+            localStorage.setItem("q3vl_assistant_fallback_model", "grok-4.5");
+        }
+        localStorage.setItem(migrationKey, "2");
+        return true;
+    }
+
+    function migrateAssistantReasoningDefault() {
+        const migrationKey = "q3vl_assistant_reasoning_default_version";
+        if (localStorage.getItem(migrationKey) === "1") return false;
+        const settingKey = "q3vl_assistant_reasoning_effort";
+        if (localStorage.getItem(settingKey) === "high") localStorage.setItem(settingKey, "low");
+        localStorage.setItem(migrationKey, "1");
+        return true;
+    }
+
+    function assistantStoredSetting(field) {
+        const key = `q3vl_assistant_${field.name}`;
+        const stored = localStorage.getItem(key);
+        if (stored !== null) return stored;
+        if (typeof opts === "object" && opts !== null && Object.prototype.hasOwnProperty.call(opts, key)) {
+            const value = opts[key];
+            return typeof value === "boolean" ? (value ? "1" : "0") : String(value ?? field.value);
+        }
+        return String(field.value ?? "");
+    }
+
+    function createAssistantSettingField(field) {
+        const label = document.createElement("label");
+        label.className = "q3vl-config-field";
+        label.dataset.q3vlSearch = `${field.label} ${field.name} ${field.keywords || ""}`.toLowerCase();
+        const heading = document.createElement("span");
+        heading.className = "q3vl-config-label";
+        heading.textContent = field.label;
+        label.appendChild(heading);
+
+        let input;
+        if (field.type === "select") {
+            input = document.createElement("select");
+            (field.options || []).forEach(function ([value, text]) {
+                const option = document.createElement("option");
+                option.value = value;
+                option.textContent = text;
+                input.appendChild(option);
+            });
+            label.appendChild(input);
+        } else if (field.type === "switch") {
+            label.classList.add("q3vl-config-switch");
+            input = document.createElement("input");
+            input.type = "checkbox";
+            input.checked = ["1", "true", "on"].includes(assistantStoredSetting(field).toLowerCase());
+            const track = document.createElement("i");
+            track.setAttribute("aria-hidden", "true");
+            label.appendChild(input);
+            label.appendChild(track);
+        } else {
+            const holder = document.createElement("div");
+            holder.className = field.type === "password" ? "q3vl-config-secret" : "q3vl-config-input";
+            input = document.createElement("input");
+            input.type = field.type === "password" ? "password" : field.type === "number" ? "number" : "text";
+            if (field.min !== undefined) input.min = field.min;
+            if (field.max !== undefined) input.max = field.max;
+            if (field.step !== undefined) input.step = field.step;
+            input.value = assistantStoredSetting(field);
+            input.spellcheck = false;
+            holder.appendChild(input);
+            if (field.type === "password") {
+                const reveal = document.createElement("button");
+                reveal.type = "button";
+                reveal.className = "q3vl-config-reveal";
+                reveal.textContent = "显示";
+                reveal.addEventListener("click", function () {
+                    const hidden = input.type === "password";
+                    input.type = hidden ? "text" : "password";
+                    reveal.textContent = hidden ? "隐藏" : "显示";
+                });
+                holder.appendChild(reveal);
+            }
+            label.appendChild(holder);
+        }
+
+        if (field.type === "select") input.value = assistantStoredSetting(field);
+        input.dataset.q3vlSetting = field.name;
+        input.addEventListener("change", function () {
+            const value = input.type === "checkbox" ? (input.checked ? "1" : "0") : input.value;
+            localStorage.setItem(`q3vl_assistant_${field.name}`, value);
+            const status = settingsPanel()?.querySelector("#q3vl_config_status");
+            if (status) status.textContent = "已保存";
+            syncAssistantRouteLabel();
+        });
+        if (input.type !== "checkbox") input.addEventListener("input", function () { input.dispatchEvent(new Event("change")); });
+        if (field.hint) {
+            const hint = document.createElement("small");
+            hint.textContent = field.hint;
+            label.appendChild(hint);
+        }
+        return label;
+    }
+
+    function activateAssistantSettingPage(panel, pageId) {
+        panel.dataset.q3vlPage = pageId;
+        panel.querySelectorAll("[data-q3vl-config-page]").forEach(function (button) {
+            const active = button.dataset.q3vlConfigPage === pageId;
+            button.classList.toggle("q3vl-config-nav-active", active);
+            button.setAttribute("aria-selected", String(active));
+        });
+        panel.querySelectorAll("[data-q3vl-config-panel]").forEach(function (page) {
+            page.hidden = page.dataset.q3vlConfigPanel !== pageId;
+        });
+    }
+
+    function filterAssistantSettings(panel, query) {
+        const needle = String(query || "").trim().toLowerCase();
+        let matches = 0;
+        panel.classList.toggle("q3vl-config-searching", Boolean(needle));
+        panel.querySelectorAll("[data-q3vl-config-panel]").forEach(function (page) {
+            let pageMatches = 0;
+            page.querySelectorAll(".q3vl-config-field").forEach(function (field) {
+                const visible = !needle || field.dataset.q3vlSearch.includes(needle);
+                field.hidden = !visible;
+                if (visible && needle) pageMatches += 1;
+            });
+            page.hidden = needle ? pageMatches === 0 : page.dataset.q3vlConfigPanel !== panel.dataset.q3vlPage;
+            matches += pageMatches;
+        });
+        const result = panel.querySelector("#q3vl_config_search_result");
+        if (result) result.textContent = needle ? `${matches} 项匹配` : "";
+    }
+
+    function setupAssistantSettingsWindow() {
+        const existing = settingsPanel();
+        if (existing) return existing;
+        const panel = document.createElement("div");
+        panel.id = "q3vl_assistant_settings_panel";
+        panel.setAttribute("role", "dialog");
+        panel.setAttribute("aria-label", "助手设置");
+        panel.innerHTML = `
+            <div class="q3vl-config-head"><div><strong>助手设置</strong><span id="q3vl_config_status">自动保存到当前浏览器</span></div><button type="button" id="q3vl_config_close" aria-label="关闭">×</button></div>
+            <div class="q3vl-config-search"><input id="q3vl_config_search" type="search" placeholder="搜索设置，例如 token、GGUF、API Key"><span id="q3vl_config_search_result"></span></div>
+            <div class="q3vl-config-layout"><nav class="q3vl-config-nav" aria-label="设置分类"></nav><main class="q3vl-config-pages"></main></div>
+        `;
+        const nav = panel.querySelector(".q3vl-config-nav");
+        const pages = panel.querySelector(".q3vl-config-pages");
+        assistantSettingPages.forEach(function (page) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.dataset.q3vlConfigPage = page.id;
+            button.textContent = page.label;
+            button.addEventListener("click", function () {
+                panel.querySelector("#q3vl_config_search").value = "";
+                filterAssistantSettings(panel, "");
+                activateAssistantSettingPage(panel, page.id);
+            });
+            nav.appendChild(button);
+            const section = document.createElement("section");
+            section.dataset.q3vlConfigPanel = page.id;
+            const header = document.createElement("header");
+            const title = document.createElement("h3");
+            title.textContent = page.label;
+            const description = document.createElement("p");
+            description.textContent = page.description;
+            header.appendChild(title);
+            header.appendChild(description);
+            section.appendChild(header);
+            const grid = document.createElement("div");
+            grid.className = "q3vl-config-grid";
+            page.fields.forEach(function (field) { grid.appendChild(createAssistantSettingField(field)); });
+            section.appendChild(grid);
+            pages.appendChild(section);
+        });
+        document.body.appendChild(panel);
+        restoreAssistantPosition(panel, "q3vl_settings_position");
+        makeAssistantDraggable(panel, panel.querySelector(".q3vl-config-head"), "q3vl_settings_position");
+        activateAssistantSettingPage(panel, "route");
+        panel.querySelector("#q3vl_config_search").addEventListener("input", function (event) { filterAssistantSettings(panel, event.target.value); });
+        panel.querySelector("#q3vl_config_close").addEventListener("click", function () { panel.classList.remove("q3vl-config-open"); });
+        panel.addEventListener("keydown", function (event) { if (event.key === "Escape") panel.classList.remove("q3vl-config-open"); });
+        return panel;
+    }
+
+    function importForgeAssistantSettings() {
+        migrateAssistantRouteDefaults();
+        migrateAssistantReasoningDefault();
+        if (importForgeAssistantSettings.pending || localStorage.getItem("q3vl_assistant_floating_settings_imported") === "1") return;
+        importForgeAssistantSettings.pending = true;
+        fetch("/qwen3vl-prompt-tools/settings-export")
+            .then(function (response) { return response.ok ? response.json() : null; })
+            .then(function (config) {
+                if (!config) return;
+                Object.entries(config).forEach(function ([name, value]) {
+                    const key = `q3vl_assistant_${name}`;
+                    if (localStorage.getItem(key) !== null) return;
+                    localStorage.setItem(key, typeof value === "boolean" ? (value ? "1" : "0") : String(value ?? ""));
+                });
+                migrateAssistantRouteDefaults();
+                migrateAssistantReasoningDefault();
+                localStorage.setItem("q3vl_assistant_floating_settings_imported", "1");
+                syncAssistantRouteLabel();
+            }).catch(function () {
+                window.setTimeout(function () { importForgeAssistantSettings.pending = false; }, 5000);
+            });
+    }
+
+    function openAssistantSettings() {
+        const panel = setupAssistantSettingsWindow();
+        document.querySelector("#q3vl_assistant_panel")?.classList.remove("q3vl-assistant-open");
+        panel.classList.add("q3vl-config-open");
+        window.requestAnimationFrame(function () { panel.querySelector("#q3vl_config_search")?.focus(); });
+    }
+
+    function acceptAssistantImageFile(file) {
+        return readAssistantImageFile(file)
+            .then(setAssistantAttachment)
+            .catch(function (error) { addAssistantMessage("error", String(error.message || error)); });
+    }
+
     function setupAssistantWindow() {
         if (!q3vlMainApp()) {
             removeAssistantWindow();
@@ -54,7 +356,7 @@
         const existingLaunchers = document.querySelectorAll("#q3vl_assistant_launcher");
         const existingPanels = document.querySelectorAll("#q3vl_assistant_panel");
         if (existingLaunchers.length === 1 && existingPanels.length === 1) {
-            setupAssistantSettingsWindow();
+            syncAssistantRouteLabel();
             return;
         }
         if (existingLaunchers.length || existingPanels.length) removeAssistantWindow();
@@ -67,41 +369,53 @@
 
         const panel = document.createElement("div");
         panel.id = "q3vl_assistant_panel";
+        panel.setAttribute("role", "dialog");
+        panel.setAttribute("aria-label", t("assistant.title", "LLM 提示词助手"));
         panel.innerHTML = `
-            <div class="q3vl-assistant-head"><div><strong>${t("assistant.title", "LLM 提示词助手")}</strong></div><div class="q3vl-assistant-head-buttons"><button type="button" id="q3vl_assistant_close" class="q3vl-assistant-close" title="${t("assistant.close", "关闭")}" aria-label="${t("assistant.close", "关闭")}">×</button><button type="button" id="q3vl_assistant_settings_open" class="q3vl-assistant-icon-button" title="${t("assistant.settings", "设置")}" aria-label="${t("assistant.settings", "设置")}">⚙</button></div></div>
-            <div id="q3vl_assistant_messages"></div>
-            <div id="q3vl_assistant_attachment" class="q3vl-assistant-attachment q3vl-assistant-attachment-empty"></div>
+            <div class="q3vl-assistant-head"><div class="q3vl-assistant-brand"><div><strong>${t("assistant.title", "LLM 提示词助手")}</strong></div></div><div class="q3vl-assistant-head-buttons"><button type="button" id="q3vl_assistant_settings_open" class="q3vl-assistant-icon-button" title="${t("assistant.settings", "设置")}" aria-label="${t("assistant.settings", "设置")}">⚙</button><button type="button" id="q3vl_assistant_close" class="q3vl-assistant-close" title="${t("assistant.close", "关闭")}" aria-label="${t("assistant.close", "关闭")}">×</button></div></div>
+            <div id="q3vl_assistant_messages" role="log" aria-live="polite"><div class="q3vl-assistant-empty"><strong>${t("assistant.empty.title", "从当前提示词开始")}</strong><div class="q3vl-assistant-quick-actions"><button type="button" data-q3vl-assistant-prompt="Read the current prompt and style template, then analyze its subject, composition, camera, lighting, and spatial relationships. Do not edit it.">${t("assistant.quick.analyze", "分析结构")}</button><button type="button" data-q3vl-assistant-prompt="Read the current prompt, then improve its composition and spatial relationships. Apply the changes directly with edit_prompt.">${t("assistant.quick.compose", "强化构图")}</button><button type="button" data-q3vl-assistant-prompt="Read the current prompt, remove redundancy and ambiguity while preserving its intent. Apply the refined prompt directly with edit_prompt.">${t("assistant.quick.refine", "精炼表达")}</button></div></div></div>
             <div class="q3vl-assistant-composer">
-                <textarea id="q3vl_assistant_input" placeholder="${t("assistant.input.placeholder", "例如：读取当前提示词，改成三名角色的自拍构图，明确左中右位置。Enter 换行，Ctrl+Enter 发送。")}"></textarea>
+                <div id="q3vl_assistant_attachment" class="q3vl-assistant-attachment q3vl-assistant-attachment-empty"></div>
+                <textarea id="q3vl_assistant_input" rows="1" aria-label="${t("assistant.input.placeholder", "描述你想分析、补充或修改的提示词内容...")}" placeholder="${t("assistant.input.placeholder", "描述你想分析、补充或修改的提示词内容...")}"></textarea>
                 <div class="q3vl-assistant-actions">
-                    <div class="q3vl-assistant-action-group"><button type="button" id="q3vl_assistant_attach" class="q3vl-assistant-secondary">${t("assistant.attach", "附图")}</button><button type="button" id="q3vl_assistant_read" class="q3vl-assistant-secondary">${t("assistant.read", "读取")}</button></div>
-                    <div class="q3vl-assistant-action-group"><button type="button" id="q3vl_assistant_clear" class="q3vl-assistant-ghost">${t("assistant.clear", "清空")}</button><button type="button" id="q3vl_assistant_send" class="q3vl-assistant-primary">${t("assistant.send", "发送")}</button></div>
+                    <div class="q3vl-assistant-action-group"><button type="button" id="q3vl_assistant_attach" class="q3vl-assistant-icon-action" title="${t("assistant.attach", "附图")}" aria-label="${t("assistant.attach", "附图")}">${assistantIcon("attach")}</button><button type="button" id="q3vl_assistant_read" class="q3vl-assistant-icon-action" title="${t("assistant.read", "读取")}" aria-label="${t("assistant.read", "读取")}">${assistantIcon("read")}</button><button type="button" id="q3vl_assistant_clear" class="q3vl-assistant-icon-action" title="${t("assistant.clear", "清空")}" aria-label="${t("assistant.clear", "清空")}">${assistantIcon("clear")}</button></div>
+                    <div class="q3vl-assistant-action-group q3vl-assistant-route-controls"><button type="button" id="q3vl_assistant_reasoning" class="q3vl-assistant-compact-control q3vl-assistant-runtime-control">${assistantIcon("reasoning")}<span>low</span></button><label class="q3vl-assistant-model-control">${assistantIcon("model")}<select id="q3vl_assistant_model" class="q3vl-assistant-runtime-control" aria-label="${t("settings.model", "模型")}"></select></label><button type="button" id="q3vl_assistant_send" class="q3vl-assistant-icon-action q3vl-assistant-primary" title="${t("assistant.send", "发送")}" aria-label="${t("assistant.send", "发送")}"><span class="q3vl-send-icon">${assistantIcon("send")}</span><span class="q3vl-stop-icon">${assistantIcon("stop")}</span></button></div>
                 </div>
                 <input id="q3vl_assistant_file" type="file" accept="image/*" hidden>
             </div>
         `;
         document.body.appendChild(panel);
+        const emptyStateTemplate = panel.querySelector(".q3vl-assistant-empty")?.cloneNode(true);
         restoreAssistantPosition(panel);
-        setupAssistantSettingsWindow();
-        panel.querySelector("#q3vl_assistant_settings_open").addEventListener("click", function () {
-            const configPanel = setupAssistantSettingsWindow();
-            if (!configPanel) return;
-            configPanel.classList.toggle("q3vl-settings-open");
+        syncAssistantRouteLabel();
+        panel.querySelector("#q3vl_assistant_settings_open").addEventListener("click", openAssistantSettings);
+        panel.querySelector("#q3vl_assistant_model").addEventListener("change", function (event) {
+            localStorage.setItem("q3vl_assistant_chat_model_route", event.target.value);
+            syncAssistantRouteLabel();
+        });
+        panel.querySelector("#q3vl_assistant_reasoning").addEventListener("click", function (event) {
+            const levels = ["low", "high", "max"];
+            const current = event.currentTarget.dataset.q3vlEffort || "low";
+            const next = levels[(levels.indexOf(current) + 1) % levels.length];
+            localStorage.setItem("q3vl_assistant_reasoning_effort", next);
+            const setting = settingsPanel()?.querySelector('[data-q3vl-setting="reasoning_effort"]');
+            if (setting) setting.value = next;
+            syncAssistantRouteLabel();
         });
         launcher.addEventListener("click", function () {
             if (launcher.dataset.q3vlSuppressClick === "1") return;
+            settingsPanel()?.classList.remove("q3vl-config-open");
             const open = panel.classList.toggle("q3vl-assistant-open");
-            if (!open) settingsPanel()?.classList.remove("q3vl-settings-open");
+            if (open) window.requestAnimationFrame(function () { panel.querySelector("#q3vl_assistant_input")?.focus(); });
         });
         panel.querySelector("#q3vl_assistant_close").addEventListener("click", function () {
             panel.classList.remove("q3vl-assistant-open");
-            settingsPanel()?.classList.remove("q3vl-settings-open");
         });
         makeAssistantLauncherDraggable(launcher, panel);
         makeAssistantDraggable(panel, panel.querySelector(".q3vl-assistant-head"));
         panel.querySelector("#q3vl_assistant_send").addEventListener("click", function () {
-            if (assistantState.running && typeof assistantState.running.cancel === "function") {
-                assistantState.running.cancel();
+            if (assistantState.running) {
+                cancelAssistantRun();
                 return;
             }
             const input = panel.querySelector("#q3vl_assistant_input");
@@ -109,6 +423,7 @@
             const attachment = assistantState.attachment;
             if (!text && !attachment) return;
             input.value = "";
+            resizeAssistantInput(input);
             setAssistantAttachment(null);
             runAssistantLoop(text, attachment);
         });
@@ -119,11 +434,11 @@
         fileInput.addEventListener("change", function () {
             const file = fileInput.files && fileInput.files[0];
             fileInput.value = "";
-            readAssistantImageFile(file)
-                .then(setAssistantAttachment)
-                .catch(function (error) { addAssistantMessage("error", String(error.message || error)); });
+            acceptAssistantImageFile(file);
         });
-        panel.querySelector("#q3vl_assistant_input").addEventListener("keydown", function (event) {
+        const assistantInput = panel.querySelector("#q3vl_assistant_input");
+        assistantInput.addEventListener("input", function () { resizeAssistantInput(assistantInput); });
+        assistantInput.addEventListener("keydown", function (event) {
             if (event.key !== "Enter") return;
             if (event.ctrlKey || event.metaKey) {
                 event.preventDefault();
@@ -132,324 +447,52 @@
                 event.stopPropagation();
             }
         });
+        assistantInput.addEventListener("paste", function (event) {
+            const image = Array.from(event.clipboardData?.files || []).find(function (file) { return String(file.type || "").startsWith("image/"); });
+            if (!image) return;
+            event.preventDefault();
+            acceptAssistantImageFile(image);
+        });
+        const composer = panel.querySelector(".q3vl-assistant-composer");
+        composer.addEventListener("dragover", function (event) {
+            if (!Array.from(event.dataTransfer?.items || []).some(function (item) { return String(item.type || "").startsWith("image/"); })) return;
+            event.preventDefault();
+            composer.classList.add("q3vl-assistant-drop-active");
+        });
+        composer.addEventListener("dragleave", function (event) {
+            if (!composer.contains(event.relatedTarget)) composer.classList.remove("q3vl-assistant-drop-active");
+        });
+        composer.addEventListener("drop", function (event) {
+            composer.classList.remove("q3vl-assistant-drop-active");
+            const image = Array.from(event.dataTransfer?.files || []).find(function (file) { return String(file.type || "").startsWith("image/"); });
+            if (!image) return;
+            event.preventDefault();
+            acceptAssistantImageFile(image);
+        });
+        function bindQuickActions(root) {
+            root.querySelectorAll("[data-q3vl-assistant-prompt]").forEach(function (button) {
+                button.addEventListener("click", function () {
+                    if (!assistantState.running) runAssistantLoop(button.dataset.q3vlAssistantPrompt || "", null, button.textContent.trim());
+                });
+            });
+        }
+        bindQuickActions(panel);
         panel.querySelector("#q3vl_assistant_read").addEventListener("click", function () {
-            runAssistantLoop(t("assistant.read_prompt", "Read the current prompt and WebUI style template. Briefly summarize the composition, trigger words, and spatial relationships they describe. If both are empty, say they are empty."));
+            runAssistantLoop(t("assistant.read_prompt", "Read the current prompt and WebUI style template. Briefly summarize the composition, trigger words, and spatial relationships they describe. If both are empty, say they are empty."), null, t("assistant.read", "读取"));
         });
         panel.querySelector("#q3vl_assistant_clear").addEventListener("click", function () {
+            if (assistantState.running) return;
             assistantState.messages = [];
             setAssistantAttachment(null);
-            panel.querySelector("#q3vl_assistant_messages").textContent = "";
+            const messages = panel.querySelector("#q3vl_assistant_messages");
+            messages.replaceChildren(emptyStateTemplate?.cloneNode(true) || document.createTextNode(""));
+            bindQuickActions(messages);
         });
+        panel.addEventListener("keydown", function (event) {
+            if (event.key === "Escape" && !assistantState.running) panel.classList.remove("q3vl-assistant-open");
+        });
+        resizeAssistantInput(assistantInput);
         renderAssistantAttachment();
-    }
-
-    function setupAssistantSettingsWindow() {
-        if (!q3vlMainApp()) {
-            settingsPanel()?.remove();
-            return null;
-        }
-        const existing = document.querySelectorAll("#q3vl_assistant_settings_panel");
-        if (existing.length === 1) return existing[0];
-        existing.forEach(function (el) { el.remove(); });
-
-        const panel = document.createElement("div");
-        panel.id = "q3vl_assistant_settings_panel";
-        panel.innerHTML = `
-            <div class="q3vl-settings-head"><div><strong>${t("settings.title", "助手设置")}</strong></div><button type="button" id="q3vl_settings_close" class="q3vl-assistant-close" title="${t("assistant.close", "关闭")}" aria-label="${t("assistant.close", "关闭")}">×</button></div>
-            <div class="q3vl-settings-body">
-                <nav class="q3vl-settings-nav" aria-label="${t("settings.primary_nav", "一级设置分类")}">
-                    <button type="button" data-q3vl-settings-primary="route" class="q3vl-settings-nav-active">${t("settings.nav.route", "模型路由")}</button>
-                    <button type="button" data-q3vl-settings-primary="remote">${t("settings.nav.remote", "远端模型")}</button>
-                    <button type="button" data-q3vl-settings-primary="qwen">${t("settings.nav.local_qwen", "本地模型")}</button>
-                </nav>
-                <nav class="q3vl-settings-subnav" aria-label="${t("settings.sub_nav", "二级设置分类")}">
-                    <button type="button" data-q3vl-settings-page="route-main" data-q3vl-settings-parent="route" class="q3vl-settings-subnav-active">${t("settings.page.main", "主后端")}</button>
-                    <button type="button" data-q3vl-settings-page="route-policy" data-q3vl-settings-parent="route">${t("settings.page.workflow", "工作流策略")}</button>
-                    <button type="button" data-q3vl-settings-page="remote-preset" data-q3vl-settings-parent="remote">${t("settings.page.preset", "预设")}</button>
-                    <button type="button" data-q3vl-settings-page="remote-endpoint" data-q3vl-settings-parent="remote">${t("settings.page.connection", "连接设置")}</button>
-                    <button type="button" data-q3vl-settings-page="remote-params" data-q3vl-settings-parent="remote">${t("settings.page.params", "参数")}</button>
-                    <button type="button" data-q3vl-settings-page="qwen-text" data-q3vl-settings-parent="qwen">${t("settings.page.local_params", "代理参数")}</button>
-                    <button type="button" data-q3vl-settings-page="qwen-vision" data-q3vl-settings-parent="qwen">${t("settings.page.shared_model", "共享模型")}</button>
-                    <button type="button" data-q3vl-settings-page="qwen-paths" data-q3vl-settings-parent="qwen">${t("settings.page.local_paths", "接入/路径")}</button>
-                </nav>
-                <div class="q3vl-settings-pages">
-                    <section class="q3vl-settings-page q3vl-settings-page-active" data-q3vl-settings-page-panel="route-main">
-                        <h3>${t("settings.page.main", "主后端")}</h3>
-                        <div class="q3vl-settings-grid">
-                            <label class="q3vl-settings-field q3vl-settings-field-wide"><span>${t("settings.backend", "后端")}</span><select data-q3vl-setting="backend"><option value="openai">OpenAI-compatible</option><option value="moyuu">Moyuu Gemini native</option><option value="deepseek">DeepSeek</option><option value="local-qwen-once">${t("settings.backend.local_qwen_once", "本地模型一次性")}</option><option value="local-lmcpp">${t("settings.backend.local_endpoint", "本地接入点")}</option></select></label>
-                        </div>
-                    </section>
-                    <section class="q3vl-settings-page" data-q3vl-settings-page-panel="route-policy">
-                        <h3>${t("settings.page.workflow", "工作流策略")}</h3>
-                        <div class="q3vl-settings-grid">
-                            <label class="q3vl-settings-field q3vl-settings-field-wide"><span>${t("settings.workflow_preset", "工作流预设")}</span><select data-q3vl-setting="workflow_preset"><option value="gemini-main-local-filter">${t("settings.workflow.gemini_main_local_filter", "Gemini 3.1 Pro 主力 + 本地 Gemma 脱敏")}</option><option value="local-executor-gemini-adviser">${t("settings.workflow.local_executor_gemini_adviser", "本地 Gemma 工具执行 + Gemini adviser")}</option><option value="custom">${t("settings.preset.custom", "自定义")}</option></select></label>
-                            <label class="q3vl-settings-field" data-q3vl-field="remote" title="${t("settings.teacher_mode.title", "Gemini 教师前置脱敏策略")}"><span>${t("settings.teacher_mode", "教师策略")}</span><select data-q3vl-setting="teacher_mode"><option value="qwen-redact">${t("settings.teacher_mode.qwen_redact", "本地模型脱敏")}</option><option value="regex">${t("settings.teacher_mode.regex", "仅占位符脱敏")}</option></select></label>
-                            <label class="q3vl-settings-field" data-q3vl-field="remote" title="${t("settings.sanitize.title", "发送到 Gemini 前把敏感提示词替换为占位符，返回工具参数时本地还原")}"><span>${t("settings.sanitize", "脱敏占位符")}</span><select data-q3vl-setting="sanitize_sensitive"><option value="1">${t("common.on", "开")}</option><option value="0">${t("common.off", "关")}</option></select></label>
-                        </div>
-                    </section>
-                    <section class="q3vl-settings-page" data-q3vl-settings-page-panel="remote-preset">
-                        <h3>${t("settings.remote_preset", "远端预设")}</h3>
-                        <div class="q3vl-settings-grid">
-                            <label class="q3vl-settings-field q3vl-settings-field-wide"><span>${t("settings.page.preset", "预设")}</span><select data-q3vl-setting="remote_preset"><option value="gemini-3.5-flash-preview">Gemini 3.5 Flash Preview</option><option value="gemini-3.5-flash-high">Gemini 3.5 Flash High</option><option value="grok-4.5">Grok 4.5</option><option value="custom">${t("settings.preset.custom", "自定义")}</option></select></label>
-                        </div>
-                    </section>
-                    <section class="q3vl-settings-page" data-q3vl-settings-page-panel="remote-endpoint">
-                        <h3>${t("settings.page.connection", "连接设置")}</h3>
-                        <div class="q3vl-settings-grid">
-                            <label class="q3vl-settings-field" data-q3vl-field="remote"><span>${t("settings.page.endpoint", "Base URL")}</span><input data-q3vl-setting="endpoint" placeholder="${t("settings.remote_endpoint.placeholder", "OpenAI-compatible base URL")}"></label>
-                            <label class="q3vl-settings-field" data-q3vl-field="remote"><span>${t("settings.fallback_endpoint", "备用接入点")}</span><input data-q3vl-setting="fallback_endpoint" placeholder="${t("settings.fallback_endpoint.placeholder", "备用接入点")}"></label>
-                            <label class="q3vl-settings-field" data-q3vl-field="remote"><span>${t("settings.model", "模型")}</span><input data-q3vl-setting="model" placeholder="${t("settings.model.placeholder", "Gemini 模型名称")}"></label>
-                            <label class="q3vl-settings-field" data-q3vl-field="remote"><span>${t("settings.api_key", "API 密钥")}</span><input data-q3vl-setting="api_key" placeholder="${t("settings.api_key.placeholder", "API 密钥")}" type="password"></label>
-                        </div>
-                    </section>
-                    <section class="q3vl-settings-page" data-q3vl-settings-page-panel="remote-params">
-                        <h3>${t("settings.remote_params", "远端参数")}</h3>
-                        <div class="q3vl-settings-grid">
-                            <label class="q3vl-settings-field" data-q3vl-field="remote"><span>${t("settings.reasoning_effort", "推理强度")}</span><select data-q3vl-setting="reasoning_effort"><option value="high">${t("settings.reasoning_high", "高")}</option><option value="max">${t("settings.reasoning_max", "最大")}</option></select></label>
-                            <label class="q3vl-settings-field" data-q3vl-field="remote"><span>${t("settings.max_tokens", "最大 token 数")}</span><input data-q3vl-setting="max_tokens" placeholder="8192"></label>
-                        </div>
-                    </section>
-                    <section class="q3vl-settings-page" data-q3vl-settings-page-panel="qwen-text">
-                        <h3>${t("settings.local_agent_params", "本地代理参数")}</h3>
-                        <div class="q3vl-settings-grid">
-                            <label class="q3vl-settings-field" data-q3vl-field="local-once"><span>${t("settings.local_text_thinking", "文本推理")}</span><select data-q3vl-setting="local_text_thinking"><option value="0">${t("common.off", "关")}</option><option value="1">${t("common.on", "开")}</option></select></label>
-                            <label class="q3vl-settings-field" data-q3vl-field="local-vision"><span>${t("settings.vision_thinking", "视觉推理")}</span><select data-q3vl-setting="vision_thinking"><option value="0">${t("common.off", "关")}</option><option value="1">${t("common.on", "开")}</option></select></label>
-                            <label class="q3vl-settings-field" data-q3vl-field="local-once"><span>${t("settings.local_max_tokens", "本地最大 token 数")}</span><input data-q3vl-setting="local_max_tokens" placeholder="8192"></label>
-                            <label class="q3vl-settings-field q3vl-settings-field-wide" data-q3vl-field="local-agent"><span>${t("settings.n_ctx", "上下文长度 n_ctx")}</span><input data-q3vl-setting="n_ctx" placeholder="16384"></label>
-                        </div>
-                    </section>
-                    <section class="q3vl-settings-page" data-q3vl-settings-page-panel="qwen-vision">
-                        <h3>${t("settings.local_shared_model", "本地共享多模态模型")}</h3>
-                        <div class="q3vl-settings-grid">
-                            <label class="q3vl-settings-field q3vl-settings-field-wide" data-q3vl-field="local-agent"><span>${t("settings.local_model_preset", "模型预设")}</span><select data-q3vl-setting="vision_preset"><option value="Gemma 4 12B">Gemma 4 12B</option><option value="Qwen3.5 原版 9B">Qwen3.5 原版 9B</option><option value="Qwen3.5 破限版 9B">Qwen3.5 破限版 9B</option><option value="自定义">${t("settings.preset.custom", "自定义")}</option></select></label>
-                        </div>
-                    </section>
-                    <section class="q3vl-settings-page" data-q3vl-settings-page-panel="qwen-paths">
-                        <h3>${t("settings.page.local_paths", "接入/路径")}</h3>
-                        <div class="q3vl-settings-grid">
-                            <label class="q3vl-settings-field q3vl-settings-field-wide" data-q3vl-field="local-endpoint"><span>${t("settings.local_endpoint", "文本接入点")}</span><input data-q3vl-setting="local_endpoint" placeholder="http://127.0.0.1:8080/v1"></label>
-                            <label class="q3vl-settings-field q3vl-settings-field-wide" data-q3vl-field="local-endpoint"><span>${t("settings.local_model", "文本模型名称")}</span><input data-q3vl-setting="local_model" placeholder="hauhau-qwen3.5-9b-uncensored"></label>
-                            <label class="q3vl-settings-field q3vl-settings-field-wide" data-q3vl-field="vision-advanced"><span>${t("settings.vision_endpoint", "视觉接入点")}</span><input data-q3vl-setting="vision_endpoint" placeholder="http://127.0.0.1:8080/v1"></label>
-                            <label class="q3vl-settings-field q3vl-settings-field-wide" data-q3vl-field="vision-advanced"><span>${t("settings.vision_model", "模型别名")}</span><input data-q3vl-setting="vision_model" placeholder="hauhau-qwen3.5-9b-uncensored"></label>
-                            <label class="q3vl-settings-field q3vl-settings-field-wide" data-q3vl-field="vision-custom"><span>${t("settings.vision_model_path", "模型 GGUF 路径")}</span><input data-q3vl-setting="vision_model_path" placeholder="${t("settings.vision_model_path.placeholder", "视觉模型 GGUF 路径")}"></label>
-                            <label class="q3vl-settings-field q3vl-settings-field-wide" data-q3vl-field="vision-custom"><span>${t("settings.vision_mmproj_path", "mmproj 路径")}</span><input data-q3vl-setting="vision_mmproj_path" placeholder="${t("settings.vision_mmproj_path.placeholder", "对应 mmproj GGUF 路径")}"></label>
-                        </div>
-                    </section>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(panel);
-        restoreAssistantPosition(panel, "q3vl_settings_position");
-        setupAssistantSettingsNavigation(panel);
-
-        const backend = panel.querySelector('[data-q3vl-setting="backend"]');
-        const storedBackend = localStorage.getItem("q3vl_assistant_backend");
-        const storedEndpointValue = localStorage.getItem("q3vl_assistant_endpoint");
-        const storedModelValue = localStorage.getItem("q3vl_assistant_model");
-        const migrateDeepSeekDefault = storedBackend === "deepseek" && (!storedEndpointValue || storedEndpointValue === DEEPSEEK_ASSISTANT_ENDPOINT) && (!storedModelValue || KNOWN_ASSISTANT_MODELS.includes(storedModelValue));
-        backend.value = migrateDeepSeekDefault ? "openai" : storedBackend || "openai";
-        const endpointInput = panel.querySelector('[data-q3vl-setting="endpoint"]');
-        const fallbackInput = panel.querySelector('[data-q3vl-setting="fallback_endpoint"]');
-        const modelInput = panel.querySelector('[data-q3vl-setting="model"]');
-        endpointInput.value = storedAssistantEndpoint();
-        fallbackInput.value = localStorage.getItem("q3vl_assistant_fallback_endpoint") || MOYUU_ASSISTANT_FALLBACK_ENDPOINT;
-        modelInput.value = storedAssistantModel(endpointInput.value);
-        if (modelInput.value !== localStorage.getItem("q3vl_assistant_model")) {
-            localStorage.setItem("q3vl_assistant_model", modelInput.value);
-        }
-        const remotePreset = panel.querySelector('[data-q3vl-setting="remote_preset"]');
-        remotePreset.value = normalizeRemotePresetName(localStorage.getItem("q3vl_assistant_remote_preset") || remotePresetFromSettings(backend.value, endpointInput.value, modelInput.value));
-        const workflowPreset = panel.querySelector('[data-q3vl-setting="workflow_preset"]');
-        loadAssistantApiKey(panel, backend.value);
-        panel.querySelector('[data-q3vl-setting="max_tokens"]').value = String(normalizeAssistantMaxTokens(localStorage.getItem("q3vl_assistant_max_tokens") || "8192"));
-        panel.querySelector('[data-q3vl-setting="local_max_tokens"]').value = String(normalizeAssistantMaxTokens(localStorage.getItem("q3vl_assistant_local_max_tokens") || "8192"));
-        panel.querySelector('[data-q3vl-setting="n_ctx"]').value = String(normalizeAssistantContextTokens(localStorage.getItem("q3vl_assistant_n_ctx") || String(DEFAULT_LOCAL_CONTEXT_TOKENS)));
-        panel.querySelector('[data-q3vl-setting="sanitize_sensitive"]').value = localStorage.getItem("q3vl_assistant_sanitize_sensitive") || "1";
-        panel.querySelector('[data-q3vl-setting="teacher_mode"]').value = localStorage.getItem("q3vl_assistant_teacher_mode") || "qwen-redact";
-        panel.querySelector('[data-q3vl-setting="reasoning_effort"]').value = localStorage.getItem("q3vl_assistant_reasoning_effort") || "high";
-        panel.querySelector('[data-q3vl-setting="local_endpoint"]').value = localStorage.getItem("q3vl_assistant_local_endpoint") || "http://127.0.0.1:8080/v1";
-        panel.querySelector('[data-q3vl-setting="local_model"]').value = localStorage.getItem("q3vl_assistant_local_model") || "qwen3.5-9b-vlm";
-        panel.querySelector('[data-q3vl-setting="local_text_thinking"]').value = localStorage.getItem("q3vl_assistant_local_text_thinking") || "0";
-        const visionPreset = panel.querySelector('[data-q3vl-setting="vision_preset"]');
-        const visionModel = panel.querySelector('[data-q3vl-setting="vision_model"]');
-        const visionModelPath = panel.querySelector('[data-q3vl-setting="vision_model_path"]');
-        const visionMmprojPath = panel.querySelector('[data-q3vl-setting="vision_mmproj_path"]');
-        visionPreset.value = localStorage.getItem("q3vl_assistant_vision_preset") || defaultVisionPreset();
-        panel.querySelector('[data-q3vl-setting="vision_thinking"]').value = localStorage.getItem("q3vl_assistant_vision_thinking") || "0";
-        panel.querySelector('[data-q3vl-setting="vision_endpoint"]').value = localStorage.getItem("q3vl_assistant_vision_endpoint") || "http://127.0.0.1:8080/v1";
-        visionModel.value = localStorage.getItem("q3vl_assistant_vision_model") || visionModelForPreset(visionPreset.value);
-        visionModelPath.value = localStorage.getItem("q3vl_assistant_vision_model_path") || defaultVisionModelPathForPreset(visionPreset.value);
-        visionMmprojPath.value = localStorage.getItem("q3vl_assistant_vision_mmproj_path") || defaultVisionMmprojPathForPreset(visionPreset.value);
-        syncVisionPresetDefaults(visionPreset, visionModel, visionModelPath, visionMmprojPath);
-        workflowPreset.value = localStorage.getItem("q3vl_assistant_workflow_preset") || workflowPresetFromSettings(panel);
-        visionPreset.addEventListener("change", function () {
-            syncVisionPresetDefaults(visionPreset, visionModel, visionModelPath, visionMmprojPath);
-            workflowPreset.value = workflowPresetFromSettings(panel);
-            saveAssistantConfig();
-            setAssistantSettingsVisibility(panel);
-        });
-        workflowPreset.addEventListener("change", function () {
-            applyWorkflowPreset(panel);
-            syncVisionPresetDefaults(visionPreset, visionModel, visionModelPath, visionMmprojPath);
-            saveAssistantConfig();
-            setAssistantSettingsVisibility(panel);
-        });
-        remotePreset.addEventListener("change", function () {
-            applyRemotePreset(panel, true);
-            workflowPreset.value = workflowPresetFromSettings(panel);
-            saveAssistantConfig();
-            setAssistantSettingsVisibility(panel);
-        });
-        panel.querySelectorAll("[data-q3vl-setting]").forEach(function (input) {
-            input.addEventListener("change", saveAssistantConfig);
-            input.addEventListener("input", saveAssistantConfig);
-            input.addEventListener("change", function () { setAssistantSettingsVisibility(panel); });
-        });
-        panel.querySelector('[data-q3vl-setting="teacher_mode"]').addEventListener("change", function () {
-            workflowPreset.value = workflowPresetFromSettings(panel);
-            saveAssistantConfig();
-        });
-        backend.addEventListener("change", function () {
-            storeAssistantApiKey(panel, assistantState.apiKeyBackend);
-            loadAssistantApiKey(panel, backend.value);
-            syncAssistantBackendDefaults(panel);
-            syncRemotePresetFromBackend(panel);
-            workflowPreset.value = workflowPresetFromSettings(panel);
-            saveAssistantConfig();
-            setAssistantSettingsVisibility(panel);
-        });
-        panel.querySelector("#q3vl_settings_close").addEventListener("click", function () {
-            panel.classList.remove("q3vl-settings-open");
-        });
-        makeAssistantDraggable(panel, panel.querySelector(".q3vl-settings-head"), "q3vl_settings_position");
-        syncAssistantBackendDefaults(panel);
-        saveAssistantConfig();
-        setAssistantSettingsVisibility(panel);
-        return panel;
-    }
-
-    function setupAssistantSettingsNavigation(panel) {
-        const savedPage = localStorage.getItem("q3vl_settings_page") || "route-main";
-        activateAssistantSettingsPage(panel, parentForSettingsPage(panel, savedPage), savedPage);
-        panel.querySelectorAll("[data-q3vl-settings-primary]").forEach(function (button) {
-            button.addEventListener("click", function () {
-                const primary = button.dataset.q3vlSettingsPrimary || "route";
-                const page = firstSettingsPageForPrimary(panel, primary);
-                localStorage.setItem("q3vl_settings_primary", primary);
-                localStorage.setItem("q3vl_settings_page", page);
-                activateAssistantSettingsPage(panel, primary, page);
-            });
-        });
-        panel.querySelectorAll("[data-q3vl-settings-page]").forEach(function (button) {
-            button.addEventListener("click", function () {
-                const page = button.dataset.q3vlSettingsPage || "text";
-                const primary = button.dataset.q3vlSettingsParent || parentForSettingsPage(panel, page);
-                localStorage.setItem("q3vl_settings_primary", primary);
-                localStorage.setItem("q3vl_settings_page", page);
-                activateAssistantSettingsPage(panel, primary, page);
-            });
-        });
-    }
-
-    function activateAssistantSettingsPage(panel, primary, page) {
-        const activePrimary = panel.querySelector(`[data-q3vl-settings-primary="${primary}"]`) ? primary : "route";
-        let target = panel.querySelector(`[data-q3vl-settings-page-panel="${page}"]`) ? page : firstSettingsPageForPrimary(panel, activePrimary);
-        if (parentForSettingsPage(panel, target) !== activePrimary) target = firstSettingsPageForPrimary(panel, activePrimary);
-        panel.querySelectorAll("[data-q3vl-settings-primary]").forEach(function (button) {
-            button.classList.toggle("q3vl-settings-nav-active", button.dataset.q3vlSettingsPrimary === activePrimary);
-        });
-        panel.querySelectorAll("[data-q3vl-settings-page]").forEach(function (button) {
-            const visible = button.dataset.q3vlSettingsParent === activePrimary;
-            button.hidden = !visible;
-            button.classList.toggle("q3vl-settings-subnav-active", visible && button.dataset.q3vlSettingsPage === target);
-        });
-        panel.querySelectorAll("[data-q3vl-settings-page-panel]").forEach(function (section) {
-            section.classList.toggle("q3vl-settings-page-active", section.dataset.q3vlSettingsPagePanel === target);
-        });
-    }
-
-    function firstSettingsPageForPrimary(panel, primary) {
-        return panel.querySelector(`[data-q3vl-settings-parent="${primary}"]`)?.dataset.q3vlSettingsPage || "route-main";
-    }
-
-    function parentForSettingsPage(panel, page) {
-        return panel.querySelector(`[data-q3vl-settings-page="${page}"]`)?.dataset.q3vlSettingsParent || "route";
-    }
-
-    function workflowPresetFromSettings(panel) {
-        const backend = panel.querySelector('[data-q3vl-setting="backend"]')?.value || "openai";
-        const teacherMode = panel.querySelector('[data-q3vl-setting="teacher_mode"]')?.value || "qwen-redact";
-        const visionPreset = panel.querySelector('[data-q3vl-setting="vision_preset"]')?.value || defaultVisionPreset();
-        if ((backend === "moyuu" || backend === "openai") && teacherMode === "qwen-redact" && visionPreset === "Qwen3.5 原版 9B") return "gemini-main-local-filter";
-        if (backend === "local-qwen-once" && visionPreset === "Gemma 4 12B") return "local-executor-gemini-adviser";
-        return "custom";
-    }
-
-    function normalizeRemotePresetName(value) {
-        return (REMOTE_ASSISTANT_PRESETS || {})[value] ? value : defaultAssistantModelForBackend("openai");
-    }
-
-    function applyWorkflowPreset(panel) {
-        const preset = panel.querySelector('[data-q3vl-setting="workflow_preset"]')?.value || "custom";
-        if (preset === "custom") return;
-        const backend = panel.querySelector('[data-q3vl-setting="backend"]');
-        const endpoint = panel.querySelector('[data-q3vl-setting="endpoint"]');
-        const fallbackEndpoint = panel.querySelector('[data-q3vl-setting="fallback_endpoint"]');
-        const model = panel.querySelector('[data-q3vl-setting="model"]');
-        const remotePreset = panel.querySelector('[data-q3vl-setting="remote_preset"]');
-        const teacherMode = panel.querySelector('[data-q3vl-setting="teacher_mode"]');
-        const sanitize = panel.querySelector('[data-q3vl-setting="sanitize_sensitive"]');
-        const visionPreset = panel.querySelector('[data-q3vl-setting="vision_preset"]');
-        if (backend) backend.value = preset === "local-executor-gemini-adviser" ? "local-qwen-once" : "openai";
-        if (endpoint && !endpoint.value) endpoint.value = defaultAssistantEndpointForBackend("openai");
-        if (fallbackEndpoint) fallbackEndpoint.value = "";
-        if (model) model.value = defaultAssistantModelForBackend("openai");
-        if (remotePreset) remotePreset.value = defaultAssistantModelForBackend("openai");
-        if (teacherMode) teacherMode.value = "qwen-redact";
-        if (sanitize) sanitize.value = "1";
-        if (visionPreset) visionPreset.value = "Gemma 4 12B";
-        loadAssistantApiKey(panel, backend?.value || "openai");
-    }
-
-    function remotePresetFromSettings(backend, endpoint, model) {
-        for (const [name, preset] of Object.entries(REMOTE_ASSISTANT_PRESETS || {})) {
-            if (model === preset.model && (!backend || backend === preset.backend)) return name;
-        }
-        return "custom";
-    }
-
-    function applyRemotePreset(panel, updateBackend) {
-        const presetName = normalizeRemotePresetName(panel.querySelector('[data-q3vl-setting="remote_preset"]')?.value);
-        const preset = (REMOTE_ASSISTANT_PRESETS || {})[presetName];
-        if (!preset) return;
-        const backend = panel.querySelector('[data-q3vl-setting="backend"]');
-        const model = panel.querySelector('[data-q3vl-setting="model"]');
-        if (updateBackend && backend) {
-            storeAssistantApiKey(panel, assistantState.apiKeyBackend);
-            backend.value = preset.backend;
-            loadAssistantApiKey(panel, backend.value);
-        }
-        if (model) model.value = preset.model;
-    }
-
-    function syncRemotePresetFromBackend(panel) {
-        const backend = panel.querySelector('[data-q3vl-setting="backend"]')?.value || "openai";
-        const model = panel.querySelector('[data-q3vl-setting="model"]')?.value || "";
-        const remotePreset = panel.querySelector('[data-q3vl-setting="remote_preset"]');
-        if (remotePreset && backend === "openai") remotePreset.value = remotePresetFromSettings(backend, "", model);
-    }
-
-    function syncVisionPresetDefaults(presetInput, modelInput, modelPathInput, mmprojPathInput) {
-        const preset = presetInput.value || defaultVisionPreset();
-        if (!modelInput.value || Object.values(q3vlVisionPresets).includes(modelInput.value)) {
-            modelInput.value = visionModelForPreset(preset);
-        }
-        if (!modelPathInput.value || modelPathInput.value === DEFAULT_QWEN_VISION_MODEL_PATH) {
-            modelPathInput.value = defaultVisionModelPathForPreset(preset);
-        }
-        if (!mmprojPathInput.value || mmprojPathInput.value === DEFAULT_QWEN_VISION_MMPROJ_PATH) {
-            mmprojPathInput.value = defaultVisionMmprojPathForPreset(preset);
-        }
     }
 
     function restoreAssistantLauncherPosition(launcher) {
@@ -521,8 +564,8 @@
         try {
             const pos = JSON.parse(raw);
             if (Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
-                const fallbackWidth = Math.min(panel.id === "q3vl_assistant_settings_panel" ? 900 : 480, window.innerWidth - 16);
-                const fallbackHeight = Math.min(panel.id === "q3vl_assistant_settings_panel" ? 680 : 680, window.innerHeight - 16);
+                const fallbackWidth = Math.min(panel.id === "q3vl_assistant_settings_panel" ? 820 : 480, window.innerWidth - 16);
+                const fallbackHeight = Math.min(panel.id === "q3vl_assistant_settings_panel" ? 600 : 680, window.innerHeight - 16);
                 const width = panel.offsetWidth || fallbackWidth;
                 const height = panel.offsetHeight || fallbackHeight;
                 panel.style.left = `${Math.max(8, Math.min(pos.left, window.innerWidth - width - 8))}px`;
@@ -661,6 +704,7 @@
         }
         setupQwenPresetGate();
         setupSendButtons();
+        importForgeAssistantSettings();
         setupAssistantWindow();
         setupPullRefreshGuard();
     }
@@ -676,4 +720,6 @@
     } else {
         window.setInterval(setupQwenTools, 1500);
     }
+
+    if (typeof onOptionsChanged === "function") onOptionsChanged(syncAssistantRouteLabel);
 })();

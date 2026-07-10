@@ -7,7 +7,7 @@ from typing import Any
 
 import requests
 
-from .assistant_common import _assistant_estimate_tokens, _assistant_stream_event
+from .assistant_common import TOOLS_DISABLED_INSTRUCTION, _assistant_estimate_tokens, _assistant_stream_event
 from .assistant_teacher import prepare_teacher_messages
 from .constants import ASSISTANT_TOOLS, DEFAULT_ASSISTANT_FALLBACK_ENDPOINT, PROMPT_ASSISTANT_SYSTEM
 from .image_payloads import _data_url_inline_data
@@ -202,8 +202,10 @@ def _gemini_request_body(payload: dict[str, Any], messages: list[Any]) -> tuple[
     contents, input_tokens = _gemini_contents(messages)
     if not contents:
         raise RuntimeError("message is empty")
+    disable_tools = _payload_bool(payload.get("disable_tools"), False)
+    system_prompt = PROMPT_ASSISTANT_SYSTEM + (TOOLS_DISABLED_INSTRUCTION if disable_tools else "")
     body: dict[str, Any] = {
-        "systemInstruction": {"parts": [{"text": PROMPT_ASSISTANT_SYSTEM}]},
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": contents,
         "generationConfig": {
             "temperature": float(payload.get("temperature") or 0.35),
@@ -217,10 +219,19 @@ def _gemini_request_body(payload: dict[str, Any], messages: list[Any]) -> tuple[
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ],
     }
-    if not _payload_bool(payload.get("disable_tools"), False):
+    effort = str(payload.get("reasoning_effort") or "low").strip().lower()
+    body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": "LOW" if effort == "low" else "HIGH"}
+    if not disable_tools:
         body["tools"] = _gemini_tools()
         body["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
     return body, input_tokens
+
+
+def _gemini_low_reasoning_body(body: dict[str, Any]) -> dict[str, Any]:
+    retry = dict(body)
+    retry["generationConfig"] = dict(body.get("generationConfig") or {})
+    retry["generationConfig"]["thinkingConfig"] = {"thinkingLevel": "LOW"}
+    return retry
 
 
 def _gemini_usage(data: dict[str, Any], input_tokens: int = 0, output_text: str = "") -> dict[str, int]:
@@ -331,6 +342,13 @@ def _prompt_assistant_chat_gemini(payload: dict[str, Any], endpoint: str, model:
             result.update(teacher_info)
             return result
         except (requests.RequestException, RuntimeError, json.JSONDecodeError) as exc:
+            if "empty visible output" in str(exc) and str(payload.get("reasoning_effort") or "low").lower() != "low":
+                try:
+                    result = _gemini_post_generate(candidate_endpoint, model, api_key, _gemini_low_reasoning_body(body), int(payload.get("timeout") or 120), input_tokens, sanitizer)
+                    result.update(teacher_info, reasoning_retry="low")
+                    return result
+                except (requests.RequestException, RuntimeError, json.JSONDecodeError) as retry_exc:
+                    errors.append(f"{candidate_endpoint} high reasoning empty, low retry failed: {retry_exc}")
             errors.append(f"{candidate_endpoint}: {exc}")
             if str(exc).startswith(("401 ", "403 ")):
                 break
@@ -394,7 +412,8 @@ def _prompt_assistant_stream_gemini(payload: dict[str, Any], endpoint: str, mode
                 usage = usage or _gemini_usage({}, input_tokens=input_tokens, output_text=text)
                 if not text and not tool_calls:
                     try:
-                        retry = _gemini_post_generate(candidate_endpoint, model, api_key, body, int(payload.get("timeout") or 120), input_tokens, sanitizer)
+                        retry_body = _gemini_low_reasoning_body(body)
+                        retry = _gemini_post_generate(candidate_endpoint, model, api_key, retry_body, int(payload.get("timeout") or 120), input_tokens, sanitizer)
                         retry["stream_retry"] = True
                         retry.update(teacher_info)
                         yield _assistant_stream_event("done", retry)

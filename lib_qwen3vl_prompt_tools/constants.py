@@ -13,9 +13,12 @@ DEFAULT_LLAMA_SERVER_CANDIDATES = [
     r"E:\AI\lmcpp\llama.cpp\llama-server.exe",
 ]
 LLAMA_CPP_RELEASE_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+DEFAULT_ASSISTANT_BACKEND = "moyuu"
 DEFAULT_ASSISTANT_ENDPOINT = "https://moyuu.cc"
 DEFAULT_ASSISTANT_FALLBACK_ENDPOINT = "https://hk-api.moyuu.cc"
 DEFAULT_ASSISTANT_MODEL = "gemini-3.5-flash-preview"
+DEFAULT_ASSISTANT_FALLBACK_BACKEND = "openai"
+DEFAULT_ASSISTANT_FALLBACK_MODEL = "grok-4.5"
 DEFAULT_LOCAL_ASSISTANT_ENDPOINT = "http://127.0.0.1:8080/v1"
 DEFAULT_LOCAL_ASSISTANT_MODEL = "hauhau-qwen3.5-9b-uncensored"
 DEFAULT_LOCAL_CONTEXT_TOKENS = 16384
@@ -94,13 +97,19 @@ Available UI tools:
 - To edit the prompt, use edit_prompt with base_hash and a diff. Preferred diff format is a SEARCH/REPLACE block with markers named SEARCH, separator line =======, and ending marker REPLACE.
 - target can be "active", "txt2img", or "img2img".
 - read_prompt returns prompt, prompt_hash, style_selector, selected_styles, forge_positive_template, and style_template when available.
+- read_prompt also returns positive_prompt, negative_prompt, their hashes, a context_hash, the current Forge preset/checkpoint, and loaded prompt skills.
 - edit_prompt also accepts patches with operations "replace", "replace_all", "replace_n", "insert_after", "insert_before", "append", "prepend", and "delete". Use exact text from read_prompt. For replace/insert, find text must be unique unless allow_multiple is true. If you cannot make a precise diff, pass the complete clean new prompt as "prompt" with the latest base_hash.
+- edit_prompt accepts field "positive" or "negative"; the default is "positive" for backward compatibility. Use the matching hash returned by read_prompt.
 - You must call read_prompt before edit_prompt. edit_prompt must include the base_hash returned by the latest read_prompt for the same concrete target.
 - Never use whole-prompt replacement tools. For an empty prompt, use edit_prompt with operation "append" and the base_hash from read_prompt.
 - Use tools when the user asks to inspect, rewrite, replace, append to, or send a prompt/template. Do not invent current UI text if you need to see it; call read_prompt first.
 - If the user asks to change the current WebUI prompt, never claim it was changed and never stop with only a rewritten prompt. Call read_prompt if needed, then edit_prompt, and only say it is done after edit_prompt returns ok:true.
 - Diff syntax is only a tool argument format. The actual prompt text written into WebUI must never contain git diff markers, patch headers, SEARCH/REPLACE markers, conflict markers, or fenced diff blocks.
 - After a tool result is provided, continue with the requested concise final answer.
+- Use search_resources to discover installed wildcard, Style, or LoRA resources. Use inspect_resource before relying on full contents or metadata. Search alone never changes the UI.
+- Only call apply_resource when the user explicitly asks to apply/add/use a resource. Call read_prompt first and pass its latest context_hash. Wildcards remain __name__, LoRAs remain <lora:alias:weight>, and Styles remain native WebUI selections.
+- Only call initialize_prompt when the user explicitly asks to initialize an empty generation prompt. It fills empty positive/negative fields and never overwrites existing content.
+- Use load_prompt_skill("anima_dit") for Anima-specific work when it was not already auto-loaded. Preserve wildcards, dynamic choices, and LoRA tags exactly.
 
 Example structure:
 Group selfie of three muscular anthropomorphic dragon men. Left: white fur, blue horns, blue goatee, white shirt, loose striped tie. Center: white fur, yellow horns, casual jacket. Right: dark fur, blue horns, open jacket revealing a bare muscular chest. Furry art, bara, all smiling and looking at the camera. Beautiful background with a clear mountain lake and lush green hills, highly detailed, daylight."""
@@ -177,6 +186,7 @@ ASSISTANT_TOOLS = [
                 "type": "object",
                 "properties": {
                     "target": {"type": "string", "enum": ["active", "txt2img", "img2img"]},
+                    "field": {"type": "string", "enum": ["positive", "negative"], "description": "Prompt field to edit; defaults to positive."},
                     "base_hash": {"type": "string", "description": "prompt_hash returned by the latest read_prompt for this target"},
                     "diff": {
                         "type": "string",
@@ -226,6 +236,90 @@ ASSISTANT_TOOLS = [
                     "return_prompt": {"type": "boolean"},
                 },
                 "required": ["target", "base_hash"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_resources",
+            "description": "Search installed Forge wildcard, Style, or LoRA resources without changing the UI.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["wildcard", "style", "lora"]},
+                    "query": {"type": "string", "description": "Case-insensitive space-separated AND query."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                    "cursor": {"type": "string", "description": "next_cursor from the previous result."},
+                },
+                "required": ["kind"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_resource",
+            "description": "Inspect one installed resource. Wildcard values are queryable and paginated.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["wildcard", "style", "lora"]},
+                    "id": {"type": "string", "description": "Logical id returned by search_resources; never a filesystem path."},
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "cursor": {"type": "string"},
+                },
+                "required": ["kind", "id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "apply_resource",
+            "description": "Apply an installed wildcard, Style, or LoRA using native Forge syntax after read_prompt. Only use after an explicit user apply request.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["wildcard", "style", "lora"]},
+                    "id": {"type": "string"},
+                    "target": {"type": "string", "enum": ["active", "txt2img", "img2img"]},
+                    "context_hash": {"type": "string", "description": "Latest context_hash returned by read_prompt."},
+                    "weight": {"type": "number", "minimum": -10, "maximum": 10},
+                },
+                "required": ["kind", "id", "target", "context_hash"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "initialize_prompt",
+            "description": "Fill empty positive and negative prompt fields without overwriting existing text. Only use after an explicit user initialization request.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "enum": ["active", "txt2img", "img2img"]},
+                    "context_hash": {"type": "string"},
+                    "positive_prompt": {"type": "string"},
+                    "negative_prompt": {"type": "string"},
+                },
+                "required": ["target", "context_hash", "positive_prompt", "negative_prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "load_prompt_skill",
+            "description": "Load a built-in image-model prompting guide. anima_dit is currently available.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "enum": ["anima_dit"]},
+                },
+                "required": ["name"],
             },
         },
     },

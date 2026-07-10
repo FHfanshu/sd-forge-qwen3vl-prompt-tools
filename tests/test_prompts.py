@@ -1,9 +1,12 @@
+import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from PIL import Image
 
-from lib_qwen3vl_prompt_tools.assistant import ask_teacher
+from lib_qwen3vl_prompt_tools.assistant import _prompt_assistant_chat_once, ask_teacher, prompt_assistant_chat, prompt_assistant_stream
+from lib_qwen3vl_prompt_tools.assistant_common import _assistant_request_messages
+from lib_qwen3vl_prompt_tools.constants import DEFAULT_ASSISTANT_BACKEND, DEFAULT_ASSISTANT_FALLBACK_BACKEND, DEFAULT_ASSISTANT_FALLBACK_MODEL, DEFAULT_ASSISTANT_MODEL
 from lib_qwen3vl_prompt_tools.generic import _PromptSanitizer, _restore_gemini_result
 from lib_qwen3vl_prompt_tools.assistant_gemini import _assistant_use_gemini_native, _gemini_request_body, _prompt_assistant_chat_gemini
 from lib_qwen3vl_prompt_tools.assistant_teacher import qwen_teacher_enabled
@@ -79,10 +82,82 @@ class PromptToolsTests(unittest.TestCase):
         body, _tokens = _gemini_request_body({"disable_tools": True}, [{"role": "user", "content": "teacher only"}])
         self.assertNotIn("tools", body)
         self.assertNotIn("toolConfig", body)
+        self.assertIn("Tools are disabled", body["systemInstruction"]["parts"][0]["text"])
+        self.assertEqual({"thinkingLevel": "LOW"}, body["generationConfig"]["thinkingConfig"])
+
+    def test_gemini_reasoning_effort_maps_to_native_thinking_level(self):
+        high, _tokens = _gemini_request_body({"reasoning_effort": "high"}, [{"role": "user", "content": "hello"}])
+        maximum, _tokens = _gemini_request_body({"reasoning_effort": "max"}, [{"role": "user", "content": "hello"}])
+        self.assertEqual({"thinkingLevel": "HIGH"}, high["generationConfig"]["thinkingConfig"])
+        self.assertEqual({"thinkingLevel": "HIGH"}, maximum["generationConfig"]["thinkingConfig"])
+
+    def test_openai_messages_preserve_native_image_attachment(self):
+        messages = _assistant_request_messages(
+            [{"role": "user", "content": "describe this", "image": "data:image/png;base64,AAAA"}]
+        )
+        self.assertEqual("text", messages[1]["content"][0]["type"])
+        self.assertEqual("image_url", messages[1]["content"][1]["type"])
+        self.assertEqual("data:image/png;base64,AAAA", messages[1]["content"][1]["image_url"]["url"])
+
+    def test_openai_body_can_disable_tools_for_convergence(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"choices": [{"message": {"content": "hello"}}]}
+        with patch("lib_qwen3vl_prompt_tools.assistant.requests.post", return_value=response) as post:
+            result = _prompt_assistant_chat_once(
+                {
+                    "backend": "openai",
+                    "endpoint": "https://example.com/v1",
+                    "model": "test-model",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "disable_tools": True,
+                }
+            )
+
+        body = post.call_args.kwargs["json"]
+        self.assertNotIn("tools", body)
+        self.assertNotIn("tool_choice", body)
+        self.assertIn("Tools are disabled", body["messages"][0]["content"])
+        self.assertEqual("hello", result["text"])
 
     def test_openai_backend_can_force_moyuu_compatible_route(self):
         self.assertFalse(_assistant_use_gemini_native("openai", "https://moyuu.cc", "grok-4.5"))
         self.assertTrue(_assistant_use_gemini_native("moyuu", "https://moyuu.cc", "gemini-3.5-flash-high"))
+
+    def test_default_remote_route_uses_moyuu_gemini_with_grok_fallback(self):
+        self.assertEqual("moyuu", DEFAULT_ASSISTANT_BACKEND)
+        self.assertEqual("gemini-3.5-flash-preview", DEFAULT_ASSISTANT_MODEL)
+        self.assertEqual("openai", DEFAULT_ASSISTANT_FALLBACK_BACKEND)
+        self.assertEqual("grok-4.5", DEFAULT_ASSISTANT_FALLBACK_MODEL)
+
+    def test_chat_falls_back_to_grok_on_same_moyuu_endpoint(self):
+        payload = {
+            "backend": "moyuu",
+            "endpoint": "https://moyuu.cc",
+            "model": "gemini-3.5-flash-preview",
+            "api_key": "same-moyuu-key",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+        with patch(
+            "lib_qwen3vl_prompt_tools.assistant._prompt_assistant_chat_once",
+            side_effect=[RuntimeError("gemini unavailable"), {"text": "fallback ok", "tool_calls": [], "model": "grok-4.5", "endpoint": "https://moyuu.cc"}],
+        ) as chat:
+            result = prompt_assistant_chat(payload)
+
+        fallback_payload = chat.call_args_list[1].args[0]
+        self.assertEqual("openai", fallback_payload["backend"])
+        self.assertEqual("grok-4.5", fallback_payload["model"])
+        self.assertEqual("https://moyuu.cc", fallback_payload["endpoint"])
+        self.assertEqual("same-moyuu-key", fallback_payload["api_key"])
+        self.assertTrue(result["fallback_used"])
+
+    def test_stream_announces_fallback_before_grok_result(self):
+        primary = iter([json.dumps({"type": "error", "error": "gemini unavailable"}) + "\n"])
+        fallback = iter([json.dumps({"type": "done", "text": "fallback ok", "tool_calls": [], "model": "grok-4.5"}) + "\n"])
+        with patch("lib_qwen3vl_prompt_tools.assistant._prompt_assistant_stream_once", side_effect=[primary, fallback]):
+            events = [json.loads(item) for item in prompt_assistant_stream({"backend": "moyuu", "model": "gemini-3.5-flash-preview"})]
+
+        self.assertEqual(["fallback", "done"], [event["type"] for event in events])
+        self.assertEqual("grok-4.5", events[0]["model"])
 
     def test_ask_teacher_uses_gemini_without_tools(self):
         with patch(

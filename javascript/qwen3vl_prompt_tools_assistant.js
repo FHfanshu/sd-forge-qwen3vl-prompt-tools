@@ -1,7 +1,7 @@
 (function () {
     const tools = window.q3vlPromptTools;
     if (!tools) return;
-    const { assistantConfig, assistantPanel, assistantState, executeAssistantTool, tr } = tools;
+    const { assistantConfig, assistantPanel, assistantState, compactAssistantMessages, compactToolResult, ensureAutomaticPromptSkills, executeAssistantTool, resourceToolResultLabel, tr } = tools;
 
     function t(key, fallback) {
         if (typeof tr !== "function") return fallback;
@@ -18,8 +18,27 @@
         "multi_patch_current_prompt",
         "set_current_prompt",
         "get_style_template",
-        "set_style_template"
+        "set_style_template",
+        "search_resources",
+        "inspect_resource",
+        "apply_resource",
+        "initialize_prompt",
+        "load_prompt_skill"
     ];
+    const ASSISTANT_REPEATABLE_READ_TOOLS = new Set([
+        "read_prompt",
+        "get_current_prompt",
+        "get_style_template",
+        "search_resources",
+        "inspect_resource",
+        "load_prompt_skill"
+    ]);
+
+    function assistantRepeatedToolAction(name, count) {
+        if (count < 2) return "execute";
+        if (ASSISTANT_REPEATABLE_READ_TOOLS.has(String(name || "")) && count === 2) return "converge";
+        return "stop";
+    }
 
     function assistantToolNameFromText(value) {
         const name = String(value || "").trim();
@@ -407,8 +426,15 @@
     function addAssistantMessage(role, text) {
         const log = assistantPanel()?.querySelector("#q3vl_assistant_messages");
         if (!log) return null;
+        log.querySelector(".q3vl-assistant-empty")?.remove();
         const item = document.createElement("div");
         item.className = `q3vl-assistant-msg q3vl-assistant-${role}`;
+        const roleLabels = {
+            assistant: t("assistant.role.assistant", "助手"),
+            error: t("assistant.role.error", "错误"),
+            user: t("assistant.role.user", "你")
+        };
+        if (roleLabels[role]) item.dataset.q3vlRole = roleLabels[role];
         if (role === "assistant" || role === "tool") {
             renderAssistantMarkdown(item, text);
         } else {
@@ -430,12 +456,14 @@
         if (log) log.scrollTop = log.scrollHeight;
     }
 
-    function addAssistantUserMessage(text, attachment) {
+    function addAssistantUserMessage(text, attachment, inputText) {
         const log = assistantPanel()?.querySelector("#q3vl_assistant_messages");
         if (!log) return;
+        log.querySelector(".q3vl-assistant-empty")?.remove();
         const rewindIndex = assistantState.messages.length;
         const item = document.createElement("div");
         item.className = "q3vl-assistant-msg q3vl-assistant-user";
+        item.dataset.q3vlRole = t("assistant.role.user", "你");
         if (text) {
             const body = document.createElement("div");
             body.className = "q3vl-assistant-user-body";
@@ -459,7 +487,7 @@
         rewindBtn.className = "q3vl-assistant-rewind";
         rewindBtn.title = t("assistant.rewind", "编辑并重新发送");
         rewindBtn.setAttribute("aria-label", t("assistant.rewind", "编辑并重新发送"));
-        rewindBtn.textContent = "✎";
+        rewindBtn.textContent = t("assistant.edit", "编辑");
         item.appendChild(rewindBtn);
         rewindBtn.addEventListener("click", function () {
             assistantState.messages.splice(rewindIndex);
@@ -471,8 +499,9 @@
             }
             item.remove();
             const input = assistantPanel()?.querySelector("#q3vl_assistant_input");
-            if (input && text) {
-                input.value = text;
+            if (input && (inputText || text)) {
+                input.value = inputText || text;
+                input.dispatchEvent(new Event("input", { bubbles: true }));
                 input.focus();
             }
             if (attachment) setAssistantAttachment(attachment);
@@ -502,8 +531,11 @@
                 vision_model_path: config.vision_model_path,
                 vision_mmproj_path: config.vision_mmproj_path,
                 enable_thinking: config.vision_thinking,
+                llama_server_path: config.llama_server_path,
+                temperature: config.teacher_temperature,
+                top_p: config.teacher_top_p,
                 n_ctx: config.n_ctx,
-                timeout: 120
+                timeout: config.teacher_timeout
             })
         });
         if (!response.ok) {
@@ -610,8 +642,11 @@
     function setAssistantSendButtonRunning(button, running) {
         if (!button) return;
         button.disabled = false;
-        button.textContent = running ? t("assistant.stop", "终止") : t("assistant.send", "发送");
+        const label = running ? t("assistant.stop", "终止") : t("assistant.send", "发送");
+        button.setAttribute("aria-label", label);
+        button.title = label;
         button.classList.toggle("q3vl-assistant-stop", Boolean(running));
+        assistantPanel()?.querySelectorAll(".q3vl-assistant-runtime-control").forEach(function (control) { control.disabled = Boolean(running); });
     }
 
     function cancelAssistantRun() {
@@ -639,12 +674,21 @@
             const event = JSON.parse(raw);
             if (event.type === "error") throw new Error(event.error || "assistant stream failed");
             if (event.usage && typeof onProgress === "function") onProgress(event.usage);
+            if (event.type === "fallback") {
+                result.fallback_used = true;
+                result.primary_backend = event.primary_backend || "";
+                result.primary_model = event.primary_model || "";
+                result.primary_error = event.primary_error || "";
+                result.backend = event.backend || "";
+                result.model = event.model || "";
+                return;
+            }
             if (event.type === "delta") {
                 result.text += event.text || "";
                 return;
             }
             if (event.type === "done") {
-                result = Object.assign({}, event, {
+                result = Object.assign({}, result, event, {
                     text: event.text !== undefined ? event.text : result.text,
                     tool_calls: Array.isArray(event.tool_calls) ? event.tool_calls : result.tool_calls,
                     usage: event.usage || result.usage
@@ -668,7 +712,12 @@
 
     async function callPromptAssistant(onProgress, run) {
         assertAssistantRunActive(run);
-        const payload = Object.assign(assistantConfig(), { messages: assistantState.messages, stream: true, run_id: run?.id || "" });
+        const payload = Object.assign(assistantConfig(), {
+            messages: assistantState.messages,
+            stream: true,
+            run_id: run?.id || "",
+            disable_tools: Boolean(run?.disableTools)
+        });
         const streamResponse = await fetch("/qwen3vl-prompt-tools/assistant-stream", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -716,18 +765,30 @@
     function assistantUserRequestedPromptEdit(text) {
         const value = String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
         if (!value) return false;
-        const editVerb = /(改成|修改|改写|重写|优化|精炼|扩写|替换|追加|加上|加入|删除|移除|写入|更新|套用|应用|编辑|修一下|insert|append|replace|rewrite|edit|update|apply|change|remove|delete|optimi[sz]e|refine|expand)/i;
+        const editVerb = /(改成|修改|改写|重写|优化|精炼|扩写|替换|追加|加上|加入|删除|移除|写入|更新|套用|应用|编辑|修一下|编写|创作|生成|制作|起草|insert|append|replace|rewrite|edit|update|apply|change|remove|delete|optimi[sz]e|refine|expand|write|create|generate|draft|compose)/i;
         const currentPromptRef = /(当前|现在|现有|原来|原有|这个|这段|它|其|提示词|prompt|txt2img|img2img|webui|ui|输入框|文本框)/i;
-        const directEdit = /(帮我|请|直接|把|将|给我|给[\w\u4e00-\u9fff -]{1,40}).{0,30}(改成|修改|改写|重写|优化|精炼|扩写|替换|追加|加上|加入|删除|移除|写入|更新|套用|应用|编辑|修一下)/i;
-        const adviceOnly = /(怎么改|如何改|哪里.*改|修改建议|改进建议|优化建议|建议.*(修改|优化|改写|调整)|should.*(change|edit|rewrite)|how.*(change|edit|rewrite))/i;
+        const directEdit = /(帮我|请|直接|把|将|给我|给[\w\u4e00-\u9fff -]{1,40}).{0,30}(改成|修改|改写|重写|优化|精炼|扩写|替换|追加|加上|加入|删除|移除|写入|更新|套用|应用|编辑|修一下|编写|创作|生成|制作|起草)/i;
+        const adviceOnly = /(怎么改|如何改|怎么写|如何写|哪里.*改|修改建议|改进建议|优化建议|写作建议|建议.*(修改|优化|改写|调整|编写)|should.*(change|edit|rewrite|write)|how.*(change|edit|rewrite|write))/i;
         return editVerb.test(value) && !adviceOnly.test(value) && (currentPromptRef.test(value) || directEdit.test(value));
     }
 
     function assistantToolMutatesPrompt(name) {
-        return ["edit_prompt", "patch_current_prompt", "multi_patch_current_prompt"].includes(String(name || ""));
+        return ["edit_prompt", "patch_current_prompt", "multi_patch_current_prompt", "apply_resource", "initialize_prompt"].includes(String(name || ""));
+    }
+
+    function assistantUserRequestedResourceMutation(text) {
+        const value = String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
+        const action = /(应用|套用|加入|添加|插入|写入|使用|初始化|生成首版|填充|apply|add|insert|use|initiali[sz]e|fill)/i;
+        const resource = /(wildcard|通配符|lora|style|styles|风格|预设|正面|负面|提示词|prompt)/i;
+        const advice = /(怎么|如何|建议|说明|介绍|how|suggest|explain)/i;
+        const question = /(吗[？?]?$|能不能|能否|是否|can you|is it possible)/i;
+        const imperative = /(帮我|请|直接|把|将|给我|现在应用|go ahead|do it)/i;
+        return action.test(value) && resource.test(value) && !advice.test(value) && (!question.test(value) || imperative.test(value));
     }
 
     function assistantToolResultLabel(name, result) {
+        const resourceLabel = typeof resourceToolResultLabel === "function" ? resourceToolResultLabel(name, result) : "";
+        if (resourceLabel) return resourceLabel;
         const status = result && result.ok ? "完成" : "失败";
         const error = result && result.error ? `: ${result.error}` : "";
         const target = result && result.target ? ` (${result.target})` : "";
@@ -739,7 +800,7 @@
         if (backend === "moyuu" && String(config && config.teacher_mode || "qwen-redact") === "qwen-redact") return true;
         const model = String(config && config.model || "").toLowerCase();
         const endpoint = String(config && config.endpoint || "");
-        if (model.includes("gemini")) return true;
+        if (model.includes("gemini") || model.includes("grok")) return true;
         if (backend !== "moyuu") return false;
         try {
             const host = new URL(endpoint).hostname;
@@ -749,24 +810,27 @@
         }
     }
 
-    async function runAssistantLoop(userText, attachment) {
+    async function runAssistantLoop(userText, attachment, displayText) {
         if (assistantState.running) {
             cancelAssistantRun();
             return;
         }
         const effectiveText = userText || (attachment ? "请根据附件例图分析构图和风格，帮助我整理提示词。" : "");
         const mustEditPrompt = assistantUserRequestedPromptEdit(effectiveText);
+        const mutationAllowed = mustEditPrompt || assistantUserRequestedResourceMutation(effectiveText);
+        const mustMutateUi = mustEditPrompt || mutationAllowed;
         const config = assistantConfig();
         const nativeImage = attachment && assistantSupportsNativeImages(config);
-        const run = { id: assistantRunId(), backend: config.backend, controller: new AbortController(), cancelled: false };
+        const run = { id: assistantRunId(), backend: config.backend, controller: new AbortController(), cancelled: false, turns: 0, toolCalls: 0, lastTool: "", repeatedTool: 0 };
         let userMessageSent = false;
         let promptEdited = false;
         let missingEditCorrectionSent = false;
         if (effectiveText || attachment) {
-            addAssistantUserMessage(effectiveText, attachment);
+            addAssistantUserMessage(displayText === undefined ? effectiveText : displayText, attachment, effectiveText);
         }
         const sendButton = assistantPanel()?.querySelector("#q3vl_assistant_send");
         assistantState.running = run;
+        assistantState.resourceMutationAllowed = mutationAllowed;
         setAssistantSendButtonRunning(sendButton, true);
         try {
             assertAssistantRunActive(run);
@@ -779,8 +843,13 @@
                 });
                 userMessageSent = true;
             } else if (attachment) {
-                addAssistantMessage("status", "本地 VLM 正在分析附件...");
-                const vision = await analyzeAssistantAttachment(attachment, effectiveText, run);
+                const visionStatus = addAssistantMessage("status", "本地 VLM 正在分析附件...");
+                let vision;
+                try {
+                    vision = await analyzeAssistantAttachment(attachment, effectiveText, run);
+                } finally {
+                    visionStatus?.remove();
+                }
                 assertAssistantRunActive(run);
                 const visionText = String(vision.text || "").trim();
                 addAssistantMessage("tool", `视觉摘要 (${vision.vision_preset || vision.model || "local VLM"}${vision.thinking_enabled ? ", thinking" : ""}):\n${truncateAssistantText(visionText, 1200)}`);
@@ -792,32 +861,51 @@
             if (effectiveText && !userMessageSent) {
                 assistantState.messages.push({ role: "user", content: effectiveText });
             }
+            if (typeof ensureAutomaticPromptSkills === "function") {
+                const loadedSkills = await ensureAutomaticPromptSkills(run);
+                if (loadedSkills.length) addAssistantMessage("tool", `已自动加载指南 · ${loadedSkills.join(" · ")}`);
+            }
             while (true) {
                 assertAssistantRunActive(run);
+                run.turns += 1;
+                if (run.turns > 8) throw new Error("Agent loop 已达到 8 轮上限，已停止以避免无进展循环。");
+                if (typeof compactAssistantMessages === "function") assistantState.messages = compactAssistantMessages(assistantState.messages, 65536);
                 const statusItem = addAssistantMessage("status", assistantInitialStatus(config));
-                const result = await callPromptAssistant(function (usage) {
-                    updateAssistantMessage(statusItem, "status", formatAssistantTokenStatus(usage));
-                }, run);
+                let result;
+                try {
+                    result = await callPromptAssistant(function (usage) {
+                        updateAssistantMessage(statusItem, "status", formatAssistantTokenStatus(usage));
+                    }, run);
+                } catch (error) {
+                    statusItem?.remove();
+                    throw error;
+                }
+                statusItem?.remove();
                 assertAssistantRunActive(run);
+                if (result.fallback_used && !run.fallbackAnnounced) {
+                    run.fallbackAnnounced = true;
+                    addAssistantMessage("tool", `主模型 ${result.primary_model || config.model} 请求失败，已切换到 ${result.model || config.fallback_model}。`);
+                }
                 const text = result.text || "";
                 const toolCalls = normalizeAssistantToolCalls(result, text);
+                if (toolCalls.length > 4) throw new Error("模型单轮请求了超过 4 个工具，已停止。请缩小任务范围后重试。");
                 if (!toolCalls.length) {
                     if (!String(text || "").trim()) {
                         addAssistantMessage("error", "Gemini 返回了空内容，未检测到文本或工具调用。请重试；如果反复出现，降低 thinking/提高 Max tokens 或检查模型安全拦截。 ");
                         return;
                     }
-                    if (mustEditPrompt && !promptEdited) {
+                    if (mustMutateUi && !promptEdited) {
                         assistantState.messages.push({ role: "assistant", content: text || "No tool call returned." });
                         if (!missingEditCorrectionSent) {
                             missingEditCorrectionSent = true;
-                            addAssistantMessage("tool", "未检测到 edit_prompt，继续要求助手实际修改当前提示词...");
+                            addAssistantMessage("tool", "未检测到写入工具，继续要求助手实际修改当前界面...");
                             assistantState.messages.push({
                                 role: "user",
-                                content: "The user asked to modify the current WebUI prompt. You must not claim it was changed unless edit_prompt succeeds. Call read_prompt if needed, then call edit_prompt with the latest base_hash. Do not give a final answer until edit_prompt returns ok:true."
+                                content: "The user explicitly asked to change the current WebUI state. Do not claim success until edit_prompt, apply_resource, or initialize_prompt succeeds. Call read_prompt first and use its latest hash/context_hash."
                             });
                             continue;
                         }
-                        addAssistantMessage("error", "助手没有调用 edit_prompt，当前提示词未被修改。请重试或明确要求“读取当前提示词并编辑”。");
+                        addAssistantMessage("error", "助手没有成功调用写入工具，当前界面未被修改。请重试。");
                         return;
                     }
                     assistantState.messages.push({ role: "assistant", content: text });
@@ -828,28 +916,49 @@
                 for (const tool of toolCalls) {
                     assertAssistantRunActive(run);
                     const toolName = tool.tool || tool.name;
+                    run.toolCalls += 1;
+                    if (run.toolCalls > 12) throw new Error("Agent loop 已达到 12 次工具调用上限，已停止。");
+                    const signature = `${toolName}\u0000${JSON.stringify(tool.arguments || {})}`;
+                    run.repeatedTool = signature === run.lastTool ? run.repeatedTool + 1 : 1;
+                    run.lastTool = signature;
+                    const repeatedAction = assistantRepeatedToolAction(toolName, run.repeatedTool);
+                    if (repeatedAction === "stop") throw new Error(`模型连续重复调用工具 ${toolName}，已停止以避免无进展循环。`);
                     const toolResult = await executeAssistantTool(tool, run.controller.signal);
                     assertAssistantRunActive(run);
                     if (assistantToolMutatesPrompt(toolName) && toolResult.ok) promptEdited = true;
                     addAssistantMessage("tool", assistantToolResultLabel(toolName, toolResult));
-                    assistantState.messages.push({ role: "user", content: `Tool result for ${toolName}: ${JSON.stringify(toolResult)}` });
+                    const serialized = typeof compactToolResult === "function" ? compactToolResult(toolResult, 12000) : JSON.stringify(toolResult);
+                    let toolMessage = `Tool result for ${toolName}: ${serialized}`;
+                    const emptyPrompt = ["read_prompt", "get_current_prompt"].includes(toolName) && toolResult.ok && !String(toolResult.positive_prompt ?? toolResult.prompt ?? "").trim();
+                    if (emptyPrompt && mustMutateUi) toolMessage += "\nThe current positive prompt is empty. Do not call read_prompt again and do not ask for existing prompt content. Based on the user's original request, write a complete production-ready prompt now, then call edit_prompt for field positive with operation append and the latest positive_prompt_hash/prompt_hash as base_hash.";
+                    if (repeatedAction === "converge") {
+                        if (mustMutateUi) {
+                            toolMessage += "\nThis read-only result is current and has already been returned twice. Do not read it again. Use its latest hashes to call the required write tool now.";
+                        } else {
+                            run.disableTools = true;
+                            toolMessage += "\nThis read-only result is current and has already been returned twice. Do not call another tool. Answer the user's original request naturally using this result.";
+                        }
+                    }
+                    assistantState.messages.push({ role: "user", content: toolMessage });
                 }
             }
         } catch (error) {
             const message = String(error && error.message || error);
             if (run.cancelled || run.controller.signal.aborted || error?.name === "AbortError" || message === "assistant run aborted") {
-                addAssistantMessage("status", "已终止。");
+                addAssistantMessage("status", "已终止。")?.classList.add("q3vl-assistant-status-static");
             } else {
                 addAssistantMessage("error", message);
             }
         } finally {
             if (assistantState.running === run) assistantState.running = null;
+            assistantState.resourceMutationAllowed = false;
             setAssistantSendButtonRunning(sendButton, false);
         }
     }
 
     Object.assign(tools, {
         ASSISTANT_TOOL_NAMES,
+        assistantRepeatedToolAction,
         assistantToolNameFromText,
         parseAssistantArguments,
         normalizeAssistantToolCall,
@@ -878,6 +987,7 @@
         callPromptAssistant,
         normalizeAssistantToolCalls,
         assistantUserRequestedPromptEdit,
+        assistantUserRequestedResourceMutation,
         assistantToolMutatesPrompt,
         assistantSupportsNativeImages,
         runAssistantLoop

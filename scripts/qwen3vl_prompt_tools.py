@@ -5,7 +5,9 @@ from pathlib import Path
 import gradio as gr
 
 from lib_qwen3vl_prompt_tools.generation import caption, enhance
+from lib_qwen3vl_prompt_tools.forge_resources import inspect_resource, search_resources
 from lib_qwen3vl_prompt_tools.i18n import tr, translation_bundle
+from lib_qwen3vl_prompt_tools.prompt_skills import load_prompt_skill
 from lib_qwen3vl_prompt_tools.generic import (
     TAGGER,
     TAGGER_MODELS,
@@ -142,6 +144,52 @@ def _assistant_api(_: gr.Blocks, app):
         except Exception as error:
             raise HTTPException(status_code=500, detail=str(error)) from error
 
+    @app.get("/qwen3vl-prompt-tools/resources/search")
+    async def qwen3vl_resource_search(
+        kind: str,
+        query: str = "",
+        limit: int = 20,
+        cursor: str = "",
+    ):
+        try:
+            return search_resources(kind, query=query, limit=limit, cursor=cursor)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except Exception as error:
+            raise HTTPException(status_code=500, detail=str(error)) from error
+
+    @app.get("/qwen3vl-prompt-tools/resources/inspect")
+    async def qwen3vl_resource_inspect(
+        kind: str,
+        id: str,
+        query: str = "",
+        limit: int = 20,
+        cursor: str = "",
+    ):
+        try:
+            return inspect_resource(kind, id, query=query, limit=limit, cursor=cursor)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except Exception as error:
+            raise HTTPException(status_code=500, detail=str(error)) from error
+
+    @app.get("/qwen3vl-prompt-tools/prompt-skills/{name}")
+    async def qwen3vl_prompt_skill(name: str):
+        result = load_prompt_skill(name)
+        if not result.get("ok"):
+            raise HTTPException(status_code=404, detail=result.get("error") or "unknown prompt skill")
+        return result
+
+    @app.get("/qwen3vl-prompt-tools/settings-export")
+    async def qwen3vl_settings_export():
+        from modules import shared
+
+        prefix = "q3vl_assistant_"
+        return {
+            key.removeprefix(prefix): value
+            for key, value in shared.opts.data.items()
+            if key.startswith(prefix) and "settings_" not in key
+        }
 
 def _after_component(component, **kwargs):
     elem_id = kwargs.get("elem_id")
@@ -548,11 +596,6 @@ def _ui_tab():
         mmproj_choices = [default_vision_mmproj] + mmproj_choices
     with gr.Blocks(analytics_enabled=False) as interface:
         with gr.Column(elem_id="q3vl-workbench"):
-            gr.HTML(
-                f"<header class='q3vl-heading'><div class='q3vl-heading-copy'>"
-                f"<span class='q3vl-kicker'><i aria-hidden='true'></i>{_('ui.kicker')}</span>"
-                f"<h1>{_('ui.heading.title')}</h1><p>{_('ui.heading.description')}</p></div></header>"
-            )
             mode = gr.Radio(
                 ["WD tagger + lmcpp", "Krea2 / Qwen3-VL"],
                 value="WD tagger + lmcpp",

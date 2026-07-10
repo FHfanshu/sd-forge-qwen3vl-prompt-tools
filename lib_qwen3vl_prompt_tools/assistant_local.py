@@ -80,7 +80,7 @@ def _prompt_assistant_chat_local_once(payload: dict[str, Any]) -> dict[str, Any]
     messages = payload.get("messages") or []
     if not isinstance(messages, list):
         raise RuntimeError("messages must be a list")
-    request_messages = _assistant_request_messages(messages)
+    request_messages = _assistant_request_messages(messages, _payload_bool(payload.get("disable_tools"), False))
     preset = str(payload.get("local_text_preset") or payload.get("vision_preset") or DEFAULT_LOCAL_TEXT_PRESET).strip()
     model_path, _mmproj_path, alias = resolve_vision_model_pair(
         preset,
