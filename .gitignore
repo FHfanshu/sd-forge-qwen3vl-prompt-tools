@@ -4,3 +4,5 @@ __pycache__/
 bin/
 *.log
 *.tmp
+data/
+.playwright-mcp/

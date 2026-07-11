@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import gradio as gr
@@ -8,6 +9,12 @@ from lib_qwen3vl_prompt_tools.generation import caption, enhance
 from lib_qwen3vl_prompt_tools.forge_resources import inspect_resource, search_resources
 from lib_qwen3vl_prompt_tools.i18n import tr, translation_bundle
 from lib_qwen3vl_prompt_tools.prompt_skills import load_prompt_skill
+from lib_qwen3vl_prompt_tools.assistant_sessions import (
+    AssistantSessionRepository,
+    AssistantSessionService,
+    SessionConflict,
+    SessionNotFound,
+)
 from lib_qwen3vl_prompt_tools.generic import (
     TAGGER,
     TAGGER_MODELS,
@@ -88,8 +95,107 @@ def _run_enhancer(text: str, task: str):
 
 
 def _assistant_api(_: gr.Blocks, app):
-    from fastapi import Body, HTTPException
-    from fastapi.responses import StreamingResponse
+    from fastapi import Body, Header, HTTPException
+    from fastapi.responses import Response, StreamingResponse
+
+    sessions = AssistantSessionService(AssistantSessionRepository())
+
+    def session_error(error: Exception):
+        if isinstance(error, SessionNotFound):
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        if isinstance(error, (SessionConflict, ValueError)):
+            raise HTTPException(status_code=409 if isinstance(error, SessionConflict) else 400, detail=str(error)) from error
+        raise error
+
+    @app.post("/qwen3vl-prompt-tools/assistant/sessions")
+    async def qwen3vl_create_assistant_session(payload: dict = Body(default={})):
+        try:
+            return sessions.repository.create_session(
+                str(payload.get("title") or ""),
+                str(payload.get("profile_id") or ""),
+                payload.get("model_snapshot") if isinstance(payload.get("model_snapshot"), dict) else None,
+            )
+        except Exception as error:
+            session_error(error)
+
+    @app.get("/qwen3vl-prompt-tools/assistant/sessions")
+    async def qwen3vl_list_assistant_sessions(include_archived: bool = False, limit: int = 50):
+        return {"sessions": sessions.repository.list_sessions(include_archived, limit)}
+
+    @app.get("/qwen3vl-prompt-tools/assistant/sessions/{session_id}")
+    async def qwen3vl_get_assistant_session(session_id: str, after_sequence: int = 0, limit: int = 500):
+        try:
+            return {"session": sessions.repository.get_session(session_id), "events": sessions.repository.events(session_id, after_sequence, limit)}
+        except Exception as error:
+            session_error(error)
+
+    @app.patch("/qwen3vl-prompt-tools/assistant/sessions/{session_id}")
+    async def qwen3vl_update_assistant_session(session_id: str, payload: dict = Body(...)):
+        try:
+            return sessions.repository.update_session(
+                session_id,
+                title=payload.get("title"),
+                archived=payload.get("archived"),
+                version=payload.get("version"),
+            )
+        except Exception as error:
+            session_error(error)
+
+    @app.delete("/qwen3vl-prompt-tools/assistant/sessions/{session_id}")
+    async def qwen3vl_delete_assistant_session(session_id: str):
+        try:
+            sessions.repository.delete_session(session_id)
+            return Response(status_code=204)
+        except Exception as error:
+            session_error(error)
+
+    @app.post("/qwen3vl-prompt-tools/assistant/sessions/{session_id}/runs")
+    async def qwen3vl_start_assistant_session_run(session_id: str, payload: dict = Body(...)):
+        try:
+            return sessions.start(session_id, payload)
+        except Exception as error:
+            session_error(error)
+
+    @app.post("/qwen3vl-prompt-tools/assistant/runs/{run_id}/resume")
+    async def qwen3vl_resume_assistant_session_run(run_id: str, payload: dict = Body(default={})):
+        try:
+            return sessions.repository.resume_run(run_id, str(payload.get("lease_owner") or ""))
+        except Exception as error:
+            session_error(error)
+
+    @app.post("/qwen3vl-prompt-tools/assistant/runs/{run_id}/cancel")
+    async def qwen3vl_cancel_assistant_session_run(run_id: str):
+        try:
+            return sessions.repository.checkpoint(run_id, "cancelled", "cancelled by user")
+        except Exception as error:
+            session_error(error)
+
+    @app.post("/qwen3vl-prompt-tools/assistant/runs/{run_id}/tool-results")
+    async def qwen3vl_assistant_session_tool_result(run_id: str, payload: dict = Body(...)):
+        try:
+            return sessions.repository.append_tool_result(run_id, payload)
+        except Exception as error:
+            session_error(error)
+
+    @app.post("/qwen3vl-prompt-tools/assistant/runs/{run_id}/stream")
+    async def qwen3vl_stream_assistant_session_run(run_id: str, payload: dict = Body(...)):
+        try:
+            return StreamingResponse(sessions.stream(run_id, payload), media_type="application/x-ndjson")
+        except Exception as error:
+            session_error(error)
+
+    @app.get("/qwen3vl-prompt-tools/assistant/runs/{run_id}/events")
+    async def qwen3vl_replay_assistant_session_events(run_id: str, after_sequence: int = 0, last_event_id: str | None = Header(default=None)):
+        try:
+            run = sessions.repository.get_run(run_id)
+            replay_from = max(after_sequence, int(last_event_id or 0))
+            events = sessions.repository.events(run["session_id"], replay_from)
+            return StreamingResponse(
+                (f"id: {event['sequence']}\nevent: {event['event_type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n" for event in events),
+                media_type="text/event-stream",
+            )
+        except Exception as error:
+            session_error(error)
 
     @app.post("/qwen3vl-prompt-tools/assistant")
     async def qwen3vl_prompt_assistant(payload: dict = Body(...)):
@@ -188,7 +294,7 @@ def _assistant_api(_: gr.Blocks, app):
         return {
             key.removeprefix(prefix): value
             for key, value in shared.opts.data.items()
-            if key.startswith(prefix) and "settings_" not in key
+            if key.startswith(prefix) and "settings_" not in key and "api_key" not in key
         }
 
 def _after_component(component, **kwargs):
