@@ -246,7 +246,7 @@ ASSISTANT_TOOLS = [
                 "type": "object",
                 "properties": {
                     "kind": {"type": "string", "enum": ["wildcard", "style", "lora"]},
-                    "query": {"type": "string", "description": "Case-insensitive space-separated AND query."},
+                    "query": {"type": "string", "description": "Case-insensitive fuzzy query. Terms separated by spaces are ANDed; use | to OR groups, for example 'dragon boy | xiuran'."},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 50},
                     "cursor": {"type": "string", "description": "next_cursor from the previous result."},
                 },

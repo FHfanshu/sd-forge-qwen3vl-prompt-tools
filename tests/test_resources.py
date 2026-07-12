@@ -25,6 +25,19 @@ class ResourceCatalogTests(unittest.TestCase):
         self.assertEqual(2, first["total"])
         self.assertFalse(second["next_cursor"])
 
+    def test_search_supports_fuzzy_terms_and_or_groups(self):
+        items = [
+            {"kind": "lora", "id": "xiuran", "name": "Xiuran Moqing", "alias": "Dragon-Boy", "path": "characters/xiuran_moqing", "metadata": {}},
+            {"kind": "lora", "id": "forest", "name": "Forest Style", "alias": "Trees", "path": "styles/forest", "metadata": {}},
+        ]
+        with patch("lib_qwen3vl_prompt_tools.forge_resources._items", return_value=items):
+            fuzzy = search_resources("lora", "dragon boy")
+            typo = search_resources("lora", "xiurann")
+            either = search_resources("lora", "xiurann | forest")
+        self.assertEqual(["Xiuran Moqing"], [item["name"] for item in fuzzy["items"]])
+        self.assertEqual(["Xiuran Moqing"], [item["name"] for item in typo["items"]])
+        self.assertEqual(["Xiuran Moqing", "Forest Style"], [item["name"] for item in either["items"]])
+
     def test_wildcard_nested_names_are_logical_and_paginated(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+import re
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -23,12 +25,42 @@ def _terms(query: str) -> list[str]:
     return [part.casefold() for part in str(query or "").split() if part.strip()]
 
 
+def _query_groups(query: str) -> list[list[str]]:
+    """Split a query into OR groups; whitespace-separated terms remain ANDed."""
+    return [terms for part in str(query or "").split("|") if (terms := _terms(part))]
+
+
+def _normalized(value: str) -> str:
+    return "".join(character for character in value.casefold() if character.isalnum())
+
+
+def _fuzzy_term_matches(term: str, haystack: str) -> bool:
+    if term in haystack:
+        return True
+
+    normalized_term = _normalized(term)
+    normalized_haystack = _normalized(haystack)
+    if not normalized_term:
+        return True
+    if normalized_term in normalized_haystack:
+        return True
+    if len(normalized_term) < 4:
+        return False
+
+    words = re.findall(r"\w+", haystack, flags=re.UNICODE)
+    return any(
+        len(normalized_word := _normalized(word)) >= 4
+        and SequenceMatcher(None, normalized_term, normalized_word).ratio() >= 0.8
+        for word in words
+    )
+
+
 def _matches(query: str, values: Iterable[Any]) -> bool:
-    needles = _terms(query)
-    if not needles:
+    groups = _query_groups(query)
+    if not groups:
         return True
     haystack = "\n".join(str(value or "") for value in values).casefold()
-    return all(needle in haystack for needle in needles)
+    return any(all(_fuzzy_term_matches(term, haystack) for term in group) for group in groups)
 
 
 def _limit(value: Any, maximum: int = MAX_LIMIT) -> int:
