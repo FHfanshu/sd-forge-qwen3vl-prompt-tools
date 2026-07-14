@@ -26,7 +26,7 @@ Local one-shot profiles start `llama-server.exe` for one turn, reuse it through 
 
 The assistant can read and patch the active txt2img/img2img prompt. It must call `read_prompt` before `edit_prompt`; edits require the latest matching hash and are rejected if the user changed the field in between.
 
-Resource tools are read-only until an explicit apply request. Wildcards remain `__name__`, LoRAs remain `<lora:alias:weight>`, and Styles use Forge's native selector.
+Resource discovery is read-only. When the assistant applies a selected Wildcard, LoRA, or Style, it first verifies the latest Forge context hash; Wildcards remain `__name__`, LoRAs remain `<lora:alias:weight>`, and Styles use Forge's native selector.
 
 Danbooru tools query the public tag database and return prompt-ready space-separated names while keeping canonical underscore names for lookup only.
 
@@ -51,6 +51,8 @@ Runtime files are stored under:
 ```
 
 The product remains a single-agent, one-creature Loom surface. It does not expose Terrarium Studio or graph-management UI.
+
+Powered by [KohakuTerrarium](https://github.com/Kohaku-Lab/KohakuTerrarium). Kohaku Loom is distributed under the included [KohakuTerrarium License 1.0](LICENSE).
 
 ## API Prefix
 
