@@ -1,7 +1,6 @@
 (function () {
     const tools = window.kohakuLoom;
     if (!tools) return;
-
     const BASE = "/kohaku-loom/kt";
     const SESSION_KEY = "loom_kt_active_session";
     const RUNTIME_KEY = "loom_assistant_runtime";
@@ -21,11 +20,9 @@
     tools.messageAttachments = tools.messageAttachments || function (content) { return Array.isArray(content) ? content.filter(function (part) { return part?.type === "image_url" && part.image_url?.url; }).map(function (part) { return { dataUrl: part.image_url.url, name: part.meta?.source_name || "reference image" }; }) : []; };
     tools.attachmentContent = tools.attachmentContent || function (text, attachments) { return (text ? [{ type: "text", text: text }] : []).concat(attachments.map(function (item) { return { type: "image_url", image_url: { url: item.dataUrl, detail: "high" }, meta: { source_type: "attachment", source_name: item.name || "reference image" } }; })); };
     tools.ktMutationTool = tools.ktMutationTool || function (name, args) { return ["edit_prompt", "initialize_prompt", "apply_txt2img_patch"].includes(name) || (name === "forge_resource" && String(args?.action || "") === "apply"); };
-
     function assistantRuntime() {
         return localStorage.getItem(RUNTIME_KEY) || "kohaku-terrarium";
     }
-
     function setAssistantRuntime(runtime) {
         const value = String(runtime || "");
         if (value !== "kohaku-terrarium") throw new Error(`Unsupported assistant runtime: ${value}`);
@@ -42,6 +39,7 @@
         else localStorage.removeItem(SESSION_KEY);
         tools.assistantState.sessionId = nextId;
         if (previousId !== nextId) {
+            tools.assistantState.sessionTitle = "";
             tools.assistantState.agentMode = tools.storedAssistantAgentMode(nextId);
             tools.assistantState.txt2imgStateRead = null;
             tools.syncAssistantAgentMode();
@@ -50,7 +48,13 @@
             tools.assistantState.queueVersions = {};
             renderAssistantQueue([]);
         }
+        tools.syncAssistantRouteLabel?.();
         sessionGeneration += 1;
+    }
+    function setAssistantSessionTitle(value) {
+        const title = String(value || "").trim();
+        tools.assistantState.sessionTitle = title && title.toLowerCase() !== "new session" ? title : "新会话";
+        tools.syncAssistantRouteLabel?.();
     }
     function rewindStorageKey(sessionId) {
         return REWIND_KEY_PREFIX + String(sessionId || "");
@@ -81,7 +85,6 @@
         }
         return response.status === 204 ? null : response;
     }
-
     async function ktJson(path, options) {
         const response = await ktRequest(path, options);
         return response ? response.json() : null;
@@ -158,6 +161,7 @@
         });
         tools.storeAssistantAgentMode(data.session.session_id, data.session.agent_mode || requestedMode);
         setActiveSessionId(data.session.session_id);
+        setAssistantSessionTitle(data.session.title);
         localStorage.setItem(SESSION_PROFILE_KEY, profileSnapshot(profileId));
         return data.session;
     }
@@ -471,7 +475,6 @@
             if (!/unknown tool request|already completed/i.test(String(error.message || error))) throw error;
         }
     }
-
     async function handleToolEvent(run, event) {
         if (event.type !== "tool_request") return;
         const payload = event.payload || {};
@@ -505,7 +508,6 @@
             throw error;
         }
     }
-
     function handleTurnEvent(run, event) {
         const payload = event.payload || {};
         if (event.type === "message_queued" || event.type === "message_updated") {
@@ -903,6 +905,7 @@
                 }
                 const data = await ktJson(`/sessions/${encodeURIComponent(sessionId)}`);
                 if (generation !== sessionGeneration || activeSessionId() !== sessionId) return;
+                setAssistantSessionTitle(data.title || data.session?.title || data.metadata?.title);
                 const log = panel.querySelector("#loom_assistant_messages");
                 if (!log) return;
                 log.replaceChildren();
@@ -941,6 +944,7 @@
 
     async function resetAssistantSession() {
         setActiveSessionId("");
+        setAssistantSessionTitle("");
         tools.assistantState.legacyContext = "";
         localStorage.removeItem(SESSION_PROFILE_KEY);
         await closeActiveSession().catch(function () { });
@@ -979,6 +983,7 @@
         activeAssistantSessionId: activeSessionId,
         setActiveAssistantSessionId: setActiveSessionId,
         closeActiveAssistantSession: closeActiveSession,
+        setAssistantSessionTitle,
         renderLegacyAssistantSession: renderLegacySession,
         assistantSessionListPath,
         sessionListLabel,

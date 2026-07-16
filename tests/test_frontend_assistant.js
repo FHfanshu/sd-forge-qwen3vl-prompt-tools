@@ -67,45 +67,22 @@ test("file input snapshots selected images before clearing", () => {
     assert.match(source, /const files = Array\.from\(fileInput\.files \|\| \[\]\);\s*fileInput\.value = "";\s*acceptAssistantImageFiles\(files\);/);
 });
 
-test("Svelte readiness removes legacy UI without recreating it", () => {
+test("a mounted Svelte surface suppresses the legacy assistant while readiness alone does not", () => {
     const source = fs.readFileSync(path.resolve(__dirname, "../javascript/kohaku_loom_boot.js"), "utf8");
-    const callbacks = {};
-    const calls = { remove: 0, settings: 0, restore: 0 };
-    const documentElement = {
-        classList: { toggle() {} },
-        dataset: {},
-        addEventListener() {}
-    };
-    const context = {
-        Element: class Element {},
-        document: {
-            documentElement,
-            body: {},
-            addEventListener() {},
-            querySelector() { return null; },
-            querySelectorAll() { return []; }
-        },
-        onAfterUiUpdate(callback) { callbacks.afterUpdate = callback; },
-        onUiLoaded(callback) { callbacks.uiLoaded = callback; },
-        window: {
-            KohakuLoomSvelteUi: { UI_READY: true },
-            addEventListener() {},
-            kohakuLoom: {
-                loomApp: () => null,
-                loomMainApp: () => null,
-                removeAssistantWindow: () => { calls.remove += 1; },
-                setupModelProfileSettingsWindow: () => { calls.settings += 1; },
-                restoreAssistantSession: () => { calls.restore += 1; }
-            }
-        }
-    };
-    context.window.document = context.document;
-    vm.runInNewContext(source, context);
+    assert.doesNotMatch(source, /window\.KohakuLoomSvelteUi\?\.UI_READY\s*===\s*true/);
+    assert.match(source, /document\.querySelector\('\[data-kohaku-loom-surface="true"\]'\)/);
+    assert.match(source, /removeAssistantWindow\(\);\s*setupPullRefreshGuard\(\);\s*return;/);
+    assert.match(source, /setupAssistantWindow\(\);/);
+});
 
-    callbacks.uiLoaded();
-    callbacks.afterUpdate();
-
-    assert.deepEqual(calls, { remove: 2, settings: 0, restore: 0 });
+test("session title opens the second-level history page and Draft stays in the header", () => {
+    const boot = fs.readFileSync(path.resolve(__dirname, "../javascript/kohaku_loom_boot.js"), "utf8");
+    const history = fs.readFileSync(path.resolve(__dirname, "../javascript/kohaku_loom_z_sessions_history.js"), "utf8");
+    assert.match(boot, /id="loom_assistant_new_session"[\s\S]*assistantIcon\("draft"\)/);
+    assert.match(boot, /id="loom_assistant_session_title"/);
+    assert.match(boot, /loom_assistant_session_title.*openAssistantSessionHistory/);
+    assert.match(history, /loom-assistant-session-page/);
+    assert.match(history, /loom-assistant-history-open/);
 });
 
 test("locale hints resolve without recursing through their own export", async () => {
@@ -138,6 +115,14 @@ test("released Svelte boot mounts only through the Forge UI callback", () => {
     assert.equal(mounts, 0);
     callback();
     assert.equal(mounts, 1);
+});
+
+test("Svelte bundle export does not shadow the runtime contract", () => {
+    const config = fs.readFileSync(path.resolve(__dirname, "../frontend/vite.config.ts"), "utf8");
+    const bundle = fs.readFileSync(path.resolve(__dirname, "../javascript/kohaku_loom_90_ui.js"), "utf8");
+    assert.match(config, /name:\s*"KohakuLoomSvelteUiBundle"/);
+    assert.match(bundle, /var KohakuLoomSvelteUiBundle=\(function/);
+    assert.doesNotMatch(bundle, /var KohakuLoomSvelteUi=\(function/);
 });
 
 test("user messages have an always-visible edit and resend action", () => {

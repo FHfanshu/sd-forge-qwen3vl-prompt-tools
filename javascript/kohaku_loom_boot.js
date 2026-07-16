@@ -14,7 +14,6 @@
         addAssistantMessage,
         profileStore,
         openModelProfileSettings,
-        setupModelProfileSettingsWindow,
         tr
     } = tools;
 
@@ -39,6 +38,8 @@
         send: '<path d="m3 11 18-8-8 18-2-8zM11 13 21 3"/>',
         stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
         model: '<path d="m12 3 1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6zM18.5 16l.8 2.7 2.7.8-2.7.8-.8 2.7-.8-2.7-2.7-.8 2.7-.8z"/>',
+        draft: '<path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3Z"/><path d="m13.5 8.5 2 2"/>',
+        back: '<path d="m15 18-6-6 6-6"/>',
         chevron: '<path d="m8 10 4 4 4-4"/>',
         reasoning: '<path d="M9.5 4A2.5 2.5 0 0 1 12 6.5v11a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.98-3.12 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.68A2.5 2.5 0 0 1 9.5 4Z"/><path d="M14.5 4A2.5 2.5 0 0 0 12 6.5v11a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.98-3.12 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.68A2.5 2.5 0 0 0 14.5 4Z"/><path d="M7 9.5h2M15 9.5h2M7.5 14h1.5M15 14h1.5"/>'
     };
@@ -54,6 +55,17 @@
     }
 
     function syncAssistantRouteLabel() {
+        const sessionTitle = document.querySelector("#loom_assistant_session_title_text");
+        const sessionButton = document.querySelector("#loom_assistant_session_title");
+        if (sessionTitle) {
+            const activeSession = typeof tools.activeAssistantSessionId === "function" ? tools.activeAssistantSessionId() : "";
+            const label = String(assistantState.sessionTitle || "").trim() || (activeSession ? "当前会话" : "新会话");
+            sessionTitle.textContent = label;
+            if (sessionButton) {
+                sessionButton.title = `切换会话：${label}`;
+                sessionButton.setAttribute("aria-label", sessionButton.title);
+            }
+        }
         if (!profileStore) return;
         const state = profileStore.load();
         const active = state.profiles.find(function (profile) { return profile.id === state.active_profile_id; });
@@ -121,7 +133,7 @@
         panel.setAttribute("role", "dialog");
         panel.setAttribute("aria-label", t("assistant.title", "LLM 提示词助手"));
         panel.innerHTML = `
-            <div class="loom-assistant-head"><div class="loom-assistant-brand"><div><strong>${t("assistant.title", "LLM 提示词助手")}</strong><span id="loom_assistant_token_totals" class="loom-assistant-token-totals"></span></div></div><div class="loom-assistant-head-buttons"><button type="button" id="loom_assistant_sessions" class="loom-assistant-icon-button" title="会话历史" aria-label="会话历史">☰</button><button type="button" id="loom_assistant_new_session" class="loom-assistant-icon-button" title="新建会话" aria-label="新建会话">＋</button><button type="button" id="loom_assistant_settings_open" class="loom-assistant-icon-button" title="${t("assistant.settings", "设置")}" aria-label="${t("assistant.settings", "设置")}">⚙</button><button type="button" id="loom_assistant_close" class="loom-assistant-close" title="${t("assistant.close", "关闭")}" aria-label="${t("assistant.close", "关闭")}">×</button></div></div>
+            <div class="loom-assistant-head"><div class="loom-assistant-chat-head"><div class="loom-assistant-brand"><button type="button" id="loom_assistant_new_session" class="loom-assistant-icon-button loom-assistant-draft-button" title="新建会话" aria-label="新建会话">${assistantIcon("draft")}</button><button type="button" id="loom_assistant_session_title" class="loom-assistant-session-title" title="切换会话" aria-label="切换会话" aria-haspopup="dialog" aria-expanded="false"><strong id="loom_assistant_session_title_text">新会话</strong>${assistantIcon("chevron")}</button><span id="loom_assistant_token_totals" class="loom-assistant-token-totals"></span></div></div><div class="loom-assistant-history-head" hidden><button type="button" id="loom_assistant_history_back" class="loom-assistant-icon-button" title="返回当前会话" aria-label="返回当前会话">${assistantIcon("back")}</button><strong>历史记录</strong></div><div class="loom-assistant-head-buttons"><button type="button" id="loom_assistant_settings_open" class="loom-assistant-icon-button" title="${t("assistant.settings", "设置")}" aria-label="${t("assistant.settings", "设置")}">⚙</button><button type="button" id="loom_assistant_close" class="loom-assistant-close" title="${t("assistant.close", "关闭")}" aria-label="${t("assistant.close", "关闭")}">×</button></div></div>
             <div id="loom_assistant_messages" role="log" aria-live="polite"><div class="loom-assistant-empty"><div class="loom-assistant-quick-actions"><button type="button" data-loom-assistant-prompt="Read the current prompt and style template, then analyze its subject, composition, camera, lighting, and spatial relationships. Do not edit it.">${t("assistant.quick.analyze", "分析结构")}</button><button type="button" data-loom-assistant-prompt="Read the current prompt, then improve its composition and spatial relationships. Apply the changes directly with edit_prompt.">${t("assistant.quick.compose", "强化构图")}</button><button type="button" data-loom-assistant-prompt="Read the current prompt, remove redundancy and ambiguity while preserving its intent. Apply the refined prompt directly with edit_prompt.">${t("assistant.quick.refine", "精炼表达")}</button></div></div></div>
             <ol id="loom_assistant_queue" class="loom-assistant-queue" aria-label="待处理消息"></ol>
             <div class="loom-assistant-composer">
@@ -142,7 +154,7 @@
         tools.syncAssistantAgentMode?.();
         panel.querySelector("#loom_assistant_settings_open").addEventListener("click", openModelProfileSettings);
         panel.querySelector("#loom_assistant_new_session").addEventListener("click", function () { tools.createAssistantSession?.(); });
-        panel.querySelector("#loom_assistant_sessions").addEventListener("click", function () { tools.openAssistantSessionHistory?.(); });
+        panel.querySelector("#loom_assistant_session_title").addEventListener("click", function () { tools.openAssistantSessionHistory?.(); });
         panel.querySelector("#loom_assistant_agent_mode").addEventListener("click", async function (event) {
             const button = event.currentTarget;
             const next = assistantState.agentMode === "yolo" ? "normal" : "yolo";
@@ -203,6 +215,7 @@
             if (open) window.requestAnimationFrame(function () { panel.querySelector("#loom_assistant_input")?.focus(); });
         });
         panel.querySelector("#loom_assistant_close").addEventListener("click", function () {
+            tools.assistantState.sessionHistoryCleanup?.();
             panel.classList.remove("loom-assistant-open");
         });
         makeAssistantLauncherDraggable(launcher, panel);
@@ -485,7 +498,7 @@
     }
 
     function setupQwenTools() {
-        if (window.KohakuLoomSvelteUi?.UI_READY === true) {
+        if (document.querySelector('[data-kohaku-loom-surface="true"]')) {
             removeAssistantWindow();
             setupPullRefreshGuard();
             return;
@@ -506,11 +519,6 @@
             return;
         }
         profileStore?.load();
-        const profileSettings = setupModelProfileSettingsWindow?.();
-        if (profileSettings) {
-            restoreAssistantPosition(profileSettings, "loom_settings_position");
-            makeAssistantDraggable(profileSettings, profileSettings.querySelector(".loom-profile-head"), "loom_settings_position");
-        }
         setupAssistantWindow();
         tools.restoreAssistantSession?.();
         setupPullRefreshGuard();
@@ -528,6 +536,8 @@
         window.setInterval(setupQwenTools, 1500);
     }
 
+    tools.assistantIcon = assistantIcon;
+    tools.syncAssistantRouteLabel = syncAssistantRouteLabel;
     window.addEventListener("loom:model-profiles-changed", syncAssistantRouteLabel);
     window.addEventListener("loom:model-profiles-changed", function () {
         tools.importAssistantProfiles?.(true, true).catch(function () { });

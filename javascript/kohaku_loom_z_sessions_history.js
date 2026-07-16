@@ -20,21 +20,33 @@
         tools.assistantState.sessionHistoryCleanup?.();
         const menu = document.createElement("div");
         const results = document.createElement("div");
+        const backButton = panel.querySelector("#loom_assistant_history_back");
         menu.id = "loom_assistant_session_menu";
-        menu.className = "loom-assistant-session-menu";
+        menu.className = "loom-assistant-session-menu loom-assistant-session-page";
         results.className = "loom-assistant-session-results";
         results.textContent = "Loading...";
         menu.appendChild(results);
-        panel.querySelector(".loom-assistant-head")?.appendChild(menu);
+        panel.appendChild(menu);
+        panel.classList.add("loom-assistant-history-open");
+        panel.querySelector("#loom_assistant_session_title")?.setAttribute("aria-expanded", "true");
+        panel.querySelector(".loom-assistant-chat-head")?.setAttribute("hidden", "");
+        panel.querySelector(".loom-assistant-history-head")?.removeAttribute("hidden");
         let refreshTimer = null;
         let renderVersion = 0;
         const closeMenu = function () {
             if (refreshTimer) window.clearInterval(refreshTimer);
             refreshTimer = null;
             menu.remove();
+            panel.classList.remove("loom-assistant-history-open");
+            panel.querySelector("#loom_assistant_session_title")?.setAttribute("aria-expanded", "false");
+            panel.querySelector(".loom-assistant-chat-head")?.removeAttribute("hidden");
+            panel.querySelector(".loom-assistant-history-head")?.setAttribute("hidden", "");
+            if (backButton) backButton.onclick = null;
             if (tools.assistantState.sessionHistoryCleanup === closeMenu) tools.assistantState.sessionHistoryCleanup = null;
+            panel.querySelector("#loom_assistant_session_title")?.focus();
         };
         tools.assistantState.sessionHistoryCleanup = closeMenu;
+        if (backButton) backButton.onclick = closeMenu;
         const renderSessions = async function () {
             const version = ++renderVersion;
             if (!menu.isConnected) { closeMenu(); return; }
@@ -69,6 +81,7 @@
                 if (tools.assistantState.running) return;
                 await tools.closeActiveAssistantSession();
                 tools.setActiveAssistantSessionId(session.session_id);
+                tools.setAssistantSessionTitle?.(session.title);
                 panel.dataset.loomSessionRestored = "";
                 panel.querySelector("#loom_assistant_messages")?.replaceChildren();
                 closeMenu();
@@ -97,11 +110,13 @@
         function renderLegacyRow(session) {
             const item = document.createElement("button");
             item.type = "button";
+            item.className = "loom-assistant-session-legacy";
             item.textContent = `旧 · ${session.title || session.session_id}`;
             item.addEventListener("click", async function () {
                 if (tools.assistantState.running) return;
                 await tools.closeActiveAssistantSession();
                 tools.setActiveAssistantSessionId("");
+                tools.setAssistantSessionTitle?.(session.title);
                 const data = await forgeJson(`/legacy-sessions/${encodeURIComponent(session.session_id)}`);
                 closeMenu();
                 tools.renderLegacyAssistantSession(data);

@@ -731,6 +731,11 @@
     }
 
     function openModelProfileSettings() {
+        const svelteUi = window.KohakuLoomSvelteUi;
+        if (svelteUi?.UI_READY === true && typeof svelteUi.openProfileSettings === "function") {
+            svelteUi.openProfileSettings();
+            return null;
+        }
         const panel = setupModelProfileSettingsWindow();
         if (!panel) return null;
         settingsReturnFocus = document.activeElement;

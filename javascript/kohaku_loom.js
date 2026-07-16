@@ -94,7 +94,9 @@
         running: null,
         queue: [],
         queueVersions: {},
-        sessionUsage: {}
+        sessionUsage: {},
+        sessionTitle: "",
+        sessionHistoryCleanup: null
     };
     const assistantBridgeId = globalThis.crypto?.randomUUID?.() || `loom-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
