@@ -28,6 +28,19 @@ The reverse-prompt workbench is owned by the separate
 vision analysis and local llama.cpp/Profile runtime foundations; it does not
 register reverse-prompt tabs, WD Tagger controls, or Krea inline actions.
 
+## Frontend Stack
+
+The generated floating UI uses Svelte 5, TypeScript, Vite library mode,
+shadcn-svelte source components backed by Bits UI, and Tailwind CSS. Tailwind
+uses the `kl-` prefix with Preflight disabled so Forge remains authoritative for
+the host page. The build emits one CSS-injected IIFE at
+`javascript/kohaku_loom_90_ui.js`.
+
+The generated UI remains behind the explicit `UI_READY` gate during migration.
+`javascript/kohaku_loom_99_boot.js` may mount it only after both the gate and
+Forge's `onUiLoaded` callback allow startup; until cutover, the legacy renderer
+is the only active UI.
+
 ## Runtime Boundary
 
 Forge starts an isolated sidecar on demand. The sidecar runs a minimal Loom API
@@ -73,6 +86,26 @@ Each chat session maps to one `.kohakutr` file. Only one session is active in
 the first release. Closing or refreshing the browser does not cancel a turn;
 clients reconnect with an event cursor.
 
+Messages sent during an active turn use a durable FIFO queue stored in the KT
+session. The first pending message remains the next turn; up to five later
+messages are offered as live mid-turn guidance. Unclaimed guidance becomes a
+normal queued message when the current turn ends. Pending messages may be
+edited or cancelled until KT claims them. Successful turns automatically drain
+the queue; failure or user cancellation pauses it at the current head.
+
+Transient provider failures retry within the same turn, preserving partial
+output while showing attempt state. If a broken stream already emitted a native
+tool call, that call is returned to KT instead of retrying the unresolved tool
+round. OpenAI-compatible APIs do not expose partial tool deltas after a broken
+stream, so ambiguous failures during native-tool rounds fail closed and pause
+the durable queue instead of risking a duplicate mutation. Cloud providers use
+the `2, 5, 10, 30, 60` schedule with bounded jitter unless `Retry-After`
+overrides it. llama-once restarts its server and uses the `1, 2, 4, 8, 16`
+schedule with bounded jitter. Browser operations carry stable IDs so a lost
+unsafe response can be reconciled without duplicating the turn or queue item.
+A later repeated Forge mutation is sent back to the browser to revalidate the
+current context hash before changing Forge state.
+
 The old `assistant_sessions.sqlite3` database is exposed only through read-only
 GET routes. New turns are never dual-written. Continuing an old conversation
 creates a new Loom session and carries a bounded transcript forward as context.
@@ -82,10 +115,11 @@ creates a new Loom session and carries a bounded transcript forward as context.
 KohakuTerrarium owns the controller loop. Browser tools are direct KT tools that
 delegate to the active Forge tab and await a correlated reply.
 
-Forge-only tools are registered only while a bridge is available. The browser
-remains authoritative for DOM state and preserves read-before-write, prompt and
-context hashes, stale-context rejection, preview-first edits, explicit mutation
-intent, and tab-scoped bridge identity.
+Forge-only tools are registered for Forge sessions and execute only through the
+leased active-tab bridge. The browser remains authoritative for DOM state and
+preserves read-before-write, prompt and context hashes, stale-context rejection,
+and tab-scoped bridge identity. Prompt edits are immediately applied only after
+their read/context guards succeed; stale guards require a fresh read.
 
 Without Forge, the packaged Creature remains useful for chat, image-prompt
 construction, and Danbooru research. Forge mutation tools are omitted.

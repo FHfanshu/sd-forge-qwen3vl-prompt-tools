@@ -16,6 +16,8 @@ This extension is loaded inside Forge Neo, so keep changes small and easy to aud
 - Browser scripts under `javascript/` are loaded by filename order. Keep `kohaku_loom.js` as the core namespace initializer, then layer assistant and boot scripts after it.
 - Shared browser state lives on `window.kohakuLoom`.
 - Run `node --check javascript/kohaku_loom*.js` after editing browser scripts when Node is available.
+- `javascript/kohaku_loom_90_ui.js` is generated Vite output and may exceed the 1000-line source limit; never edit it manually. Regenerate it from `frontend/` instead.
+- `javascript/kohaku_loom_99_boot.js` is an intentionally tiny generated-UI gate and may only call the Svelte mount after `UI_READY` and `onUiLoaded` both allow it.
 
 ## Local Models
 

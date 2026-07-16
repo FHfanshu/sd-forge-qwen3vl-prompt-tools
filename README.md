@@ -12,7 +12,8 @@ Image reverse prompting is intentionally separate. Install or enable the sibling
 - Read-only discovery of installed Wildcards, WebUI Styles, and LoRAs, with explicit native application tools.
 - Live Danbooru tag search, inspection, and related-tag lookup for booru-style prompt requests.
 - Local reference-image analysis and local Qwen teacher redaction before remote Gemini calls.
-- Isolated KohakuTerrarium controller runtime with resumable `.kohakutr` sessions and same-origin Forge proxying.
+- Isolated KohakuTerrarium controller runtime with resumable `.kohakutr` sessions, durable FIFO follow-ups, live mid-turn guidance, and same-origin Forge proxying.
+- Provider-aware recovery with visible retry state, partial-output preservation, session token totals, and idempotent guarded Forge mutations.
 
 ## Model Profiles
 
