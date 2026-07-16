@@ -16,7 +16,7 @@ import {
 type RecordValue = Record<string, unknown>;
 
 const DEFAULT_ENDPOINT = "http://127.0.0.1:8080/v1";
-const DEFAULT_MODEL_ID = "qwen3.5-9b-vlm";
+const DEFAULT_MODEL_ID = "local-model";
 
 const DEFAULT_CAPABILITIES: ProfileCapabilities = {
   tools: true,
@@ -169,20 +169,20 @@ export function normalizeProfile(raw: unknown, fallback?: Partial<Profile>): Pro
 }
 
 const DEFAULT_PROFILE_SEEDS: Array<Partial<Profile>> = [
-  { id: "moyuu-gemini", displayName: "Moyuu Gemini", modelId: "gemini-3.1-pro-high", protocol: "gemini-native", runtime: "remote-http", endpoint: "https://moyuu.cc", fallbackEndpoints: ["https://hk-api.moyuu.cc"], capabilities: { ...DEFAULT_CAPABILITIES }, parameters: { ...DEFAULT_PARAMETERS, temperature: 0.35, timeout: 120 } },
-  { id: "grok", displayName: "Grok", modelId: "grok-4.5", protocol: "openai-chat-completions", runtime: "remote-http", endpoint: "https://moyuu.cc", fallbackEndpoints: ["https://hk-api.moyuu.cc"], capabilities: { ...DEFAULT_CAPABILITIES, vision: false }, parameters: { ...DEFAULT_PARAMETERS, temperature: 0.35, timeout: 120 } },
-  { id: "deepseek", displayName: "DeepSeek", modelId: "deepseek-v4-pro", protocol: "openai-chat-completions", runtime: "remote-http", endpoint: "https://api.deepseek.com", fallbackEndpoints: [], capabilities: { ...DEFAULT_CAPABILITIES, vision: false }, parameters: { ...DEFAULT_PARAMETERS, temperature: 0.35, timeout: 120 } },
+  { id: "gemini", displayName: "Gemini", modelId: "gemini-model", enabled: false, protocol: "gemini-native", runtime: "remote-http", endpoint: "https://generativelanguage.googleapis.com", fallbackEndpoints: [], capabilities: { ...DEFAULT_CAPABILITIES }, parameters: { ...DEFAULT_PARAMETERS, temperature: 0.35, timeout: 120 } },
+  { id: "openai-compatible", displayName: "OpenAI-compatible", modelId: "model", enabled: false, protocol: "openai-chat-completions", runtime: "remote-http", endpoint: "", fallbackEndpoints: [], capabilities: { ...DEFAULT_CAPABILITIES, vision: false }, parameters: { ...DEFAULT_PARAMETERS, temperature: 0.35, timeout: 120 } },
+  { id: "deepseek", displayName: "DeepSeek", modelId: "deepseek-model", enabled: false, protocol: "openai-chat-completions", runtime: "remote-http", endpoint: "https://api.deepseek.com", fallbackEndpoints: [], capabilities: { ...DEFAULT_CAPABILITIES, vision: false }, parameters: { ...DEFAULT_PARAMETERS, temperature: 0.35, timeout: 120 } },
   { id: "local-llama-endpoint", displayName: "Local llama endpoint", modelId: DEFAULT_MODEL_ID, runtime: "llama-endpoint", endpoint: DEFAULT_ENDPOINT, parameters: { ...DEFAULT_PARAMETERS } },
-  { id: "local-qwen-once", displayName: "Local Qwen once", modelId: DEFAULT_MODEL_ID, runtime: "llama-once", endpoint: DEFAULT_ENDPOINT, parameters: { ...DEFAULT_PARAMETERS } },
+  { id: "local-llama-once", displayName: "Local llama one-shot", modelId: DEFAULT_MODEL_ID, enabled: false, runtime: "llama-once", endpoint: DEFAULT_ENDPOINT, parameters: { ...DEFAULT_PARAMETERS } },
 ];
 
 export function createDefaultProfileState(): ProfileState {
   return {
     version: 2,
-    activeProfileId: "moyuu-gemini",
-    teacherProfileId: "moyuu-gemini",
-    sessionProfileId: "local-qwen-once",
-    namingProfileId: "local-qwen-once",
+    activeProfileId: "local-llama-endpoint",
+    teacherProfileId: "local-llama-endpoint",
+    sessionProfileId: "local-llama-endpoint",
+    namingProfileId: "",
     profiles: DEFAULT_PROFILE_SEEDS.map((profile) => normalizeProfile(profile)),
   };
 }
@@ -214,8 +214,8 @@ export function normalizeProfileState(raw: unknown): ProfileState {
     version: 2,
     activeProfileId: enabledIds.has(requestedActive) ? requestedActive : firstEnabled,
     teacherProfileId: enabledIds.has(requestedTeacher) ? requestedTeacher : (enabledIds.has(firstEnabled) ? firstEnabled : ""),
-    sessionProfileId: localIds.includes(requestedSession) ? requestedSession : (localIds.includes("local-qwen-once") ? "local-qwen-once" : localIds[0] ?? ""),
-    namingProfileId: namingIds.includes(requestedNaming) ? requestedNaming : (namingIds.includes("local-qwen-once") ? "local-qwen-once" : namingIds[0] ?? ""),
+    sessionProfileId: localIds.includes(requestedSession) ? requestedSession : (localIds.includes("local-llama-endpoint") ? "local-llama-endpoint" : localIds[0] ?? ""),
+    namingProfileId: namingIds.includes(requestedNaming) ? requestedNaming : (namingIds.includes("local-llama-once") ? "local-llama-once" : namingIds[0] ?? ""),
     profiles,
   });
 }

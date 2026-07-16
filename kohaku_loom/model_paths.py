@@ -24,9 +24,9 @@ from .constants import (
 def _llm_search_roots() -> list[Path]:
     raw_roots = [
         os.environ.get("LLM_MODEL_DIR", ""),
+        os.environ.get("LLAMA_CPP_MODEL_DIR", ""),
         str(_forge_root() / "models" / "LLM"),
-        r"E:\AI\lmcpp\models",
-        r"E:\AI\models\LLM",
+        str(_extension_root() / "models"),
     ]
     roots: list[Path] = []
     seen: set[str] = set()

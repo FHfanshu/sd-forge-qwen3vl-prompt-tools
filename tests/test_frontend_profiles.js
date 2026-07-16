@@ -32,11 +32,12 @@ test("defaults contain exactly the five canonical profiles", () => {
     const tools = loadModule(new MemoryStorage());
     const state = tools.createDefaultProfileState();
     assert.equal(state.version, 2);
-    assert.equal(state.active_profile_id, "moyuu-gemini");
-    assert.equal(state.teacher_profile_id, "moyuu-gemini");
-    assert.equal(state.session_profile_id, "local-qwen-once");
+    assert.equal(state.active_profile_id, "local-llama-endpoint");
+    assert.equal(state.teacher_profile_id, "local-llama-endpoint");
+    assert.equal(state.session_profile_id, "local-llama-endpoint");
+    assert.equal(state.naming_profile_id, "");
     assert.deepEqual(state.profiles.map((profile) => profile.id), [
-        "moyuu-gemini", "grok", "deepseek", "local-llama-endpoint", "local-qwen-once"
+        "gemini", "openai-compatible", "deepseek", "local-llama-endpoint", "local-llama-once"
     ]);
     assert.deepEqual(state.profiles.map((profile) => [profile.protocol, profile.runtime]), [
         ["gemini-native", "remote-http"],
@@ -45,25 +46,26 @@ test("defaults contain exactly the five canonical profiles", () => {
         ["openai-chat-completions", "llama-endpoint"],
         ["openai-chat-completions", "llama-once"]
     ]);
-    assert.equal(state.profiles[0].display_name, "Moyuu Gemini");
-    assert.equal(state.profiles[0].model_id, "gemini-3.1-pro-high");
-    assert.deepEqual(state.profiles[0].fallback_endpoints, ["https://hk-api.moyuu.cc"]);
-    assert.equal(state.profiles[1].display_name, "Grok");
-    assert.equal(state.profiles[1].endpoint, "https://moyuu.cc");
-    assert.equal(state.profiles[1].model_id, "grok-4.5");
-    assert.deepEqual(state.profiles[1].fallback_endpoints, ["https://hk-api.moyuu.cc"]);
+    assert.equal(state.profiles[0].display_name, "Gemini");
+    assert.equal(state.profiles[0].model_id, "gemini-model");
+    assert.deepEqual(state.profiles[0].fallback_endpoints, []);
+    assert.equal(state.profiles[1].display_name, "OpenAI-compatible");
+    assert.equal(state.profiles[1].endpoint, "");
+    assert.equal(state.profiles[1].model_id, "model");
+    assert.deepEqual(state.profiles[1].fallback_endpoints, []);
     assert.deepEqual(state.profiles[1].capabilities, {
         tools: true, vision: false, streaming: true, reasoning: true
     });
     assert.equal(state.profiles[2].endpoint, "https://api.deepseek.com");
-    assert.equal(state.profiles[2].model_id, "deepseek-v4-pro");
+    assert.equal(state.profiles[2].model_id, "deepseek-model");
     assert.deepEqual(state.profiles[0].capabilities, {
         tools: true, vision: true, streaming: true, reasoning: true
     });
     assert.equal(state.profiles[4].n_ctx, 16384);
-    assert.match(state.profiles[4].model_path, /Qwen3\.5-9B-UD-Q6_K_XL\.gguf$/);
-    assert.match(state.profiles[4].mmproj_path, /mmproj-F16\.gguf$/);
-    assert.match(state.profiles[4].llama_server_path, /llama-server\.exe$/);
+    assert.equal(state.profiles[4].model_path, "");
+    assert.equal(state.profiles[4].mmproj_path, "");
+    assert.equal(state.profiles[4].llama_server_path, "");
+    assert.deepEqual(state.profiles.map((profile) => profile.enabled), [false, false, false, true, false]);
 });
 
 test("serialize and load normalize data without sharing references", () => {
@@ -95,8 +97,8 @@ test("serialization persists only canonical profile fields", () => {
     ]);
     assert.equal(Object.hasOwn(profile, "name"), false);
     assert.equal(Object.hasOwn(profile, "model"), false);
-    assert.equal(profile.display_name, "Moyuu Gemini");
-    assert.equal(profile.model_id, "gemini-3.1-pro-high");
+    assert.equal(profile.display_name, "Gemini");
+    assert.equal(profile.model_id, "gemini-model");
     assert.deepEqual(Object.keys(profile.capabilities), ["tools", "vision", "streaming", "reasoning"]);
     assert.deepEqual(Object.keys(profile.parameters), [
         "temperature", "top_p", "max_tokens", "reasoning_effort", "timeout", "sanitize_sensitive", "teacher_mode"
@@ -117,7 +119,7 @@ test("valid v2 state loads without migration or storage writes", () => {
     const serialized = seedTools.serializeProfileState(seedTools.createDefaultProfileState());
     const storage = new MemoryStorage({ loom_assistant_profiles_v2: serialized, loom_assistant_model: "stale-legacy" });
     const tools = loadModule(storage);
-    assert.equal(tools.profileStore.load().profiles[0].model_id, "gemini-3.1-pro-high");
+    assert.equal(tools.profileStore.load().profiles[0].model_id, "gemini-model");
     assert.equal(storage.writes.length, 0);
 });
 
@@ -125,6 +127,7 @@ test("old q3vl v2 profile state migrates without deleting the import source", ()
     const tools = loadModule();
     const storage = new MemoryStorage();
     const state = tools.createDefaultProfileState();
+    state.profiles.find((profile) => profile.id === "deepseek").enabled = true;
     state.active_profile_id = "deepseek";
     storage.setItem("q3vl_assistant_profiles_v2", tools.serializeProfileState(state));
     const store = tools.createProfileStore(storage);
@@ -134,17 +137,14 @@ test("old q3vl v2 profile state migrates without deleting the import source", ()
     assert.notEqual(storage.getItem("q3vl_assistant_profiles_v2"), null);
 });
 
-test("existing v2 state receives the canonical streaming Grok preset", () => {
+test("existing v2 state does not receive provider-specific presets", () => {
     const seedTools = loadModule(new MemoryStorage());
     const state = seedTools.createDefaultProfileState();
-    state.profiles = state.profiles.filter((profile) => profile.id !== "grok");
+    state.profiles = state.profiles.filter((profile) => profile.id !== "openai-compatible");
     const storage = new MemoryStorage({ loom_assistant_profiles_v2: JSON.stringify(state) });
     const tools = loadModule(storage);
     const loaded = tools.profileStore.load();
-    const grok = loaded.profiles.find((profile) => profile.id === "grok");
-    assert.equal(grok.display_name, "Grok");
-    assert.equal(grok.model_id, "grok-4.5");
-    assert.equal(grok.capabilities.streaming, true);
+    assert.equal(loaded.profiles.some((profile) => profile.id === "openai-compatible"), false);
     assert.equal(storage.writes.length, 0);
 });
 
@@ -157,8 +157,8 @@ test("invalid existing v2 state does not replay stale legacy settings", () => {
     });
     const tools = loadModule(storage);
     const state = tools.profileStore.load();
-    assert.equal(state.active_profile_id, "moyuu-gemini");
-    assert.equal(state.profiles[0].model_id, "gemini-3.1-pro-high");
+    assert.equal(state.active_profile_id, "local-llama-endpoint");
+    assert.equal(state.profiles[0].model_id, "gemini-model");
     assert.equal(JSON.stringify(state).includes("stale-secret"), false);
     assert.equal(storage.getItem(tools.PROFILE_STORAGE_KEY), "{broken-json");
     assert.equal(storage.writes.length, 0);
@@ -187,9 +187,9 @@ test("legacy migration preserves current config, keys, local paths, and active r
     assert.equal(active.endpoint, "https://openai.example/v1");
     assert.equal(active.model_id, "custom-chat");
     assert.equal(active.api_key, "openai-secret");
-    assert.equal(state.profiles.find((profile) => profile.id === "moyuu-gemini").api_key, "moyuu-secret");
+    assert.equal(state.profiles.find((profile) => profile.id === "gemini").api_key, "moyuu-secret");
     assert.equal(state.profiles.find((profile) => profile.id === "deepseek").api_key, "deepseek-secret");
-    const local = state.profiles.find((profile) => profile.id === "local-qwen-once");
+    const local = state.profiles.find((profile) => profile.id === "local-llama-once");
     assert.equal(local.model_path, "D:\\models\\vision.gguf");
     assert.equal(local.mmproj_path, "D:\\models\\mmproj.gguf");
     assert.equal(local.llama_server_path, "D:\\llama\\llama-server.exe");
@@ -228,21 +228,21 @@ test("legacy secondary Moyuu route preserves its routed API key", () => {
     });
     const tools = loadModule(storage);
     const current = tools.profileStore.current();
-    assert.equal(current.id, "grok");
-    assert.equal(current.display_name, "Grok");
+    assert.equal(current.id, "openai-compatible");
+    assert.equal(current.display_name, "OpenAI-compatible");
     assert.equal(current.endpoint, "https://moyuu.cc");
     assert.equal(current.model_id, "grok-4.5");
     assert.equal(current.api_key, "moyuu-secret");
     assert.equal(current.capabilities.streaming, true);
 });
 
-test("existing migrated Grok secondary receives the canonical name and ID", () => {
+test("existing migrated secondary keeps its stable custom ID", () => {
     const seedTools = loadModule(new MemoryStorage());
     const state = seedTools.createDefaultProfileState();
-    state.profiles = state.profiles.filter((profile) => profile.id !== "grok");
     state.profiles.push(seedTools.normalizeModelProfile({
         id: "legacy-secondary",
         display_name: "Migrated secondary model",
+        enabled: true,
         model_id: "grok-4.5",
         endpoint: "https://moyuu.cc"
     }));
@@ -250,9 +250,8 @@ test("existing migrated Grok secondary receives the canonical name and ID", () =
     const storage = new MemoryStorage({ loom_assistant_profiles_v2: JSON.stringify(state) });
     const tools = loadModule(storage);
     const loaded = tools.profileStore.load();
-    assert.equal(loaded.active_profile_id, "grok");
-    assert.equal(loaded.profiles.some((profile) => profile.id === "legacy-secondary"), false);
-    assert.equal(loaded.profiles.find((profile) => profile.id === "grok").display_name, "Grok");
+    assert.equal(loaded.active_profile_id, "legacy-secondary");
+    assert.equal(loaded.profiles.find((profile) => profile.id === "legacy-secondary").display_name, "Migrated secondary model");
 });
 
 test("add, duplicate, update, and delete keep stable unique IDs", () => {
@@ -275,26 +274,30 @@ test("add, duplicate, update, and delete keep stable unique IDs", () => {
 
 test("deleting the active profile selects the first enabled fallback", () => {
     const tools = loadModule(new MemoryStorage());
+    tools.profileStore.update("deepseek", { enabled: true });
     tools.profileStore.setActive("deepseek");
     tools.profileStore.delete("deepseek");
     const state = tools.profileStore.load();
-    assert.equal(state.active_profile_id, "moyuu-gemini");
+    assert.equal(state.active_profile_id, "local-llama-endpoint");
 
-    state.profiles.forEach((profile) => { profile.enabled = profile.id === "local-qwen-once"; });
-    state.active_profile_id = "local-qwen-once";
-    state.teacher_profile_id = "local-qwen-once";
+    state.profiles.forEach((profile) => { profile.enabled = profile.id === "local-llama-once"; });
+    state.profiles.find((profile) => profile.id === "local-llama-once").model_path = "D:\\models\\local.gguf";
+    state.active_profile_id = "local-llama-once";
+    state.teacher_profile_id = "local-llama-once";
+    state.session_profile_id = "local-llama-once";
+    state.naming_profile_id = "local-llama-once";
     tools.profileStore.save(state);
-    assert.throws(() => tools.profileStore.delete("local-qwen-once"), /at least one enabled profile/);
+    assert.throws(() => tools.profileStore.delete("local-llama-once"), /at least one enabled profile/);
 });
 
 test("request projection isolates API keys and deep clones selected data", () => {
     const tools = loadModule(new MemoryStorage());
-    tools.profileStore.update("moyuu-gemini", { api_key: "moyuu-secret" });
-    tools.profileStore.update("deepseek", { api_key: "deepseek-secret" });
-    const projection = tools.profileStore.requestProjection("moyuu-gemini");
+    tools.profileStore.update("gemini", { api_key: "gemini-secret", enabled: true });
+    tools.profileStore.update("deepseek", { api_key: "deepseek-secret", enabled: true });
+    const projection = tools.profileStore.requestProjection("gemini");
     const serialized = JSON.stringify(projection);
-    assert.equal(projection.profile_id, "moyuu-gemini");
-    assert.equal(projection.model, "gemini-3.1-pro-high");
+    assert.equal(projection.profile_id, "gemini");
+    assert.equal(projection.model, "gemini-model");
     assert.equal(projection.api_key, undefined);
     assert.equal(serialized.includes("deepseek-secret"), false);
     assert.deepEqual(Object.keys(projection), [
@@ -302,36 +305,37 @@ test("request projection isolates API keys and deep clones selected data", () =>
         "model_path", "mmproj_path", "llama_server_path", "n_ctx", "n_gpu_layers", "thinking"
     ]);
     projection.parameters.temperature = 2;
-    assert.equal(tools.profileStore.current().parameters.temperature, 0.35);
+    assert.equal(tools.profileStore.load().profiles.find((profile) => profile.id === "gemini").parameters.temperature, 0.35);
 });
 
 test("scrubbing browser keys retains only the encrypted-secret marker", () => {
     const tools = loadModule();
     const storage = new MemoryStorage();
     const store = tools.createProfileStore(storage);
-    store.update("moyuu-gemini", { api_key: "moyuu-secret" });
+    store.update("gemini", { api_key: "gemini-secret" });
 
     const state = store.scrubApiKeys();
 
     assert.equal(state.profiles[0].api_key, "");
     assert.equal(state.profiles[0].has_api_key, true);
-    assert.equal(storage.getItem("loom_assistant_profiles_v2").includes("moyuu-secret"), false);
+    assert.equal(storage.getItem("loom_assistant_profiles_v2").includes("gemini-secret"), false);
 });
 
 test("refresh persistence retains profile selection and independent keys", () => {
     const storage = new MemoryStorage();
     let tools = loadModule(storage);
-    tools.profileStore.update("moyuu-gemini", { api_key: "key-a" });
-    tools.profileStore.update("deepseek", { api_key: "key-b" });
+    tools.profileStore.update("gemini", { api_key: "key-a", enabled: true });
+    tools.profileStore.update("deepseek", { api_key: "key-b", enabled: true });
+    tools.profileStore.update("local-llama-once", { enabled: true, model_path: "D:\\models\\local.gguf" });
     tools.profileStore.setActive("deepseek");
-    tools.profileStore.setTeacher("local-qwen-once");
+    tools.profileStore.setTeacher("local-llama-once");
     tools.profileStore.setSession("local-llama-endpoint");
 
     tools = loadModule(storage);
     assert.equal(tools.profileStore.current().id, "deepseek");
     assert.equal(tools.profileStore.current().api_key, "key-b");
-    assert.equal(tools.profileStore.teacher().id, "local-qwen-once");
+    assert.equal(tools.profileStore.teacher().id, "local-llama-once");
     assert.equal(tools.profileStore.session().id, "local-llama-endpoint");
     assert.throws(() => tools.profileStore.setSession("deepseek"), /non-local profile/);
-    assert.equal(tools.profileStore.load().profiles.find((profile) => profile.id === "moyuu-gemini").api_key, "key-a");
+    assert.equal(tools.profileStore.load().profiles.find((profile) => profile.id === "gemini").api_key, "key-a");
 });

@@ -3,9 +3,6 @@
     const PROFILE_STORAGE_KEY = "loom_assistant_profiles_v2";
     const LEGACY_PROFILE_STORAGE_KEY = "q3vl_assistant_profiles_v2";
     const PROFILE_SCHEMA_VERSION = 2;
-    const DEFAULT_MODEL_PATH = "E:\\AI\\lmcpp\\models\\Qwen3.5-9B-GGUF\\Qwen3.5-9B-UD-Q6_K_XL.gguf";
-    const DEFAULT_MMPROJ_PATH = "E:\\AI\\lmcpp\\models\\Qwen3.5-9B-GGUF\\mmproj-F16.gguf";
-    const DEFAULT_SERVER_PATH = "E:\\AI\\lmcpp\\llama.cpp\\llama-server.exe";
     const DEFAULT_LOCAL_ENDPOINT = "http://127.0.0.1:8080/v1";
     const LEGACY_PREFIX = "loom_assistant_";
     const Q3VL_LEGACY_PREFIX = "q3vl_assistant_";
@@ -55,28 +52,28 @@
 
     const DEFAULT_PROFILES = [
         {
-            id: "moyuu-gemini",
-            display_name: "Moyuu Gemini",
-            enabled: true,
+            id: "gemini",
+            display_name: "Gemini",
+            enabled: false,
             protocol: "gemini-native",
             runtime: "remote-http",
-            endpoint: "https://moyuu.cc",
-            fallback_endpoints: ["https://hk-api.moyuu.cc"],
-            model_id: "gemini-3.1-pro-high",
+            endpoint: "https://generativelanguage.googleapis.com",
+            fallback_endpoints: [],
+            model_id: "gemini-model",
             api_key: "",
             capabilities: defaultCapabilities(true),
             parameters: defaultParameters(),
             ...defaultLocalValues()
         },
         {
-            id: "grok",
-            display_name: "Grok",
-            enabled: true,
+            id: "openai-compatible",
+            display_name: "OpenAI-compatible",
+            enabled: false,
             protocol: "openai-chat-completions",
             runtime: "remote-http",
-            endpoint: "https://moyuu.cc",
-            fallback_endpoints: ["https://hk-api.moyuu.cc"],
-            model_id: "grok-4.5",
+            endpoint: "",
+            fallback_endpoints: [],
+            model_id: "model",
             api_key: "",
             capabilities: defaultCapabilities(false),
             parameters: defaultParameters(),
@@ -85,12 +82,12 @@
         {
             id: "deepseek",
             display_name: "DeepSeek",
-            enabled: true,
+            enabled: false,
             protocol: "openai-chat-completions",
             runtime: "remote-http",
             endpoint: "https://api.deepseek.com",
             fallback_endpoints: [],
-            model_id: "deepseek-v4-pro",
+            model_id: "deepseek-model",
             api_key: "",
             capabilities: defaultCapabilities(false),
             parameters: defaultParameters(),
@@ -104,29 +101,25 @@
             runtime: "llama-endpoint",
             endpoint: DEFAULT_LOCAL_ENDPOINT,
             fallback_endpoints: [],
-            model_id: "qwen3.5-9b-vlm",
+            model_id: "local-model",
             api_key: "",
             capabilities: defaultCapabilities(true),
             parameters: defaultParameters({ temperature: 0.25, timeout: 180 }),
             ...defaultLocalValues()
         },
         {
-            id: "local-qwen-once",
-            display_name: "Local Qwen once",
-            enabled: true,
+            id: "local-llama-once",
+            display_name: "Local llama one-shot",
+            enabled: false,
             protocol: "openai-chat-completions",
             runtime: "llama-once",
             endpoint: DEFAULT_LOCAL_ENDPOINT,
             fallback_endpoints: [],
-            model_id: "qwen3.5-9b-vlm",
+            model_id: "local-model",
             api_key: "",
             capabilities: defaultCapabilities(true),
             parameters: defaultParameters({ temperature: 0.25, timeout: 180 }),
-            ...defaultLocalValues({
-                model_path: DEFAULT_MODEL_PATH,
-                mmproj_path: DEFAULT_MMPROJ_PATH,
-                llama_server_path: DEFAULT_SERVER_PATH
-            })
+            ...defaultLocalValues()
         }
     ];
 
@@ -244,10 +237,10 @@
     function createDefaultProfileState() {
         return {
             version: PROFILE_SCHEMA_VERSION,
-            active_profile_id: "moyuu-gemini",
-            teacher_profile_id: "moyuu-gemini",
-            session_profile_id: "local-qwen-once",
-            naming_profile_id: "local-qwen-once",
+            active_profile_id: "local-llama-endpoint",
+            teacher_profile_id: "local-llama-endpoint",
+            session_profile_id: "local-llama-endpoint",
+            naming_profile_id: "",
             profiles: deepCloneProfileData(DEFAULT_PROFILES)
         };
     }
@@ -256,13 +249,8 @@
         const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
         const sourceProfiles = Array.isArray(source.profiles) && source.profiles.length ? source.profiles : DEFAULT_PROFILES;
         const seen = new Set();
-        const hasCanonicalGrok = sourceProfiles.some(function (profile) { return profile && profile.id === "grok"; });
         const profiles = sourceProfiles.map(function (profile, index) {
             const normalized = normalizeModelProfile(profile, DEFAULT_PROFILES[index] || DEFAULT_PROFILES[0]);
-            if (!hasCanonicalGrok && normalized.id === "legacy-secondary" && /^grok(?:[-_.]|$)/i.test(normalized.model_id)) {
-                normalized.id = "grok";
-                if (normalized.display_name === "Migrated secondary model") normalized.display_name = "Grok";
-            }
             let id = normalized.id;
             let suffix = 2;
             while (seen.has(id)) {
@@ -273,24 +261,18 @@
             seen.add(id);
             return normalized;
         });
-        if (!profiles.some(function (profile) { return profile.id === "grok"; })) {
-            profiles.splice(Math.min(1, profiles.length), 0, deepCloneProfileData(DEFAULT_PROFILES[1]));
-        }
         if (!profiles.some(function (profile) { return profile.enabled; })) profiles[0].enabled = true;
         const enabledIds = profiles.filter(function (profile) { return profile.enabled; }).map(function (profile) { return profile.id; });
-        const remapGrokId = function (id) {
-            return id === "legacy-secondary" && profiles.some(function (profile) { return profile.id === "grok"; }) ? "grok" : id;
-        };
-        const requestedActive = remapGrokId(String(source.active_profile_id || ""));
+        const requestedActive = String(source.active_profile_id || "");
         const activeId = enabledIds.includes(requestedActive) ? requestedActive : enabledIds[0];
-        const requestedTeacher = remapGrokId(String(source.teacher_profile_id || ""));
+        const requestedTeacher = String(source.teacher_profile_id || "");
         const teacherId = enabledIds.includes(requestedTeacher) ? requestedTeacher : activeId;
         const localIds = profiles.filter(function (profile) { return profile.enabled && ["llama-endpoint", "llama-once"].includes(profile.runtime); }).map(function (profile) { return profile.id; });
-        const requestedSession = String(source.session_profile_id || "local-qwen-once");
-        const sessionId = localIds.includes(requestedSession) ? requestedSession : (localIds.includes("local-qwen-once") ? "local-qwen-once" : (localIds[0] || ""));
+        const requestedSession = String(source.session_profile_id || "local-llama-endpoint");
+        const sessionId = localIds.includes(requestedSession) ? requestedSession : (localIds.includes("local-llama-endpoint") ? "local-llama-endpoint" : (localIds[0] || ""));
         const onceIds = profiles.filter(function (profile) { return profile.enabled && profile.runtime === "llama-once"; }).map(function (profile) { return profile.id; });
         const requestedNaming = String(source.naming_profile_id || sessionId || "");
-        const namingId = onceIds.includes(requestedNaming) ? requestedNaming : (onceIds.includes("local-qwen-once") ? "local-qwen-once" : (onceIds[0] || ""));
+        const namingId = onceIds.includes(requestedNaming) ? requestedNaming : (onceIds.includes("local-llama-once") ? "local-llama-once" : (onceIds[0] || ""));
         return { version: PROFILE_SCHEMA_VERSION, active_profile_id: activeId, teacher_profile_id: teacherId, session_profile_id: sessionId, naming_profile_id: namingId, profiles: profiles };
     }
 
@@ -307,9 +289,9 @@
             errors.push("local llama runtimes require the openai-chat-completions protocol");
         }
         if (!String(profile.model_id || "").trim()) errors.push("profile model_id is required");
-        if (["remote-http", "llama-endpoint"].includes(profile.runtime) && !String(profile.endpoint || "").trim()) errors.push("profile endpoint is required");
+        if (profile.enabled && ["remote-http", "llama-endpoint"].includes(profile.runtime) && !String(profile.endpoint || "").trim()) errors.push("profile endpoint is required");
         else if (profile.endpoint && !isHttpEndpoint(profile.endpoint)) errors.push("profile endpoint must be an HTTP URL");
-        if (profile.runtime === "llama-once" && !String(profile.model_path || "").trim()) errors.push("model_path is required for llama-once");
+        if (profile.enabled && profile.runtime === "llama-once" && !String(profile.model_path || "").trim()) errors.push("model_path is required for llama-once");
         if (!Array.isArray(profile.fallback_endpoints)) errors.push("fallback_endpoints must be an array");
         else if (profile.fallback_endpoints.some(function (endpoint) { return !isHttpEndpoint(endpoint); })) errors.push("fallback endpoints must be HTTP URLs");
         if (!profile.capabilities || typeof profile.capabilities !== "object") errors.push("capabilities are required");
@@ -427,9 +409,7 @@
 
     function migrationProfileForBackend(state, legacy, backend, role) {
         const profiles = state.profiles;
-        const secondaryModel = stringValue(legacy.secondary_model, legacy.fallback_model).trim();
-        const grokSecondary = role === "secondary" && backend === "openai" && (!secondaryModel || /^grok(?:[-_.]|$)/i.test(secondaryModel));
-        const standardId = grokSecondary ? "grok" : backend === "moyuu" ? "moyuu-gemini" : backend === "deepseek" ? "deepseek" : backend === "local-lmcpp" ? "local-llama-endpoint" : backend === "local-qwen-once" ? "local-qwen-once" : "";
+        const standardId = backend === "moyuu" ? "gemini" : backend === "openai" ? "openai-compatible" : backend === "deepseek" ? "deepseek" : backend === "local-lmcpp" ? "local-llama-endpoint" : backend === "local-qwen-once" ? "local-llama-once" : "";
         let profile = profiles.find(function (item) { return item.id === standardId; });
         if (!profile) {
             profile = normalizeModelProfile({
@@ -456,6 +436,7 @@
                 : backend === "local-qwen-once" ? stringValue(legacy.vision_model, stringValue(legacy.local_model, profile.model_id))
                     : stringValue(legacy.model, profile.model_id);
         const configured = Object.assign(deepCloneProfileData(profile), transport, {
+            enabled: true,
             endpoint: endpoint,
             model_id: model,
             api_key: legacyApiKey(legacy, backend)
@@ -471,8 +452,11 @@
         const legacy = legacyValues && typeof legacyValues === "object" ? legacyValues : {};
         const state = createDefaultProfileState();
         state.profiles = state.profiles.map(function (profile) {
-            const keyBackend = profile.id === "moyuu-gemini" || profile.id === "grok" ? "moyuu" : profile.id === "deepseek" ? "deepseek" : profile.id === "local-llama-endpoint" ? "local-lmcpp" : "local-qwen-once";
+            const keyBackend = profile.id === "gemini" ? "moyuu" : profile.id === "openai-compatible" ? "openai" : profile.id === "deepseek" ? "deepseek" : profile.id === "local-llama-endpoint" ? "local-lmcpp" : "local-qwen-once";
             const withKey = deepCloneProfileData(profile);
+            if (profile.id === "local-llama-once" && (legacy.vision_model_path || legacy.backend === "local-qwen-once" || legacy.chat_model_route === "local")) {
+                withKey.enabled = true;
+            }
             withKey.api_key = legacyApiKey(legacy, keyBackend);
             return applyLegacyCommon(withKey, legacy, keyBackend.startsWith("local-"));
         });
@@ -499,11 +483,11 @@
         }
 
         const route = stringValue(legacy.chat_model_route, "remote");
-        if (route === "local") state.active_profile_id = "local-qwen-once";
+        if (route === "local") state.active_profile_id = "local-llama-once";
         else if ((route === "secondary" || route === "fallback") && secondaryId) state.active_profile_id = secondaryId;
         else state.active_profile_id = state.profiles[primaryIndex].id;
-        state.teacher_profile_id = "moyuu-gemini";
-        state.session_profile_id = "local-qwen-once";
+        state.teacher_profile_id = state.profiles[primaryIndex].id;
+        state.session_profile_id = state.profiles.some(function (profile) { return profile.id === "local-llama-once" && profile.enabled; }) ? "local-llama-once" : "local-llama-endpoint";
         return normalizeProfileState(state);
     }
 

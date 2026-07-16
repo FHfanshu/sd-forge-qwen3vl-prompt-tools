@@ -6,16 +6,14 @@ DEFAULT_GGUF_REPO = "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive"
 DEFAULT_GGUF_DIR = "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-GGUF"
 DEFAULT_GGUF_MODEL = "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q6_K.gguf"
 DEFAULT_GGUF_MMPROJ = "mmproj-Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-BF16.gguf"
-DEFAULT_LLAMA_SERVER_CANDIDATES = [
-    r"E:\AI\lmcpp\llama.cpp\llama-server.exe",
-]
+DEFAULT_LLAMA_SERVER_CANDIDATES: list[str] = []
 LLAMA_CPP_RELEASE_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
-DEFAULT_ASSISTANT_BACKEND = "moyuu"
-DEFAULT_ASSISTANT_ENDPOINT = "https://moyuu.cc"
-DEFAULT_ASSISTANT_FALLBACK_ENDPOINT = "https://hk-api.moyuu.cc"
-DEFAULT_ASSISTANT_MODEL = "gemini-3.5-flash-preview"
+DEFAULT_ASSISTANT_BACKEND = "local-lmcpp"
+DEFAULT_ASSISTANT_ENDPOINT = "http://127.0.0.1:8080/v1"
+DEFAULT_ASSISTANT_FALLBACK_ENDPOINT = ""
+DEFAULT_ASSISTANT_MODEL = "local-model"
 DEFAULT_LOCAL_ASSISTANT_ENDPOINT = "http://127.0.0.1:8080/v1"
-DEFAULT_LOCAL_ASSISTANT_MODEL = "hauhau-qwen3.5-9b-uncensored"
+DEFAULT_LOCAL_ASSISTANT_MODEL = "local-model"
 DEFAULT_LOCAL_CONTEXT_TOKENS = 16384
 DEFAULT_LOCAL_TEXT_PRESET = "Qwen3.5 原版 9B"
 VISION_MODEL_PRESET_CUSTOM = "自定义"

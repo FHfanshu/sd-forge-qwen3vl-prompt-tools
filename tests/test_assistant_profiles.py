@@ -17,7 +17,7 @@ def remote_profile(**overrides):
         "model": "test-model",
         "api_key": "test-key",
         "capabilities": ["text", "images", "tools"],
-        "parameters": {"temperature": 0.2, "top_p": 0.8, "max_tokens": 1024, "timeout": 30},
+        "parameters": {"temperature": 0.2, "top_p": 0.8, "max_tokens": 1024, "timeout": 30, "teacher_mode": "regex"},
         "messages": [{"role": "user", "content": "hello"}],
     }
     payload.update(overrides)
