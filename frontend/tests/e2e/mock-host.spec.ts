@@ -276,6 +276,13 @@ test.describe("mobile layout", () => {
     expect(portrait!.y).toBeGreaterThanOrEqual(0);
     expect(portrait!.x + portrait!.width).toBeLessThanOrEqual(390);
     expect(portrait!.y + portrait!.height).toBeLessThanOrEqual(844);
+    const composer = await page.getByRole("textbox", { name: "Message Kohaku Loom" }).boundingBox();
+    expect(composer).not.toBeNull();
+    expect(composer!.x).toBeGreaterThanOrEqual(portrait!.x);
+    expect(composer!.x + composer!.width).toBeLessThanOrEqual(portrait!.x + portrait!.width);
+    const send = await page.getByRole("button", { name: "Send message" }).boundingBox();
+    expect(send).not.toBeNull();
+    expect(send!.x + send!.width).toBeLessThanOrEqual(portrait!.x + portrait!.width);
     await expect(page.getByRole("status")).toContainText("Drag the corner to resize");
 
     await page.setViewportSize({ width: 844, height: 390 });
@@ -288,7 +295,10 @@ test.describe("mobile layout", () => {
 
     await page.getByRole("button", { name: "Open settings" }).click();
     await expect(chat).toHaveCount(0);
-    await expect(page.getByRole("dialog", { name: "Model profiles" })).toBeVisible();
+    const settings = page.getByRole("dialog", { name: "Model profiles" });
+    await expect(settings).toBeVisible();
     await capture(page, "settings-mobile");
+    await settings.getByRole("button", { name: "Close" }).click();
+    await expect(page.getByRole("dialog", { name: "Kohaku Loom chat" })).toBeVisible();
   });
 });

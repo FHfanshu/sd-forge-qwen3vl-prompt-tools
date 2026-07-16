@@ -74,13 +74,16 @@
       if (anchor && !anchor.contains(event.target as Node)) open = false;
     };
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") open = false;
+      if (event.key === "Escape" && open) {
+        event.stopPropagation();
+        open = false;
+      }
     };
     document.addEventListener("pointerdown", close);
-    document.addEventListener("keydown", escape);
+    document.addEventListener("keydown", escape, true);
     return () => {
       document.removeEventListener("pointerdown", close);
-      document.removeEventListener("keydown", escape);
+      document.removeEventListener("keydown", escape, true);
     };
   });
 </script>

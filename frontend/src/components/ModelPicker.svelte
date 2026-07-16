@@ -102,13 +102,16 @@
       if (anchor && !anchor.contains(event.target as Node)) open = false;
     };
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") open = false;
+      if (event.key === "Escape" && open) {
+        event.stopPropagation();
+        open = false;
+      }
     };
     document.addEventListener("pointerdown", close);
-    document.addEventListener("keydown", escape);
+    document.addEventListener("keydown", escape, true);
     return () => {
       document.removeEventListener("pointerdown", close);
-      document.removeEventListener("keydown", escape);
+      document.removeEventListener("keydown", escape, true);
     };
   });
 </script>
@@ -126,12 +129,12 @@
     <span>{activeProfile?.displayName ?? "Select model"}</span>
     <ChevronDown size={13} aria-hidden="true" />
   </Button>
-  <select class="kl-sr-only" aria-label="Active model" value={$useProfileStore.activeProfileId} onchange={(event) => selectProfile(event.currentTarget.value)}>
+  <select class="kl-sr-only" tabindex="-1" aria-hidden="true" aria-label="Active model" value={$useProfileStore.activeProfileId} onchange={(event) => selectProfile(event.currentTarget.value)}>
     {#each enabledProfiles as profile}<option value={profile.id}>{profile.displayName}</option>{/each}
   </select>
 
   {#if open}
-    <div class="kl-model-picker-popover" role="dialog" aria-label="Select model">
+    <div class="kl-model-picker-popover" role="dialog" tabindex="-1" aria-label="Select model">
       <button type="button" class="kl-model-picker-add" onclick={openProfiles}><Plus size={15} /> Add provider</button>
       <label class="kl-model-picker-search">
         <Search size={16} aria-hidden="true" />

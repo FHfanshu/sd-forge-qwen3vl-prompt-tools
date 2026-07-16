@@ -11,5 +11,7 @@ describe("Svelte cutover shell", () => {
     expect(mountSvelteUi()).not.toBeNull();
     expect(mountSvelteUi()).not.toBeNull();
     expect(document.querySelectorAll("#kohaku-loom-svelte-mount")).toHaveLength(1);
+    expect(document.querySelector('[data-kohaku-loom-surface="true"]')).not.toBeNull();
+    expect(document.querySelector('button[aria-label="Open Kohaku Loom"]')).not.toBeNull();
   });
 });

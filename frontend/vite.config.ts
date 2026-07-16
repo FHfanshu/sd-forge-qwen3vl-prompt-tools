@@ -19,7 +19,8 @@ export default defineConfig({
     cssCodeSplit: false,
     lib: {
       entry: `${rootDir}src/main.ts`,
-      name: "KohakuLoomSvelteUi",
+      // Keep the IIFE export separate from the runtime contract installed by bootstrap.
+      name: "KohakuLoomSvelteUiBundle",
       formats: ["iife"],
       fileName: () => "kohaku_loom_90_ui.js",
     },

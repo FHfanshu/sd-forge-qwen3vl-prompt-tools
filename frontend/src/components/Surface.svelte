@@ -9,11 +9,13 @@
   } from "lucide-svelte";
   import type {
     ChatAttachment, ChatMessage, HistoryRow, LoomActionHandlers,
-    ReasoningEffort, RiskMode, SendMessageInput,
+    ReasoningEffort, SendMessageInput,
   } from "../contracts";
   import { mockHistory, noopActions } from "../mock-data";
   import { createRuntimeController, type LoomRuntimeController } from "../runtime-controller";
+  import { AlertDialog } from "$lib/components/ui/alert-dialog";
   import { useChatStore } from "../stores/chat";
+  import { useI18nStore } from "../stores/i18n";
   import { useProfileStore } from "../stores/profiles";
   import { useRuntimeStore } from "../stores/runtime";
   import { useUiStore } from "../stores/ui";
@@ -57,7 +59,10 @@
   let replacementInput = $state<HTMLInputElement>();
   let replacementId = $state<string | null>(null);
   let attachmentMenuId = $state<string | null>(null);
-  let controller: LoomRuntimeController | null = null;
+  let notice = $state<string | null>(null);
+  let confirm = $state<"clear" | "yolo" | null>(null);
+  let returnToChatAfterSettings = $state(false);
+  let controller = $state<LoomRuntimeController | null>(null);
 
   const visibleMessages = $derived(providedMessages ?? $useChatStore.messages);
   const visibleHistory = $derived(providedHistory ?? (controller ? $useRuntimeStore.history : mockHistory));
@@ -68,6 +73,18 @@
   const currentLayout = $derived(clampWindowLayout($useUiStore.layouts[kind], viewport));
   const activeProfile = $derived($useProfileStore.profiles.find((profile) => profile.id === $useProfileStore.activeProfileId && profile.enabled));
   const lastAssistantId = $derived([...visibleMessages].reverse().find((message) => message.role === "assistant")?.id);
+
+  function t(key: string, fallback: string): string {
+    const value = $useI18nStore.t(key);
+    return value === key ? fallback : value;
+  }
+
+  function runtimeErrorText(value: string): string {
+    if (/KT HTTP request failed/i.test(value)) {
+      return t("assistant.runtime.retry", "The Loom runtime is starting or unavailable. Open chat history to retry, or check the sidecar configuration in Model profiles.");
+    }
+    return value;
+  }
 
   function syncReasoningFromProfile(): void {
     const profileValue = String(activeProfile?.parameters.reasoningEffort ?? "low").toLowerCase();
@@ -96,6 +113,7 @@
     }
     $useUiStore.setShellOpen(true);
     $useUiStore.bringToFront("chat");
+    requestAnimationFrame(() => composerInput?.focus());
   }
 
   function refreshViewport(): void {
@@ -103,11 +121,19 @@
     viewport = readViewportRect();
   }
 
+  function ensureController(): LoomRuntimeController | null {
+    if (controller || Object.keys(actionOverrides).length) return controller;
+    controller = createRuntimeController();
+    void controller?.mount();
+    return controller;
+  }
+
   function action<K extends keyof LoomActionHandlers>(name: K): LoomActionHandlers[K] {
     return (actionOverrides[name] ?? controller?.actions[name] ?? noopActions[name]) as LoomActionHandlers[K];
   }
 
   async function send(input: SendMessageInput): Promise<void> {
+    ensureController();
     if (!controller && $useChatStore.activeRequestId) {
       $useChatStore.enqueue({ id: id("queue"), text: input.text, attachments: input.attachments, createdAt: Date.now() });
       return;
@@ -121,10 +147,15 @@
 
   async function submit(): Promise<void> {
     if (!draft.trim() && !attachments.length) return;
-    await send({ text: draft.trim(), attachments: [...attachments], riskMode: $useUiStore.riskMode, reasoning });
-    draft = "";
-    attachments = [];
-    requestAnimationFrame(() => resizeComposer());
+    notice = null;
+    try {
+      await send({ text: draft.trim(), attachments: [...attachments], riskMode: $useUiStore.riskMode, reasoning });
+      draft = "";
+      attachments = [];
+      requestAnimationFrame(() => resizeComposer());
+    } catch (error) {
+      notice = error instanceof Error ? error.message : "Message could not be sent. Check the active model and try again.";
+    }
   }
 
   function resizeComposer(element = composerInput): void {
@@ -146,23 +177,83 @@
 
   function openSettings(): void {
     actionOverrides.openSettings?.();
-    if (kind !== "desktop") $useUiStore.setShellOpen(false);
+    returnToChatAfterSettings = kind !== "desktop" && $useUiStore.shellOpen;
+    if (returnToChatAfterSettings) $useUiStore.setShellOpen(false);
     $useUiStore.setProfileSettingsOpen(true);
     $useUiStore.bringToFront("profiles");
+  }
+
+  function closeSettings(): void {
+    $useUiStore.setProfileSettingsOpen(false);
+    if (returnToChatAfterSettings) {
+      returnToChatAfterSettings = false;
+      $useUiStore.setShellOpen(true);
+      $useUiStore.bringToFront("chat");
+    }
+  }
+
+  function clearConversation(): void {
+    draft = "";
+    attachments = [];
+    action("clearChat")();
+    $useChatStore.reset();
+    confirm = null;
+    requestAnimationFrame(() => resizeComposer());
+  }
+
+  function toggleRiskMode(): void {
+    if ($useUiStore.riskMode !== "yolo") {
+      confirm = "yolo";
+      return;
+    }
+    $useUiStore.setRiskMode("normal");
+    void action("setRiskMode")("normal");
+  }
+
+  function enableYolo(): void {
+    $useUiStore.setRiskMode("yolo");
+    void action("setRiskMode")("yolo");
+    confirm = null;
+  }
+
+  function useSuggestion(text: string): void {
+    draft = text;
+    requestAnimationFrame(() => {
+      resizeComposer();
+      composerInput?.focus();
+      composerInput?.setSelectionRange(draft.length, draft.length);
+    });
   }
 
   function toggleHistory(): void {
     const next = !$useUiStore.historyOpen;
     $useUiStore.setHistoryOpen(next);
-    if (next && controller) void controller.loadHistory().catch(() => undefined);
+    const activeController = next ? ensureController() : null;
+    if (activeController) {
+      $useRuntimeStore.setLoading(true);
+      void activeController.loadHistory()
+        .then(async (rows) => {
+          if (rows.some((row) => row.source === "KT")) return;
+          await new Promise((resolve) => window.setTimeout(resolve, 900));
+          await activeController.loadHistory();
+        })
+        .then(() => $useRuntimeStore.setError(null))
+        .catch((error) => $useRuntimeStore.setError(error instanceof Error ? error.message : "Chat history could not be loaded. Try again."))
+        .finally(() => $useRuntimeStore.setLoading(false));
+    }
   }
 
   async function newSession(): Promise<void> {
-    if (actionOverrides.newSession) await actionOverrides.newSession();
-    else if (controller) await controller.actions.newSession();
-    else $useChatStore.reset();
-    attachments = [];
-    draft = "";
+    notice = null;
+    try {
+      if (actionOverrides.newSession) await actionOverrides.newSession();
+      else if (controller) await controller.actions.newSession();
+      else $useChatStore.reset();
+      attachments = [];
+      draft = "";
+    } catch (error) {
+      notice = error instanceof Error ? error.message : "A new chat could not be started. Stop the current response and try again.";
+    }
   }
 
   async function fileAttachment(file: File): Promise<ChatAttachment> {
@@ -176,9 +267,23 @@
 
   async function addFiles(files: File[]): Promise<void> {
     const images = files.filter((file) => file.type.startsWith("image/"));
-    if (!images.length) return;
-    await action("attachFiles")(images);
-    attachments = [...attachments, ...await Promise.all(images.map(fileAttachment))].slice(0, 8);
+    if (!images.length) {
+      notice = "Only image files can be attached.";
+      return;
+    }
+    const remaining = Math.max(0, 8 - attachments.length);
+    if (!remaining) {
+      notice = "You can attach up to 8 images.";
+      return;
+    }
+    const accepted = images.slice(0, remaining);
+    notice = images.length > accepted.length ? "Only the first 8 images were attached." : null;
+    try {
+      await action("attachFiles")(accepted);
+      attachments = [...attachments, ...await Promise.all(accepted.map(fileAttachment))];
+    } catch (error) {
+      notice = error instanceof Error ? error.message : "The images could not be attached. Try them again.";
+    }
   }
 
   async function replaceAttachment(file: File): Promise<void> {
@@ -210,11 +315,12 @@
   }
 
   onMount(() => {
+    const removeLegacy = window.kohakuLoom?.removeAssistantWindow;
+    if (typeof removeLegacy === "function") removeLegacy();
     attachments = [...initialAttachments];
     syncReasoningFromProfile();
     if (initialOpen) $useUiStore.setShellOpen(true);
-    controller = Object.keys(actionOverrides).length ? null : createRuntimeController();
-    void controller?.mount();
+    ensureController();
     window.addEventListener("resize", refreshViewport);
     window.visualViewport?.addEventListener("resize", refreshViewport);
     window.visualViewport?.addEventListener("scroll", refreshViewport);
@@ -250,7 +356,7 @@
       onclick={openLauncher}
     >
       <Sparkles size={15} />
-      <span>Assistant</span>
+      <span>{t("assistant.launcher", "Assistant")}</span>
     </button>
   {/if}
 
@@ -272,15 +378,16 @@
       onkeydown={(event) => { if (event.key === "Escape") $useUiStore.setShellOpen(false); }}
     >
       <header class="kl-window-header" use:pointerWindow={{ mode: "drag", layout: () => currentLayout, update: updateLayout, interacting: (active) => interacting = active }}>
-        <div class="kl-chat-title"><strong>Assistant</strong></div>
+        <div class="kl-chat-title"><strong>{t("assistant.title", "Assistant")}</strong></div>
         <div class="kl-header-controls">
           <div class="kl-history-anchor">
             <button type="button" class="kl-header-icon" aria-label="Open chat history" aria-expanded={$useUiStore.historyOpen} onclick={toggleHistory}><History size={16} /></button>
             {#if $useUiStore.historyOpen}
-              <div class="kl-history-popover" role="dialog" aria-label="Chat history">
+              <div class="kl-history-popover" role="dialog" tabindex="-1" aria-label="Chat history" onkeydown={(event) => { if (event.key === "Escape") { event.stopPropagation(); $useUiStore.setHistoryOpen(false); } }}>
                 <div class="kl-history-heading"><div><span class="kl-eyebrow">Archive</span><strong>Chat history</strong></div><span class="kl-history-count">{filteredHistory.length}</span></div>
                 <label class="kl-history-search"><Search size={14} /><input bind:value={historySearch} placeholder="Search sessions" aria-label="Search chat history" /></label>
                 <div class="kl-history-list" role="listbox" aria-label="Chat history sessions">
+                  {#if $useRuntimeStore.loading}<p class="kl-history-empty" role="status">Loading chat history…</p>{/if}
                   {#each filteredHistory as row (row.id)}
                     <button type="button" class="kl-history-row" aria-label={row.title} role="option" aria-selected="false" onclick={() => { void action("selectHistory")(row); $useUiStore.setHistoryOpen(false); }}>
                       <span class="kl-history-source kl-history-source-{row.source.toLowerCase()}">{#if row.source === "KT"}<Clock3 size={12} />{:else}<FileArchive size={12} />{/if}{row.source}</span>
@@ -292,13 +399,14 @@
               </div>
             {/if}
           </div>
-          <button type="button" class="kl-header-icon" onclick={() => void newSession()} aria-label="Start a new chat"><Plus size={16} /></button>
+          <button type="button" class="kl-header-icon" onclick={() => void newSession()} aria-label="Start a new chat" disabled={Boolean($useChatStore.activeRequestId)}><Plus size={16} /></button>
           <button type="button" class="kl-header-icon" onclick={openSettings} aria-label="Open settings"><Settings2 size={16} /></button>
           <button type="button" class="kl-header-icon kl-header-close" onclick={() => $useUiStore.setShellOpen(false)} aria-label="Close Kohaku Loom"><X size={16} /></button>
         </div>
       </header>
 
-      <div class="kl-window-body">
+        <div class="kl-window-body">
+        {#if $useRuntimeStore.error || notice}<div class="kl-inline-alert" role="alert"><AlertTriangle size={15} /><span>{notice || runtimeErrorText($useRuntimeStore.error ?? "")}</span>{#if notice}<button type="button" onclick={() => notice = null} aria-label="Dismiss message"><X size={14} /></button>{/if}</div>{/if}
         <div class="kl-message-scroll" role="log" aria-live="polite" aria-busy={Boolean($useChatStore.activeRequestId)}>
           {#if visibleMessages.length > 0}
             {#each visibleMessages as message (message.id)}
@@ -312,38 +420,43 @@
                 </span></div>
                 {#if message.role === "tool"}<div class="kl-tool-card"><strong>{message.tool?.name ?? "Tool call"}</strong>{#if message.tool?.detail}<span>{message.tool.detail}</span>{/if}<span class="kl-tool-status kl-tool-status-{message.tool?.status ?? 'complete'}">{message.tool?.status ?? "complete"}</span></div>{:else}<Markdown content={message.content} />{/if}
                 {#if message.reasoning}<details class="kl-reasoning"><summary>Reasoning trace</summary><Markdown content={message.reasoning} /></details>{/if}
-                {#if message.attachments.length}<div class="kl-message-attachments" aria-label="{message.attachments.length} reference images">{#each message.attachments as attachment, index (attachment.id)}<button type="button" class="kl-message-attachment" onclick={() => lightbox = { attachments: message.attachments, index }} aria-label="Preview {attachment.name}"><img src={attachment.dataUrl} alt={attachment.name} /></button>{/each}</div>{/if}
-                <div class="kl-message-footer"><div class="kl-message-actions"><button type="button" class="kl-message-action" onclick={() => void copyMessage(message)}>{#if copiedId === message.id}<Check size={13} /> Copied{:else}<Copy size={13} /> Copy{/if}</button>{#if message.role === "user"}<button type="button" class="kl-message-action" onclick={() => void action("editResend")(message)}><Pencil size={13} /> Edit & resend</button>{/if}{#if message.id === lastAssistantId}<button type="button" class="kl-message-action" onclick={() => void action("regenerate")(message)}><RefreshCw size={13} /> Regenerate</button>{/if}</div>
+                {#if message.attachments.length}<div class="kl-message-attachments" aria-label="{message.attachments.length} reference images">{#each message.attachments as attachment, index (attachment.id)}<button type="button" class="kl-message-attachment" onclick={() => lightbox = { attachments: message.attachments, index }} aria-label="Preview {attachment.name}"><img src={attachment.dataUrl} alt={attachment.name} width="58" height="48" loading="lazy" /></button>{/each}</div>{/if}
+                <div class="kl-message-footer"><div class="kl-message-actions"><button type="button" class="kl-message-action" onclick={() => void copyMessage(message)}>{#if copiedId === message.id}<Check size={13} /> Copied{:else}<Copy size={13} /> Copy{/if}</button>{#if message.role === "user"}<button type="button" class="kl-message-action" onclick={() => void action("editResend")(message)}><Pencil size={13} /> Resend</button>{/if}{#if message.id === lastAssistantId}<button type="button" class="kl-message-action" onclick={() => void action("regenerate")(message)}><RefreshCw size={13} /> Regenerate</button>{/if}</div>
                   {#if message.role === "assistant" && message.branchCount > 1}<div class="kl-branch-pager" aria-label="Assistant response branches"><button type="button" class="kl-mini-button" disabled={message.branchIndex === 0} onclick={() => void action("changeBranch")(message, message.branchIndex - 1)} aria-label="Previous branch"><ChevronLeft size={14} /></button><span>{message.branchIndex + 1} / {message.branchCount}</span><button type="button" class="kl-mini-button" disabled={message.branchIndex >= message.branchCount - 1} onclick={() => void action("changeBranch")(message, message.branchIndex + 1)} aria-label="Next branch"><ChevronRight size={14} /></button></div>{/if}
                 </div>
               </article>
             {/each}
+          {:else}
+            <div class="kl-empty-state"><Sparkles size={20} aria-hidden="true" /><strong>{t("assistant.empty.title", "Start with the current prompt")}</strong><p>{t("assistant.empty.hint", "Ask Loom to review composition, rewrite a prompt, inspect installed resources, or attach reference images.")}</p><div><button type="button" onclick={() => useSuggestion(t("assistant.quick.review_prompt", "Read the current prompt and suggest the highest-impact improvement."))}>{t("assistant.quick.review", "Review current prompt")}</button><button type="button" onclick={() => fileInput?.click()}>{t("assistant.quick.reference", "Analyze reference images")}</button></div></div>
           {/if}
         </div>
 
         {#if $useChatStore.queue.length}<div class="kl-queue-strip" aria-label="Queued messages"><span class="kl-queue-label"><span class="kl-queue-dot"></span> Queue {$useChatStore.queue.length}</span><div class="kl-queue-items">{#each $useChatStore.queue as item (item.id)}<div class="kl-queue-item"><span>{item.text || `${item.attachments.length} images`}</span><button type="button" onclick={() => { if (actionOverrides.removeQueuedMessage) actionOverrides.removeQueuedMessage(item.id); else if (controller) void controller.actions.removeQueuedMessage(item.id); else $useChatStore.removeQueuedMessage(item.id); }} aria-label="Remove queued message {item.id}"><XCircle size={13} /></button></div>{/each}</div></div>{/if}
 
         <form class:kl-composer-drop-active={dropActive} class="kl-composer" onsubmit={(event) => { event.preventDefault(); void submit(); }} ondragover={(event) => { event.preventDefault(); dropActive = true; }} ondragleave={() => dropActive = false} ondrop={(event) => { event.preventDefault(); dropActive = false; void addFiles(Array.from(event.dataTransfer?.files ?? [])); }}>
-          {#if attachments.length}<div class="kl-filmstrip" aria-label="Attached reference images">{#each attachments as attachment, index (attachment.id)}<div class="kl-filmstrip-item"><button type="button" class="kl-filmstrip-preview" onclick={() => lightbox = { attachments, index }} oncontextmenu={(event) => { event.preventDefault(); attachmentMenuId = attachment.id; }} aria-label="Preview {attachment.name}"><img src={attachment.dataUrl} alt={attachment.name} /><span class="kl-filmstrip-name">{attachment.name}</span></button><button type="button" class="kl-filmstrip-remove" onclick={() => void removeAttachment(attachment.id)} aria-label="Remove {attachment.name}"><X size={12} /></button><button type="button" class="kl-filmstrip-more" onclick={() => attachmentMenuId = attachmentMenuId === attachment.id ? null : attachment.id} aria-label="Edit {attachment.name}">•••</button>{#if attachmentMenuId === attachment.id}<div class="kl-attachment-menu" role="menu"><button type="button" role="menuitem" onclick={() => { replacementId = attachment.id; replacementInput?.click(); attachmentMenuId = null; }}><Pencil size={13} /> Replace</button><button type="button" role="menuitem" onclick={() => { void removeAttachment(attachment.id); attachmentMenuId = null; }}><Trash2 size={13} /> Remove</button></div>{/if}</div>{/each}<button type="button" class="kl-filmstrip-add" onclick={() => fileInput?.click()} aria-label="Attach another image"><Plus size={17} /></button></div>{/if}
-          <textarea bind:this={composerInput} bind:value={draft} rows="1" placeholder="Ask about or change the current prompt..." aria-label="Message Kohaku Loom" oninput={(event) => resizeComposer(event.currentTarget)} onkeydown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void submit(); } }}></textarea>
-          <div class="kl-composer-bottom"><div class="kl-composer-tools"><button type="button" class="kl-composer-icon" onclick={() => fileInput?.click()} aria-label="Attach reference images"><ImagePlus size={16} /></button><button type="button" class="kl-composer-icon" onclick={() => { draft = ""; attachments = []; action("clearChat")(); $useChatStore.reset(); requestAnimationFrame(() => resizeComposer()); }} aria-label="Clear chat"><Trash2 size={16} /></button></div>
-            <div class="kl-composer-tools"><div class="kl-composer-picker-row" aria-label="Model controls"><ModelPicker /><ReasoningPicker /></div><button type="button" class="kl-risk-pill kl-risk-{$useUiStore.riskMode}" onclick={() => { const mode: RiskMode = $useUiStore.riskMode === "yolo" ? "normal" : "yolo"; $useUiStore.setRiskMode(mode); void action("setRiskMode")(mode); }} aria-label="Toggle risk mode" aria-pressed={$useUiStore.riskMode === "yolo"}><span></span>{$useUiStore.riskMode === "yolo" ? "YOLO" : "Normal"}</button>{#if $useChatStore.activeRequestId}<button type="button" class="kl-send-button kl-stop-button" onclick={stop} aria-label="Stop response"><CircleStop size={17} /></button>{/if}<button type="submit" class="kl-send-button" disabled={!draft.trim() && !attachments.length} aria-label={$useChatStore.activeRequestId ? "Queue message" : "Send message"}><Send size={17} /></button></div>
+          {#if attachments.length}<div class="kl-filmstrip" aria-label="Attached reference images">{#each attachments as attachment, index (attachment.id)}<div class="kl-filmstrip-item"><button type="button" class="kl-filmstrip-preview" onclick={() => lightbox = { attachments, index }} oncontextmenu={(event) => { event.preventDefault(); attachmentMenuId = attachment.id; }} aria-label="Preview {attachment.name}"><img src={attachment.dataUrl} alt={attachment.name} width="58" height="54" /><span class="kl-filmstrip-name">{attachment.name}</span></button><button type="button" class="kl-filmstrip-remove" onclick={() => void removeAttachment(attachment.id)} aria-label="Remove {attachment.name}"><X size={12} /></button><button type="button" class="kl-filmstrip-more" onclick={() => attachmentMenuId = attachmentMenuId === attachment.id ? null : attachment.id} aria-label="Edit {attachment.name}">•••</button>{#if attachmentMenuId === attachment.id}<div class="kl-attachment-menu" role="menu"><button type="button" role="menuitem" onclick={() => { replacementId = attachment.id; replacementInput?.click(); attachmentMenuId = null; }}><Pencil size={13} /> Replace</button><button type="button" role="menuitem" onclick={() => { void removeAttachment(attachment.id); attachmentMenuId = null; }}><Trash2 size={13} /> Remove</button></div>{/if}</div>{/each}<button type="button" class="kl-filmstrip-add" onclick={() => fileInput?.click()} aria-label="Attach another image"><Plus size={17} /></button></div>{/if}
+          <textarea name="kohaku-loom-message" autocomplete="off" bind:this={composerInput} bind:value={draft} rows="1" placeholder={t("assistant.input.placeholder", "Ask about or change the current prompt…")} aria-label={t("assistant.input.label", "Message Kohaku Loom")} oninput={(event) => resizeComposer(event.currentTarget)} onkeydown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void submit(); } }}></textarea>
+          <div class="kl-composer-bottom"><div class="kl-composer-tools"><button type="button" class="kl-composer-icon" onclick={() => fileInput?.click()} aria-label={t("assistant.attach", "Attach reference images")}><ImagePlus size={16} /></button><button type="button" class="kl-composer-icon" onclick={() => confirm = "clear"} aria-label={t("assistant.clear", "Clear chat")} disabled={!visibleMessages.length && !draft && !attachments.length}><Trash2 size={16} /></button></div>
+            <div class="kl-composer-tools"><div class="kl-composer-picker-row" aria-label="Model controls"><ModelPicker /><ReasoningPicker /></div><button type="button" class="kl-risk-pill kl-risk-{$useUiStore.riskMode}" onclick={toggleRiskMode} aria-label={t("assistant.risk.toggle", "Toggle risk mode")} aria-pressed={$useUiStore.riskMode === "yolo"}><span></span>{$useUiStore.riskMode === "yolo" ? t("assistant.risk.direct", "Direct edits") : t("assistant.risk.confirm", "Confirm edits")}</button>{#if $useChatStore.activeRequestId}<button type="button" class="kl-send-button kl-stop-button" onclick={stop} aria-label={t("assistant.stop", "Stop response")}><CircleStop size={17} /></button>{/if}<button type="submit" class="kl-send-button" disabled={!draft.trim() && !attachments.length} aria-label={$useChatStore.activeRequestId ? t("assistant.queue", "Queue message") : t("assistant.send", "Send message")}><Send size={17} /></button></div>
            </div>
-           {#if $useUiStore.riskMode === "yolo"}<p class="kl-risk-note"><AlertTriangle size={13} /> YOLO allows direct prompt edits and tool actions.</p>{/if}
+           {#if $useUiStore.riskMode === "yolo"}<p class="kl-risk-note"><AlertTriangle size={13} /> Direct edits lets Loom change prompts and run tools without asking each time.</p>{/if}
           <input bind:this={fileInput} type="file" accept="image/*" multiple hidden onchange={(event) => { void addFiles(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ""; }} />
           <input bind:this={replacementInput} type="file" accept="image/*" hidden onchange={(event) => { const file = event.currentTarget.files?.[0]; if (file) void replaceAttachment(file); event.currentTarget.value = ""; }} />
         </form>
       </div>
       <button type="button" class="kl-resize-handle" data-loom-interaction-handle="true" use:pointerWindow={{ mode: "resize", layout: () => currentLayout, update: updateLayout, interacting: (active) => interacting = active }} onkeydown={resizeKey} aria-label="Resize chat window"><Grip size={15} /></button>
-      {#if kind !== "desktop" && !$useUiStore.hasSeenMobileResizeHint && !mobileHintDismissed}<div class="kl-mobile-resize-hint" role="status"><Grip size={14} /> Drag the corner to resize<button type="button" onclick={() => { mobileHintDismissed = true; $useUiStore.markMobileResizeHintSeen(); }}>Dismiss</button></div>{/if}
+    {#if kind !== "desktop" && !$useUiStore.hasSeenMobileResizeHint && !mobileHintDismissed}<div class="kl-mobile-resize-hint" role="status"><Grip size={14} /> {t("assistant.resize_hint", "Drag the corner to resize")}<button type="button" onclick={() => { mobileHintDismissed = true; $useUiStore.markMobileResizeHintSeen(); }}>{t("common.dismiss", "Dismiss")}</button></div>{/if}
     </div>
   {/if}
 
-  <ProfileSettings open={$useUiStore.profileSettingsOpen} onclose={() => $useUiStore.setProfileSettingsOpen(false)} />
+  <ProfileSettings open={$useUiStore.profileSettingsOpen} onclose={closeSettings} />
+
+  <AlertDialog.Root open={confirm === "clear"} onOpenChange={(value) => { if (!value) confirm = null; }}><AlertDialog.Portal><AlertDialog.Overlay class="kl-dialog-layer" /><AlertDialog.Content class="kl-dialog-card"><header><AlertDialog.Title>Clear this chat?</AlertDialog.Title></header><AlertDialog.Description class="kl-dialog-description">Messages, queued follow-ups, attachments, and the current draft will be removed.</AlertDialog.Description><div class="kl-dialog-actions"><AlertDialog.Cancel class="kl-dialog-cancel">Keep chat</AlertDialog.Cancel><AlertDialog.Action class="kl-dialog-confirm" onclick={clearConversation}>Clear chat</AlertDialog.Action></div></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>
+  <AlertDialog.Root open={confirm === "yolo"} onOpenChange={(value) => { if (!value) confirm = null; }}><AlertDialog.Portal><AlertDialog.Overlay class="kl-dialog-layer" /><AlertDialog.Content class="kl-dialog-card"><header><AlertDialog.Title>Allow direct edits?</AlertDialog.Title></header><AlertDialog.Description class="kl-dialog-description">Loom may change the active prompt and run supported tools without asking for confirmation each time. Hash checks still protect prompts changed elsewhere.</AlertDialog.Description><div class="kl-dialog-actions"><AlertDialog.Cancel class="kl-dialog-cancel">Keep confirmations</AlertDialog.Cancel><AlertDialog.Action class="kl-dialog-confirm" onclick={enableYolo}>Allow direct edits</AlertDialog.Action></div></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>
 
   {#if lightbox && lightbox.attachments[lightbox.index]}
     <div class="kl-lightbox" role="dialog" tabindex="-1" aria-modal="true" aria-label="Image preview" onclick={() => lightbox = null} onkeydown={(event) => { if (event.key === "Escape") lightbox = null; }}>
-      <div class="kl-lightbox-panel" onclick={(event) => event.stopPropagation()} role="presentation"><button type="button" class="kl-lightbox-close" onclick={() => lightbox = null} aria-label="Close preview"><X size={18} /></button><img src={lightbox.attachments[lightbox.index].dataUrl} alt={lightbox.attachments[lightbox.index].name} />{#if lightbox.attachments.length > 1}<button type="button" class="kl-lightbox-nav kl-lightbox-prev" disabled={lightbox.index === 0} onclick={() => lightbox && (lightbox = { ...lightbox, index: Math.max(0, lightbox.index - 1) })} aria-label="Previous image"><ChevronLeft size={22} /></button><button type="button" class="kl-lightbox-nav kl-lightbox-next" disabled={lightbox.index === lightbox.attachments.length - 1} onclick={() => lightbox && (lightbox = { ...lightbox, index: Math.min(lightbox.attachments.length - 1, lightbox.index + 1) })} aria-label="Next image"><ChevronRight size={22} /></button><span class="kl-lightbox-count">{lightbox.index + 1} / {lightbox.attachments.length}</span>{/if}</div>
+      <div class="kl-lightbox-panel" onclick={(event) => event.stopPropagation()} role="presentation"><button type="button" class="kl-lightbox-close" onclick={() => lightbox = null} aria-label="Close preview"><X size={18} /></button><img src={lightbox.attachments[lightbox.index].dataUrl} alt={lightbox.attachments[lightbox.index].name} width="900" height="900" />{#if lightbox.attachments.length > 1}<button type="button" class="kl-lightbox-nav kl-lightbox-prev" disabled={lightbox.index === 0} onclick={() => lightbox && (lightbox = { ...lightbox, index: Math.max(0, lightbox.index - 1) })} aria-label="Previous image"><ChevronLeft size={22} /></button><button type="button" class="kl-lightbox-nav kl-lightbox-next" disabled={lightbox.index === lightbox.attachments.length - 1} onclick={() => lightbox && (lightbox = { ...lightbox, index: Math.min(lightbox.attachments.length - 1, lightbox.index + 1) })} aria-label="Next image"><ChevronRight size={22} /></button><span class="kl-lightbox-count">{lightbox.index + 1} / {lightbox.attachments.length}</span>{/if}</div>
     </div>
   {/if}
 </div>

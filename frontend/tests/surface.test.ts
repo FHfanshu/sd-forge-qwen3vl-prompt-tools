@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Surface from "../src/components/Surface.svelte";
@@ -25,10 +25,10 @@ describe("Svelte chat surface", () => {
     expect(screen.getByText("1 / 2")).toBeInTheDocument();
   });
 
-  it("keeps an empty chat blank and restores the launcher after closing", async () => {
+  it("guides an empty chat and restores the launcher after closing", async () => {
     const user = userEvent.setup();
     render(Surface, { initialOpen: true, actions: {} });
-    expect(screen.queryByText("Start with the current prompt.")).not.toBeInTheDocument();
+    expect(screen.getByText("Start with the current prompt")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close Kohaku Loom" }));
     expect(screen.getByRole("button", { name: "Open Kohaku Loom" })).toHaveTextContent("Assistant");
   });
@@ -52,14 +52,25 @@ describe("Svelte chat surface", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "Refine this prompt", riskMode: "normal", reasoning: "low" }));
     await user.click(screen.getByRole("button", { name: "Toggle risk mode" }));
+    await user.click(screen.getByRole("button", { name: "Allow direct edits" }));
     expect(screen.getByRole("button", { name: "Toggle risk mode" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("confirms before clearing a conversation", async () => {
+    const user = userEvent.setup();
+    const clearChat = vi.fn();
+    render(Surface, { initialOpen: true, messages: mockMessages, actions: { clearChat } });
+    await user.click(screen.getByRole("button", { name: "Clear chat" }));
+    expect(screen.getByText("Clear this chat?")).toBeInTheDocument();
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Clear chat" }));
+    expect(clearChat).toHaveBeenCalledOnce();
   });
 
   it("queues locally while a mocked request is active", async () => {
     const user = userEvent.setup();
     useChatStore.getState().beginRequest("active");
     render(Surface, { initialOpen: true, actions: { sendMessage: vi.fn() } });
-    await user.type(screen.getByRole("textbox", { name: "Message Kohaku Loom" }), "Follow up");
+    await fireEvent.input(screen.getByRole("textbox", { name: "Message Kohaku Loom" }), { target: { value: "Follow up" } });
     await user.click(screen.getByRole("button", { name: "Queue message" }));
     expect(screen.getByText("Queue 1")).toBeInTheDocument();
   });
@@ -69,8 +80,8 @@ describe("Svelte chat surface", () => {
     render(Surface, { initialOpen: true, actions: {} });
     const next = useProfileStore.getState().profiles.find((profile) => profile.enabled && profile.id !== useProfileStore.getState().activeProfileId);
     expect(next).toBeDefined();
-    const selector = screen.getByRole("combobox", { name: /Active (model|profile)/ });
-    await user.selectOptions(selector, next!.id);
+    await user.click(screen.getByRole("button", { name: "Active model" }));
+    await user.click(screen.getByRole("option", { name: new RegExp(next!.displayName) }).querySelector("button")!);
     expect(useProfileStore.getState().activeProfileId).toBe(next!.id);
   });
 
@@ -91,5 +102,14 @@ describe("Svelte chat surface", () => {
 
     expect(useProfileStore.getState().profiles.find((profile) => profile.id === useProfileStore.getState().activeProfileId)?.parameters.reasoningEffort).toBe("high");
     expect(screen.getByRole("button", { name: "Change reasoning effort" })).toHaveTextContent("High");
+  });
+
+  it("closes nested pickers with Escape without closing the chat", async () => {
+    const user = userEvent.setup();
+    render(Surface, { initialOpen: true, actions: {} });
+    await user.click(screen.getByRole("button", { name: "Change reasoning effort" }));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Reasoning effort" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Kohaku Loom chat" })).toBeInTheDocument();
   });
 });

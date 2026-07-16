@@ -27,6 +27,7 @@
   let busy = $state<"test" | "sync" | null>(null);
   let confirm = $state<"delete" | "restore" | null>(null);
   let interacting = $state(false);
+  let windowElement = $state<HTMLDivElement>();
   let kind = $state<LayoutViewport>(viewportKind());
   let viewport = $state(readViewportRect());
   const minimum = { width: 340, height: 420 };
@@ -78,13 +79,13 @@
   function requestDelete(id: string): void { $useProfileStore.selectProfile(id); confirm = "delete"; }
   function activate(id: string): void { $useProfileStore.activateProfile(id); status = t("profiles.status.saved", "Saved"); }
   async function testConnection(): Promise<void> {
-    busy = "test"; status = t("profiles.test.testing", "Testing connection...");
+    busy = "test"; status = t("profiles.test.testing", "Testing connection…");
     try { const host = getHostApi(window.kohakuLoom); if (!host) throw new Error("Host unavailable"); await host.profileChat(selected.id, [{ role: "user", content: "Ping. Reply with OK." }]); status = t("profiles.test.success", "Connection successful."); }
     catch { status = t("profiles.test.error", "Connection failed. Check the model profile."); }
     finally { busy = null; }
   }
   async function syncModel(): Promise<void> {
-    busy = "sync"; status = t("profiles.models_dev.loading", "Querying models.dev...");
+    busy = "sync"; status = t("profiles.models_dev.loading", "Querying models.dev…");
     try { const result = await syncProfileFromModelsDev(selected); update(result); status = t("profiles.models_dev.success", "Updated model parameters from models.dev."); }
     catch { status = t("profiles.models_dev.error", "No exact model match found on models.dev."); }
     finally { busy = null; }
@@ -105,10 +106,13 @@
   $effect(() => {
     if (!profileTabs.some(([value]) => value === tab)) tab = "model";
   });
+  $effect(() => {
+    if (open) requestAnimationFrame(() => windowElement?.focus());
+  });
 </script>
 
 {#if open && selected}
-  <div class:kl-window-interacting={interacting} class="kl-profile-window" style:left="{layout.left}px" style:top="{layout.top}px" style:width="{layout.width}px" style:height="{layout.height}px" style:z-index={$useUiStore.frontWindow === "profiles" ? 1003 : 1001} role="dialog" tabindex="-1" aria-modal="false" aria-label={t("profiles.title", "Model profiles")} data-profile-window="true" onpointerdown={() => $useUiStore.bringToFront("profiles")} onkeydown={(event) => { if (event.key === "Escape") onclose(); }}>
+  <div bind:this={windowElement} class:kl-window-interacting={interacting} class="kl-profile-window" style:left="{layout.left}px" style:top="{layout.top}px" style:width="{layout.width}px" style:height="{layout.height}px" style:z-index={$useUiStore.frontWindow === "profiles" ? 1003 : 1001} role="dialog" tabindex="-1" aria-modal="false" aria-label={t("profiles.title", "Model profiles")} data-profile-window="true" onpointerdown={() => $useUiStore.bringToFront("profiles")} onkeydown={(event) => { if (event.key === "Escape") onclose(); }}>
     <header class="kl-profile-window-header" use:pointerWindow={{ mode: "drag", layout: () => layout, update: updateLayout, minimum, interacting: (active) => interacting = active }}>
       <div class="kl-brand-lockup"><div><strong>{t("profiles.title", "Model profiles")}</strong></div></div>
       <div class="kl-profile-window-actions">
@@ -146,9 +150,9 @@
         <section class="kl-profile-summary">
           <div class="kl-profile-summary-main"><div><h2>{selected.displayName}</h2><p>{selected.modelId} · {selected.runtime}</p></div><button type="button" class:is-enabled={selected.enabled} class="kl-profile-enabled-toggle" aria-label="Toggle model availability" aria-pressed={selected.enabled} title={selected.enabled ? t("profiles.enabled", "Enabled") : t("profiles.disabled", "Disabled")} onclick={() => update({ enabled: !selected.enabled })}><span>{selected.enabled ? t("profiles.enabled", "Enabled") : t("profiles.disabled", "Disabled")}</span><span class="kl-profile-enabled-switch" aria-hidden="true"><span></span></span></button></div>
           <div class="kl-profile-connection-row">
-            {#if selected.runtime === "remote-http"}<div class="kl-profile-key-row"><KeyRound size={14} /><input aria-label={t("profiles.api_key", "API key")} type={showKey ? "text" : "password"} value={selected.apiKey} placeholder={selected.hasApiKey && !selected.apiKey ? t("profiles.api_key.stored", "Stored securely") : t("profiles.api_key.placeholder", "Paste an API key")} oninput={(event) => update({ apiKey: event.currentTarget.value, hasApiKey: Boolean(event.currentTarget.value) || selected.hasApiKey })} /><button type="button" onclick={() => showKey = !showKey}>{showKey ? t("profiles.api_key.hide", "Hide") : t("profiles.api_key.show", "Show")}</button></div>{:else}<div class="kl-profile-local-callout"><ServerCog size={15} /><div><strong>{t("profiles.quick.local", "Local model - no API key needed")}</strong><small>{selected.runtime === "llama-once" ? selected.modelPath || t("profiles.model_path.empty", "Model path not configured") : selected.endpoint}</small></div></div>{/if}
+            {#if selected.runtime === "remote-http"}<div class="kl-profile-key-row"><KeyRound size={14} /><input name="api-key" autocomplete="off" spellcheck="false" aria-label={t("profiles.api_key", "API key")} type={showKey ? "text" : "password"} value={selected.apiKey} placeholder={selected.hasApiKey && !selected.apiKey ? t("profiles.api_key.stored", "Stored securely") : t("profiles.api_key.placeholder", "Paste an API key")} oninput={(event) => update({ apiKey: event.currentTarget.value, hasApiKey: Boolean(event.currentTarget.value) || selected.hasApiKey })} /><button type="button" onclick={() => showKey = !showKey}>{showKey ? t("profiles.api_key.hide", "Hide") : t("profiles.api_key.show", "Show")}</button></div>{:else}<div class="kl-profile-local-callout"><ServerCog size={15} /><div><strong>{t("profiles.quick.local", "Local model - no API key needed")}</strong><small>{selected.runtime === "llama-once" ? selected.modelPath || t("profiles.model_path.empty", "Model path not configured") : selected.endpoint}</small></div></div>{/if}
           </div>
-          <div class="kl-profile-summary-footer"><div class="kl-profile-summary-actions"><Button size="sm" onclick={() => void testConnection()} disabled={busy !== null || !selected.enabled}><Activity size={13} />{busy === "test" ? t("profiles.test.testing", "Testing...") : t("profiles.test", "Test")}</Button><Button variant="outline" size="sm" onclick={() => activate(selected.id)} disabled={selected.id === $useProfileStore.activeProfileId || !selected.enabled}><Check size={13} />{selected.id === $useProfileStore.activeProfileId ? t("profiles.current", "Current") : t("profiles.use_model", "Use model")}</Button><Button variant="outline" size="sm" onclick={() => void syncModel()} disabled={busy !== null}><RefreshCw size={13} />{busy === "sync" ? t("profiles.models_dev.loading", "Syncing...") : t("profiles.models_dev.sync", "Sync parameters")}</Button></div>{#if status}<div class="kl-profile-status" role="status">{status}</div>{/if}</div>
+          <div class="kl-profile-summary-footer"><div class="kl-profile-summary-actions"><Button size="sm" onclick={() => void testConnection()} disabled={busy !== null || !selected.enabled}><Activity size={13} />{busy === "test" ? t("profiles.test.testing", "Testing…") : t("profiles.test", "Test")}</Button><Button variant="outline" size="sm" onclick={() => activate(selected.id)} disabled={selected.id === $useProfileStore.activeProfileId || !selected.enabled}><Check size={13} />{selected.id === $useProfileStore.activeProfileId ? t("profiles.current", "Current") : t("profiles.use_model", "Use model")}</Button><Button variant="outline" size="sm" onclick={() => void syncModel()} disabled={busy !== null}><RefreshCw size={13} />{busy === "sync" ? t("profiles.models_dev.loading", "Syncing…") : t("profiles.models_dev.sync", "Sync parameters")}</Button></div>{#if status}<div class="kl-profile-status" role="status">{status}</div>{/if}</div>
         </section>
 
         <Tabs.Root bind:value={tab} class="kl-profile-tabs"><Tabs.List class="kl-profile-tabs-list" aria-label={t("profiles.advanced_tabs", "Profile settings")}>{#each profileTabs as item}<Tabs.Trigger value={item[0]} class="kl-profile-tab">{t(`profiles.tab.${item[0]}`, item[1])}</Tabs.Trigger>{/each}</Tabs.List>
