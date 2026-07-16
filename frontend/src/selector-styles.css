@@ -1,0 +1,53 @@
+@tailwind components;
+
+@layer components {
+  .kl-composer-picker-row { display: flex; align-items: center; gap: .12rem; min-width: 0; flex-wrap: wrap; }
+  .kl-model-picker, .kl-reasoning-picker { position: relative; min-width: 0; }
+  .kl-model-picker-trigger, .kl-reasoning-picker-trigger { color: var(--body-text-color-subdued); background: transparent; font-size: var(--kl-type-meta, 11px); font-weight: 650; white-space: nowrap; }
+  .kl-model-picker-trigger { max-width: 11rem; }
+  .kl-model-picker-trigger > span, .kl-reasoning-picker-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kl-model-picker-trigger:hover, .kl-model-picker-trigger:focus-visible, .kl-reasoning-picker-trigger:hover, .kl-reasoning-picker-trigger:focus-visible { color: var(--body-text-color); background: var(--button-secondary-background-fill-hover, var(--button-secondary-background-fill)); }
+  .kl-model-picker-trigger > svg:first-child, .kl-reasoning-picker-trigger > svg:first-child { color: var(--primary-500); }
+  .kl-reasoning-picker-trigger:disabled { cursor: not-allowed; opacity: .45; }
+
+  .kl-model-picker-popover, .kl-reasoning-picker-popover { position: absolute; right: 0; bottom: calc(100% + .6rem); z-index: 70; overflow: hidden; border: 1px solid var(--block-border-color); border-radius: 10px; color: var(--body-text-color); background: var(--body-background-fill); box-shadow: 0 18px 48px rgb(0 0 0 / 35%); }
+  .kl-model-picker-popover { display: grid; width: min(570px, calc(100vw - 28px)); max-height: min(620px, calc(100vh - 110px)); overflow-y: auto; }
+  .kl-model-picker-add, .kl-model-picker-search, .kl-model-picker-section { border-bottom: 1px solid var(--block-border-color); }
+  .kl-model-picker-add { display: flex; align-items: center; gap: .55rem; min-height: 2.75rem; padding: 0 .9rem; color: var(--body-text-color-subdued); background: transparent; font-size: .83rem; text-align: left; }
+  .kl-model-picker-add:hover { color: var(--body-text-color); background: var(--button-secondary-background-fill-hover, var(--button-secondary-background-fill)); }
+  .kl-model-picker-search { display: flex; align-items: center; gap: .55rem; padding: .55rem .8rem; color: var(--body-text-color-subdued); }
+  .kl-model-picker-search:focus-within { color: var(--primary-500); }
+  .kl-model-picker-search input { height: 2rem; padding: 0; border: 0; outline: 0; color: var(--body-text-color); background: transparent; box-shadow: none; font-size: .84rem; }
+  .kl-model-picker-search input:focus { border: 0; box-shadow: none; }
+  .kl-model-picker-search input::placeholder { color: var(--body-text-color-subdued); opacity: 1; }
+  .kl-model-picker-section { padding: .35rem .35rem .42rem; }
+  .kl-model-picker-section:last-of-type { border-bottom: 0; }
+  .kl-model-picker-section-heading { display: flex; align-items: center; justify-content: space-between; min-height: 2rem; padding: 0 .35rem; color: var(--body-text-color-subdued); font-size: .79rem; font-weight: 750; }
+  .kl-model-picker-section-heading > span { display: inline-flex; align-items: center; gap: .55rem; }
+  .kl-model-picker-section-heading svg:first-child { color: var(--primary-500); }
+  .kl-model-picker-provider i { display: inline-grid; place-items: center; width: 1.2rem; height: 1.2rem; border-radius: 50%; color: var(--body-background-fill); background: var(--body-text-color-subdued); font-size: .63rem; font-style: normal; }
+  .kl-model-picker-list { display: grid; gap: .12rem; }
+  .kl-model-picker-row { display: flex; align-items: stretch; min-width: 0; border-radius: 8px; }
+  .kl-model-picker-row:hover, .kl-model-picker-row.is-active { background: var(--button-secondary-background-fill); }
+  .kl-model-picker-row-main { display: flex; align-items: center; min-width: 0; flex: 1; gap: .55rem; padding: .55rem .45rem; color: var(--body-text-color); background: transparent; text-align: left; }
+  .kl-model-picker-row-main > svg:not(.kl-model-picker-grip) { color: var(--body-text-color); flex: 0 0 auto; }
+  .kl-model-picker-grip { flex: 0 0 auto; color: var(--body-text-color-subdued); opacity: .46; }
+  .kl-model-picker-row-copy { display: flex; align-items: baseline; min-width: 0; gap: .48rem; }
+  .kl-model-picker-row-copy strong { overflow: hidden; font-size: .85rem; text-overflow: ellipsis; white-space: nowrap; }
+  .kl-model-picker-row-copy small { flex: 0 0 auto; color: var(--body-text-color-subdued); font-size: .78rem; }
+  .kl-model-picker-thinking { margin-left: auto; overflow: hidden; color: var(--body-text-color-subdued); font-size: .77rem; text-overflow: ellipsis; white-space: nowrap; }
+  .kl-model-picker-star { display: inline-flex; align-items: center; justify-content: center; width: 2.3rem; padding: 0; color: var(--body-text-color-subdued); background: transparent; }
+  .kl-model-picker-star:hover, .kl-model-picker-star:focus-visible, .kl-model-picker-star.is-favorite { color: var(--primary-500); }
+  .kl-model-picker-check { margin-right: -.25rem; color: var(--primary-500); }
+  .kl-model-picker-empty { padding: 1.1rem .8rem; color: var(--body-text-color-subdued); font-size: .8rem; text-align: center; }
+
+  .kl-reasoning-picker-popover { width: min(270px, calc(100vw - 28px)); padding: .7rem; }
+  .kl-reasoning-picker-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding: .35rem .45rem .6rem; }
+  .kl-reasoning-picker-heading strong { font-size: .9rem; }
+  .kl-reasoning-picker-heading span { color: var(--primary-500); font-size: .78rem; font-weight: 700; }
+  .kl-reasoning-picker-options { display: grid; gap: .1rem; border-top: 1px solid var(--block-border-color); padding-top: .4rem; }
+  .kl-reasoning-picker-options button { display: flex; align-items: center; justify-content: space-between; min-height: 2.35rem; padding: 0 .45rem; border-radius: 6px; color: var(--body-text-color); background: transparent; font-size: .85rem; font-weight: 650; text-align: left; }
+  .kl-reasoning-picker-options button:hover, .kl-reasoning-picker-options button.is-selected { color: var(--body-text-color); background: var(--button-secondary-background-fill); }
+  .kl-reasoning-picker-options button.is-selected svg { color: var(--primary-500); }
+  .kl-sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+}

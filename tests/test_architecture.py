@@ -7,8 +7,20 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "kohaku_loom"
-TEXT_SUFFIXES = {".css", ".js", ".json", ".md", ".py", ".txt", ".yaml", ".yml"}
-SKIP_PARTS = {".git", ".loom", ".pytest_cache", "__pycache__", "bin"}
+TEXT_SUFFIXES = {".css", ".html", ".js", ".json", ".md", ".py", ".svelte", ".ts", ".txt", ".yaml", ".yml"}
+SKIP_PARTS = {
+    ".git",
+    ".loom",
+    ".pytest_cache",
+    "__pycache__",
+    "bin",
+    "node_modules",
+    "test-results",
+}
+GENERATED_OR_LOCKED = {
+    pathlib.Path("frontend/pnpm-lock.yaml"),
+    pathlib.Path("javascript/kohaku_loom_90_ui.js"),
+}
 
 
 def source_files() -> list[pathlib.Path]:
@@ -17,6 +29,8 @@ def source_files() -> list[pathlib.Path]:
         if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
             continue
         if any(part in SKIP_PARTS for part in path.relative_to(ROOT).parts):
+            continue
+        if path.relative_to(ROOT) in GENERATED_OR_LOCKED:
             continue
         result.append(path)
     return result

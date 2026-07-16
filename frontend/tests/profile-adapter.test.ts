@@ -1,0 +1,64 @@
+import { describe, expect, it } from "vitest";
+import { normalizeProfile, normalizeProfileState, toHostProfilePatch } from "../src/profile-adapter";
+
+describe("profile migration adapters", () => {
+  it("maps legacy snake_case profile fields into the Svelte contract", () => {
+    const profile = normalizeProfile({
+      id: "legacy-local",
+      display_name: "Legacy local",
+      model: "qwen3.5-9b-vlm",
+      protocol: "openai-chat-completions",
+      runtime: "llama-once",
+      endpoint: "http://127.0.0.1:8080/v1/",
+      fallback_endpoints: ["http://backup.local/v1"],
+      has_api_key: true,
+      capabilities: { tools: true, vision: true, streaming: true, reasoning: false },
+      parameters: { temperature: 0.4, top_p: 0.8, max_tokens: 2048, reasoning_effort: "none", timeout: 90, sanitize_sensitive: false, teacher_mode: "regex" },
+      model_path: "C:/models/qwen.gguf",
+      mmproj_path: "C:/models/mmproj.gguf",
+      llama_server_path: "C:/llama-server.exe",
+      n_ctx: 8192,
+      n_gpu_layers: 12,
+      thinking: true,
+    });
+
+    expect(profile).toMatchObject({
+      id: "legacy-local",
+      displayName: "Legacy local",
+      modelId: "qwen3.5-9b-vlm",
+      endpoint: "http://127.0.0.1:8080/v1",
+      hasApiKey: true,
+      nCtx: 8192,
+      nGpuLayers: 12,
+      parameters: { topP: 0.8, maxTokens: 2048, sanitizeSensitive: false, teacherMode: "regex" },
+    });
+  });
+
+  it("preserves route constraints while normalizing a version-one state", () => {
+    const state = normalizeProfileState({
+      version: 1,
+      active_profile_id: "disabled",
+      teacher_profile_id: "grok",
+      session_profile_id: "deepseek",
+      naming_profile_id: "local-qwen-once",
+      profiles: [
+        { id: "disabled", display_name: "Disabled", model_id: "disabled", enabled: false, runtime: "remote-http", protocol: "openai-chat-completions" },
+        { id: "grok", display_name: "Grok", model_id: "grok", enabled: true, runtime: "remote-http", protocol: "openai-chat-completions" },
+        { id: "local-qwen-once", display_name: "Local", model_id: "qwen", enabled: true, runtime: "llama-once", protocol: "openai-chat-completions", model_path: "C:/qwen.gguf" },
+      ],
+    });
+
+    expect(state.activeProfileId).toBe("grok");
+    expect(state.teacherProfileId).toBe("grok");
+    expect(state.sessionProfileId).toBe("local-qwen-once");
+    expect(state.namingProfileId).toBe("local-qwen-once");
+  });
+
+  it("serializes nested Svelte patches for the host facade", () => {
+    expect(toHostProfilePatch({ parameters: { topP: 0.7, maxTokens: 4096 }, modelInfo: { providerId: "openai" }, capabilities: { vision: false } })).toEqual({
+      parameters: { top_p: 0.7, max_tokens: 4096 },
+      model_info: { provider_id: "openai" },
+      capabilities: { vision: false },
+    });
+  });
+});
