@@ -2,8 +2,12 @@
   import DOMPurify from "dompurify";
   import { marked } from "marked";
 
-  let { content }: { content: string } = $props();
+  let { content, streaming = false }: { content: string; streaming?: boolean } = $props();
   const html = $derived(DOMPurify.sanitize(marked.parse(content || " ", { gfm: true }) as string));
 </script>
 
-<div class="kl-markdown">{@html html}</div>
+{#if streaming}
+  <div class="kl-markdown kl-markdown-streaming">{content}</div>
+{:else}
+  <div class="kl-markdown">{@html html}</div>
+{/if}

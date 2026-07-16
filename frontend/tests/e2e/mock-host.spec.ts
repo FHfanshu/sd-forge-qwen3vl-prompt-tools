@@ -155,6 +155,7 @@ async function installMockHost(page: Page): Promise<void> {
         profileStore,
         claimToolBridge: async () => ({ owned: true, bridge_id: "mock-bridge", pending_requests: [] }),
         claimAssistantToolBridge: async () => ({ owned: true, bridge_id: "mock-bridge", pending_requests: [] }),
+        syncProfiles: async () => ({}),
         profileChat: async () => ({ text: "OK" }),
         listLegacySessions: async () => ({ sessions: [{ id: "legacy-1", title: "Legacy prompt session", preview: "Imported history", message_count: 1, modified_at: 1_690_000_000 }] }),
         getLegacySession: async () => ({ events: [{ event_type: "user_message", message: { content: "Legacy message" } }] }),
@@ -192,10 +193,18 @@ test("mounted desktop UI exercises chat, history, profiles, and attachments", as
   expect(cappedHeight).toBeLessThanOrEqual(132);
   await composer.fill("");
 
+  await page.getByRole("button", { name: "Active model" }).click();
+  const modelPicker = page.getByRole("dialog", { name: "Select model" });
+  await expect(modelPicker).toBeVisible();
+  expect((await modelPicker.boundingBox())!.width).toBeLessThanOrEqual(442);
+  await page.keyboard.press("Escape");
+
   await page.getByRole("button", { name: "Change reasoning effort" }).click();
   const reasoning = page.getByRole("dialog", { name: "Reasoning effort" });
   await expect(reasoning).toBeVisible();
-  await reasoning.getByRole("slider", { name: "Reasoning effort" }).evaluate((element) => {
+  const reasoningSlider = reasoning.getByRole("slider", { name: "Reasoning effort" });
+  await expect(reasoningSlider).toBeVisible();
+  await reasoningSlider.evaluate((element) => {
     const input = element as HTMLInputElement;
     input.value = "3";
     input.dispatchEvent(new Event("input", { bubbles: true }));

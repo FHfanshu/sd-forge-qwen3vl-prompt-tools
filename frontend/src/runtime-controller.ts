@@ -10,7 +10,6 @@ import { useUiStore } from "./stores/ui";
 import { normalizeProfile, normalizeProfileState } from "./profile-adapter";
 
 const ACTIVE_SESSION_KEY = "loom_kt_active_session";
-const SESSION_PROFILE_KEY = "loom_kt_session_profile_snapshot";
 
 type RawRecord = Record<string, any>;
 
@@ -28,6 +27,7 @@ interface LoomRun {
   cancelled: boolean;
   finished: boolean;
   leaseTimer: ReturnType<typeof setInterval> | null;
+  renderHandle: { kind: "animation"; id: number } | { kind: "timeout"; id: ReturnType<typeof setTimeout> } | null;
   toolResults: Map<string, unknown>;
   toolPromises: Map<string, Promise<unknown>>;
   pendingTurnEvents: RawRecord[];
@@ -272,7 +272,7 @@ export class LoomRuntimeController {
       selectHistory: (row) => this.selectHistory(row),
       newSession: () => this.newSession(),
       openSettings: () => this.host.openSettings(),
-      setRiskMode: () => undefined,
+      setRiskMode: (mode) => this.setRiskMode(mode),
     };
   }
 
@@ -283,6 +283,7 @@ export class LoomRuntimeController {
     runtime.setLoading(true);
     try {
       this.reloadProfiles();
+      await this.syncProfiles();
       // Metadata is generated asynchronously after a turn or when an old
       // session is opened. Keep the archive in sync even while the chat is
       // idle; the run stream is only active during a turn.
@@ -307,6 +308,10 @@ export class LoomRuntimeController {
     const normalized = normalizeProfileState(state);
     useProfileStore.getState().setState(normalized);
     return normalized.profiles;
+  }
+
+  private async syncProfiles(): Promise<void> {
+    await this.host.syncProfiles();
   }
 
   addProfile(profile: unknown): Profile {
@@ -423,6 +428,7 @@ export class LoomRuntimeController {
 
   async openSession(sessionId = "", resume = Boolean(sessionId)): Promise<RuntimeSession> {
     if (this.activeRun && !this.activeRun.finished) throw new Error("Cannot switch sessions while a turn is active");
+    await this.syncProfiles();
     const config = asRecord(this.host.assistantConfig());
     const current = useRuntimeStore.getState().sessionId;
     if (current) await this.client.request("/sessions/close", { method: "POST" });
@@ -434,15 +440,15 @@ export class LoomRuntimeController {
         session_id: sessionId,
         resume,
         forge_bridge: true,
-        agent_mode: useRuntimeStore.getState().session?.agent_mode ?? "normal",
+        agent_mode: useUiStore.getState().riskMode,
       }),
     });
     const session = response.session;
     useRuntimeStore.getState().setSession(session);
+    useUiStore.getState().setRiskMode(session.agent_mode === "yolo" ? "yolo" : "normal");
     useChatStore.getState().reset();
     if (typeof localStorage !== "undefined") {
       localStorage.setItem(ACTIVE_SESSION_KEY, session.session_id);
-      localStorage.setItem(SESSION_PROFILE_KEY, JSON.stringify(this.host.profileStore.requestProjection(String(config.profile_id ?? ""))));
     }
     await this.applySession(session.session_id);
     return session;
@@ -455,7 +461,9 @@ export class LoomRuntimeController {
   }
 
   private async applySession(sessionId: string, runtime?: RawRecord): Promise<void> {
-    useRuntimeStore.getState().setSession({ session_id: sessionId, ...asRecord(asRecord(runtime).active_session) });
+    const session = { ...asRecord(asRecord(runtime).active_session), session_id: sessionId } as RuntimeSession;
+    useRuntimeStore.getState().setSession(session);
+    useUiStore.getState().setRiskMode(session.agent_mode === "yolo" ? "yolo" : "normal");
     if (typeof localStorage !== "undefined") localStorage.setItem(ACTIVE_SESSION_KEY, sessionId);
     const conversation = await this.client.request<RawRecord>(`/sessions/${encodeURIComponent(sessionId)}`);
     this.applyConversation(conversation);
@@ -527,6 +535,7 @@ export class LoomRuntimeController {
       cancelled: false,
       finished: false,
       leaseTimer: null,
+      renderHandle: null,
       toolResults: new Map(),
       toolPromises: new Map(),
       pendingTurnEvents: [],
@@ -544,8 +553,28 @@ export class LoomRuntimeController {
 
   private updateStreamingMessage(run: LoomRun): void {
     if (run.cancelled) return;
+    this.ensureStreamingMessage(run);
+    if (run.renderHandle) return;
+    if (typeof globalThis.requestAnimationFrame === "function") {
+      run.renderHandle = { kind: "animation", id: globalThis.requestAnimationFrame(() => this.flushStreamingMessage(run)) };
+      return;
+    }
+    run.renderHandle = { kind: "timeout", id: setTimeout(() => this.flushStreamingMessage(run), 16) };
+  }
+
+  private flushStreamingMessage(run: LoomRun): void {
+    run.renderHandle = null;
+    if (run.cancelled || run.finished) return;
     const id = this.ensureStreamingMessage(run);
     useChatStore.getState().updateMessage(id, { content: run.text, reasoning: run.reasoning || undefined, usage: usageFrom(run.usage), status: "streaming" });
+  }
+
+  private cancelStreamingRender(run: LoomRun): void {
+    const handle = run.renderHandle;
+    if (!handle) return;
+    if (handle.kind === "animation") globalThis.cancelAnimationFrame?.(handle.id);
+    else clearTimeout(handle.id);
+    run.renderHandle = null;
   }
 
   private async startStreams(run: LoomRun): Promise<void> {
@@ -621,6 +650,7 @@ export class LoomRuntimeController {
       useRuntimeStore.getState().setQueuePaused(false);
     } else if (type === "turn_ended") {
       if (run.cancelled) return;
+      this.cancelStreamingRender(run);
       const finalText = String(payload.text ?? run.text);
       run.text = finalText;
       if (payload.reasoning) run.reasoning = String(payload.reasoning);
@@ -669,6 +699,7 @@ export class LoomRuntimeController {
 
   private finishRun(run: LoomRun, result: RawRecord): void {
     if (run.finished) return;
+    this.cancelStreamingRender(run);
     run.finished = true;
     if (run.leaseTimer) clearInterval(run.leaseTimer);
     run.leaseTimer = null;
@@ -707,6 +738,18 @@ export class LoomRuntimeController {
         }
       }
     }
+  }
+
+  private async setRiskMode(mode: RiskMode): Promise<void> {
+    const sessionId = useRuntimeStore.getState().sessionId;
+    if (!sessionId) return;
+    const result = await this.client.request<RawRecord>(`/sessions/${encodeURIComponent(sessionId)}/mode`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent_mode: mode }),
+    });
+    const session = asRecord(result.session);
+    useRuntimeStore.getState().setSession({ ...useRuntimeStore.getState().session, ...session, session_id: sessionId });
   }
 
   async sendMessage(input: SendMessageInput): Promise<void> {

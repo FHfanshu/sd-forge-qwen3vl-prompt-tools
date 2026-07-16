@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Brain, Check, ChevronDown } from "lucide-svelte";
+  import { Brain, ChevronDown } from "lucide-svelte";
   import type { ReasoningEffort } from "../contracts";
   import { floatingPopover } from "../floating-popover";
   import { useI18nStore } from "../stores/i18n";
@@ -9,7 +9,6 @@
   let open = $state(false);
   let anchor = $state<HTMLDivElement>();
   let popover = $state<HTMLDivElement>();
-  let sliderValue = $state(0);
 
   const activeProfile = $derived($useProfileStore.profiles.find((profile) => profile.id === $useProfileStore.activeProfileId && profile.enabled));
   const supported = $derived(Boolean(activeProfile && activeProfile.capabilities.reasoning !== false));
@@ -58,17 +57,7 @@
   }
 
   function togglePicker(): void {
-    sliderValue = index;
     open = !open;
-  }
-
-  function updateSlider(rawValue: string): void {
-    const next = Number(rawValue);
-    if (Number.isFinite(next)) sliderValue = Math.round(next);
-  }
-
-  function commitSlider(): void {
-    chooseIndex(String(sliderValue));
   }
 
   onMount(() => {
@@ -100,15 +89,17 @@
 
   {#if open}
     <div bind:this={popover} use:floatingPopover={() => anchor} class="kl-reasoning-picker-popover" role="dialog" tabindex="-1" aria-label="Reasoning effort">
-      <div class="kl-reasoning-picker-heading"><strong>Thinking</strong><span>{label(value)}</span></div>
-      <div class="kl-reasoning-picker-options" role="listbox" aria-label="Reasoning effort options">
-        {#each options as option (option)}
-          <button type="button" role="option" aria-selected={option === value} class:is-selected={option === value} onclick={() => choose(option)}>
-            <span>{label(option)}</span>{#if option === value}<Check size={16} aria-hidden="true" />{/if}
-          </button>
-        {/each}
+      <div class="kl-reasoning-picker-heading"><strong>Reasoning effort</strong><span>{label(value)}</span></div>
+      <div class="kl-reasoning-picker-slider" style={`--kl-reasoning-progress: ${options.length > 1 ? index / (options.length - 1) * 100 : 0}%`}>
+        <div class="kl-reasoning-picker-rail" aria-hidden="true"><span></span></div>
+        <div class="kl-reasoning-picker-ticks" aria-hidden="true">
+          {#each options as option (option)}<i class:is-active={option === value}></i>{/each}
+        </div>
+        <input type="range" min="0" max={Math.max(0, options.length - 1)} step="1" value={index} aria-label="Reasoning effort" oninput={(event) => chooseIndex(event.currentTarget.value)} />
       </div>
-      <input class="kl-sr-only" type="range" min="0" max={Math.max(0, options.length - 1)} step="1" value={sliderValue} aria-label="Reasoning effort" oninput={(event) => updateSlider((event.target as HTMLInputElement).value)} onchange={commitSlider} />
+      <div class="kl-reasoning-picker-labels" aria-hidden="true">
+        {#each options as option (option)}<span class:is-active={option === value}>{label(option)}</span>{/each}
+      </div>
     </div>
   {/if}
 </div>

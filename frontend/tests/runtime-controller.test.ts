@@ -99,10 +99,12 @@ describe("runtime session history", () => {
     vi.stubGlobal("localStorage", { getItem: vi.fn(() => null), setItem: vi.fn(), removeItem: vi.fn() });
     const host = {
       assistantConfig: vi.fn(() => ({ profile_id: "local" })),
-      profileStore: { requestProjection: vi.fn(() => ({})) },
+      syncProfiles: vi.fn(() => Promise.resolve({})),
+      profileStore: { load: vi.fn(() => ({ profiles: [] })), requestProjection: vi.fn(() => ({})) },
     } as never;
     const client = {
       request: vi.fn((path: string) => {
+        if (path === "/profiles/import") return Promise.resolve({});
         if (path === "/sessions/open") return Promise.resolve({ session: { session_id: "kt-1" } });
         if (path === "/sessions/kt-1") return Promise.resolve({
           messages: [
@@ -120,6 +122,44 @@ describe("runtime session history", () => {
     await controller.openSession("kt-1", true);
 
     expect(useChatStore.getState().messages.map((message) => message.content)).toEqual(["Hello", "Hi"]);
+    vi.unstubAllGlobals();
+  });
+
+  it("persists the Svelte risk mode to an active KT session", async () => {
+    const request = vi.fn(() => Promise.resolve({ session: { session_id: "kt-1", agent_mode: "yolo" } }));
+    const controller = new LoomRuntimeController({} as never, { request } as never);
+    useRuntimeStore.getState().setSession({ session_id: "kt-1", agent_mode: "normal" });
+
+    await controller.actions.setRiskMode("yolo");
+
+    expect(request).toHaveBeenCalledWith("/sessions/kt-1/mode", expect.objectContaining({
+      method: "PATCH",
+      body: JSON.stringify({ agent_mode: "yolo" }),
+    }));
+    expect(useRuntimeStore.getState().session?.agent_mode).toBe("yolo");
+  });
+
+  it("coalesces streaming deltas into one render per animation frame", async () => {
+    useChatStore.getState().reset();
+    const renders: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+      renders.push(callback);
+      return 1;
+    }));
+    const controller = new LoomRuntimeController({} as never, {} as never);
+    const internals = controller as unknown as {
+      createRun(requestId: string): unknown;
+      handleTurnEvent(run: unknown, event: Record<string, unknown>): Promise<void>;
+    };
+    const run = internals.createRun("stream");
+
+    await internals.handleTurnEvent(run, { type: "text_delta", payload: { text: "a" } });
+    await internals.handleTurnEvent(run, { type: "text_delta", payload: { text: "b" } });
+
+    expect(useChatStore.getState().messages.at(-1)?.content).toBe("a");
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+    renders[0](16);
+    expect(useChatStore.getState().messages.at(-1)?.content).toBe("ab");
     vi.unstubAllGlobals();
   });
 

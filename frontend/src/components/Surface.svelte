@@ -11,6 +11,11 @@
     ChatAttachment, ChatMessage, HistoryRow, LoomActionHandlers,
     ReasoningEffort, SendMessageInput,
   } from "../contracts";
+  import {
+    assertAttachmentTotal,
+    createImageAttachment,
+    MAX_ATTACHMENTS,
+  } from "../attachments";
   import { mockHistory, noopActions } from "../mock-data";
   import { createRuntimeController, type LoomRuntimeController } from "../runtime-controller";
   import { AlertDialog } from "$lib/components/ui/alert-dialog";
@@ -256,31 +261,28 @@
     }
   }
 
-  async function fileAttachment(file: File): Promise<ChatAttachment> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve({ id: id("attachment"), name: file.name, dataUrl: String(reader.result), mimeType: file.type, size: file.size });
-      reader.onerror = () => reject(reader.error ?? new Error(`Could not read ${file.name}`));
-      reader.readAsDataURL(file);
-    });
-  }
-
   async function addFiles(files: File[]): Promise<void> {
     const images = files.filter((file) => file.type.startsWith("image/"));
     if (!images.length) {
       notice = "Only image files can be attached.";
       return;
     }
-    const remaining = Math.max(0, 8 - attachments.length);
+    const remaining = Math.max(0, MAX_ATTACHMENTS - attachments.length);
     if (!remaining) {
-      notice = "You can attach up to 8 images.";
+      notice = `You can attach up to ${MAX_ATTACHMENTS} images.`;
       return;
     }
     const accepted = images.slice(0, remaining);
-    notice = images.length > accepted.length ? "Only the first 8 images were attached." : null;
+    notice = images.length > accepted.length ? `Only the first ${MAX_ATTACHMENTS} images were attached.` : null;
     try {
+      const added: ChatAttachment[] = [];
+      for (const file of accepted) {
+        const attachment = await createImageAttachment(file, id("attachment"));
+        assertAttachmentTotal([...attachments, ...added, attachment]);
+        added.push(attachment);
+      }
       await action("attachFiles")(accepted);
-      attachments = [...attachments, ...await Promise.all(accepted.map(fileAttachment))];
+      attachments = [...attachments, ...added];
     } catch (error) {
       notice = error instanceof Error ? error.message : "The images could not be attached. Try them again.";
     }
@@ -288,7 +290,8 @@
 
   async function replaceAttachment(file: File): Promise<void> {
     if (!replacementId) return;
-    const next = await fileAttachment(file);
+    const next = await createImageAttachment(file, id("attachment"));
+    assertAttachmentTotal(attachments.map((item) => item.id === replacementId ? next : item));
     await action("replaceAttachment")(replacementId, file);
     attachments = attachments.map((item) => item.id === replacementId ? next : item);
     replacementId = null;
@@ -315,8 +318,6 @@
   }
 
   onMount(() => {
-    const removeLegacy = window.kohakuLoom?.removeAssistantWindow;
-    if (typeof removeLegacy === "function") removeLegacy();
     attachments = [...initialAttachments];
     syncReasoningFromProfile();
     if (initialOpen) $useUiStore.setShellOpen(true);
@@ -418,8 +419,8 @@
                   {#if message.status === "streaming"}<span class="kl-status-marker kl-status-streaming">Partial</span>{:else if message.status === "cancelled"}<span class="kl-status-marker kl-status-cancelled"><XCircle size={12} /> Cancelled</span>{:else if message.status === "error"}<span class="kl-status-marker kl-status-error">Error</span>{/if}
                   {#if message.usage}<span class="kl-usage"><Clipboard size={11} /> {[message.usage.inputTokens !== undefined ? `${message.usage.inputTokens} in` : "", message.usage.outputTokens !== undefined ? `${message.usage.outputTokens} out` : "", message.usage.latencyMs !== undefined ? `${(message.usage.latencyMs / 1000).toFixed(1)}s` : ""].filter(Boolean).join(" · ")}</span>{/if}
                 </span></div>
-                {#if message.role === "tool"}<div class="kl-tool-card"><strong>{message.tool?.name ?? "Tool call"}</strong>{#if message.tool?.detail}<span>{message.tool.detail}</span>{/if}<span class="kl-tool-status kl-tool-status-{message.tool?.status ?? 'complete'}">{message.tool?.status ?? "complete"}</span></div>{:else}<Markdown content={message.content} />{/if}
-                {#if message.reasoning}<details class="kl-reasoning"><summary>Reasoning trace</summary><Markdown content={message.reasoning} /></details>{/if}
+                {#if message.role === "tool"}<div class="kl-tool-card"><strong>{message.tool?.name ?? "Tool call"}</strong>{#if message.tool?.detail}<span>{message.tool.detail}</span>{/if}<span class="kl-tool-status kl-tool-status-{message.tool?.status ?? 'complete'}">{message.tool?.status ?? "complete"}</span></div>{:else}<Markdown content={message.content} streaming={message.status === "streaming"} />{/if}
+                {#if message.reasoning}<details class="kl-reasoning"><summary>Reasoning trace</summary><Markdown content={message.reasoning} streaming={message.status === "streaming"} /></details>{/if}
                 {#if message.attachments.length}<div class="kl-message-attachments" aria-label="{message.attachments.length} reference images">{#each message.attachments as attachment, index (attachment.id)}<button type="button" class="kl-message-attachment" onclick={() => lightbox = { attachments: message.attachments, index }} aria-label="Preview {attachment.name}"><img src={attachment.dataUrl} alt={attachment.name} width="58" height="48" loading="lazy" /></button>{/each}</div>{/if}
                 <div class="kl-message-footer"><div class="kl-message-actions"><button type="button" class="kl-message-action" onclick={() => void copyMessage(message)}>{#if copiedId === message.id}<Check size={13} /> Copied{:else}<Copy size={13} /> Copy{/if}</button>{#if message.role === "user"}<button type="button" class="kl-message-action" onclick={() => void action("editResend")(message)}><Pencil size={13} /> Resend</button>{/if}{#if message.id === lastAssistantId}<button type="button" class="kl-message-action" onclick={() => void action("regenerate")(message)}><RefreshCw size={13} /> Regenerate</button>{/if}</div>
                   {#if message.role === "assistant" && message.branchCount > 1}<div class="kl-branch-pager" aria-label="Assistant response branches"><button type="button" class="kl-mini-button" disabled={message.branchIndex === 0} onclick={() => void action("changeBranch")(message, message.branchIndex - 1)} aria-label="Previous branch"><ChevronLeft size={14} /></button><span>{message.branchIndex + 1} / {message.branchCount}</span><button type="button" class="kl-mini-button" disabled={message.branchIndex >= message.branchCount - 1} onclick={() => void action("changeBranch")(message, message.branchIndex + 1)} aria-label="Next branch"><ChevronRight size={14} /></button></div>{/if}

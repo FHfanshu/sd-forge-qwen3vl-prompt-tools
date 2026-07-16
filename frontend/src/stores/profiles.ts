@@ -24,7 +24,12 @@ function hostCall(method: keyof NonNullable<ReturnType<typeof getHostApi>>["prof
   if (typeof window === "undefined") return null;
   const host = getHostApi(window.kohakuLoom);
   const action = host?.profileStore[method] as ((...values: unknown[]) => unknown) | undefined;
-  return action && host ? action.apply(host.profileStore, args) : null;
+  if (!action || !host) return null;
+  const result = action.apply(host.profileStore, args);
+  if (!["load", "current", "teacher", "session", "requestProjection"].includes(method)) {
+    void host.syncProfiles().catch(() => undefined);
+  }
+  return result;
 }
 
 function nextId(prefix: string, profiles: Profile[]): string {

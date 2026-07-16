@@ -38,6 +38,7 @@ function hostApi() {
     profileStore,
     claimToolBridge: vi.fn(),
     claimAssistantToolBridge: vi.fn(),
+    syncProfiles: vi.fn(),
     profileChat: vi.fn(),
     listLegacySessions: vi.fn(),
     getLegacySession: vi.fn(),

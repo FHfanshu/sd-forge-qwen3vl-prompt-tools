@@ -25,6 +25,25 @@ describe("Svelte chat surface", () => {
     expect(screen.getByText("1 / 2")).toBeInTheDocument();
   });
 
+  it("defers Markdown parsing while an assistant message is streaming", () => {
+    render(Surface, {
+      initialOpen: true,
+      messages: [{
+        id: "streaming",
+        role: "assistant",
+        content: "**partial reply**",
+        status: "streaming",
+        attachments: [],
+        branchIndex: 0,
+        branchCount: 1,
+        createdAt: Date.now(),
+      }],
+      actions: {},
+    });
+    expect(screen.getByText("**partial reply**")).toBeInTheDocument();
+    expect(screen.queryByText("partial reply")).not.toBeInTheDocument();
+  });
+
   it("guides an empty chat and restores the launcher after closing", async () => {
     const user = userEvent.setup();
     render(Surface, { initialOpen: true, actions: {} });

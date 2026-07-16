@@ -62,6 +62,7 @@ export interface KohakuLoomHostApi {
   profileStore: KohakuLoomProfileStoreFacade;
   claimToolBridge(): Promise<unknown>;
   claimAssistantToolBridge(): Promise<unknown>;
+  syncProfiles(): Promise<unknown>;
   profileChat(profileId: string, messages: unknown[], signal?: AbortSignal): Promise<unknown>;
   listLegacySessions(limit?: number): Promise<unknown>;
   getLegacySession(sessionId: string, limit?: number): Promise<unknown>;
@@ -133,6 +134,7 @@ export function validateHostApi(value: unknown): KohakuLoomHostApi {
     "assistantConfig",
     "claimToolBridge",
     "claimAssistantToolBridge",
+    "syncProfiles",
     "profileChat",
     "listLegacySessions",
     "getLegacySession",

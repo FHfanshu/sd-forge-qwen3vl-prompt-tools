@@ -363,6 +363,7 @@
   .kl-status-cancelled, .kl-status-error { color: var(--kl-ember); }
   .kl-usage { margin-left: 8px; color: var(--kl-ink-soft); }
   .kl-markdown { color: var(--kl-ink); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+  .kl-markdown-streaming { white-space: pre-wrap; }
   .kl-markdown > :first-child { margin-top: 0; }
   .kl-markdown > :last-child { margin-bottom: 0; }
   .kl-markdown p, .kl-markdown ul, .kl-markdown ol, .kl-markdown pre, .kl-markdown blockquote { margin: .45em 0; }
