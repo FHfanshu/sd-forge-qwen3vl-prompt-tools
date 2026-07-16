@@ -289,8 +289,8 @@
    .kl-dropdown-content { z-index: 1200; display: grid; min-width: 170px; padding: 4px; border: 1px solid var(--kl-line); border-radius: var(--button-radius, 6px); background: var(--body-background-fill); box-shadow: var(--kl-shadow); }
   .kl-dropdown-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 9px; border-radius: 7px; color: var(--kl-ink-soft); background: transparent; font-size: 10px; text-align: left; }
   .kl-dropdown-item:hover, .kl-dropdown-item.is-selected { color: var(--kl-ink); background: rgba(98,118,101,.1); }
-   .kl-dialog-layer { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; padding: 20px; pointer-events: auto; background: rgb(0 0 0 / 22%); }
-   .kl-dialog-card { width: min(370px, calc(100vw - 32px)); border: 1px solid var(--kl-line); border-radius: var(--button-radius, 6px); background: var(--body-background-fill); box-shadow: var(--kl-shadow); }
+   .kl-dialog-layer { position: fixed; inset: 0; z-index: 1500; pointer-events: auto; background: rgb(0 0 0 / 22%); }
+   .kl-dialog-card { position: fixed; top: 50%; left: 50%; z-index: 1501; width: min(370px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; transform: translate(-50%, -50%); border: 1px solid var(--kl-line); border-radius: var(--button-radius, 6px); background: var(--body-background-fill); box-shadow: var(--kl-shadow); pointer-events: auto; }
   .kl-dialog-card header { display: flex; align-items: center; justify-content: space-between; padding: 14px 15px 10px; border-bottom: 1px solid var(--kl-line); }
    .kl-dialog-card header strong { font-family: inherit; font-size: 15px; font-weight: 700; }
   .kl-dialog-close { width: 25px; height: 25px; border-radius: 7px; color: var(--kl-ink-soft); background: transparent; font-size: 18px; }

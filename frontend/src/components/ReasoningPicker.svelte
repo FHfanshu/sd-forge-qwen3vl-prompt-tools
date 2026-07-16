@@ -2,11 +2,13 @@
   import { onMount } from "svelte";
   import { Brain, Check, ChevronDown } from "lucide-svelte";
   import type { ReasoningEffort } from "../contracts";
+  import { floatingPopover } from "../floating-popover";
   import { useI18nStore } from "../stores/i18n";
   import { useProfileStore } from "../stores/profiles";
 
   let open = $state(false);
   let anchor = $state<HTMLDivElement>();
+  let popover = $state<HTMLDivElement>();
   let sliderValue = $state(0);
 
   const activeProfile = $derived($useProfileStore.profiles.find((profile) => profile.id === $useProfileStore.activeProfileId && profile.enabled));
@@ -71,7 +73,8 @@
 
   onMount(() => {
     const close = (event: PointerEvent) => {
-      if (anchor && !anchor.contains(event.target as Node)) open = false;
+      const target = event.target as Node;
+      if (anchor && !anchor.contains(target) && !popover?.contains(target)) open = false;
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && open) {
@@ -96,7 +99,7 @@
   </button>
 
   {#if open}
-    <div class="kl-reasoning-picker-popover" role="dialog" tabindex="-1" aria-label="Reasoning effort">
+    <div bind:this={popover} use:floatingPopover={() => anchor} class="kl-reasoning-picker-popover" role="dialog" tabindex="-1" aria-label="Reasoning effort">
       <div class="kl-reasoning-picker-heading"><strong>Thinking</strong><span>{label(value)}</span></div>
       <div class="kl-reasoning-picker-options" role="listbox" aria-label="Reasoning effort options">
         {#each options as option (option)}

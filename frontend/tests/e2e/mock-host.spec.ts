@@ -283,6 +283,14 @@ test.describe("mobile layout", () => {
     const send = await page.getByRole("button", { name: "Send message" }).boundingBox();
     expect(send).not.toBeNull();
     expect(send!.x + send!.width).toBeLessThanOrEqual(portrait!.x + portrait!.width);
+    await page.getByRole("button", { name: "Active model" }).click();
+    const modelPicker = await page.getByRole("dialog", { name: "Select model" }).boundingBox();
+    expect(modelPicker).not.toBeNull();
+    expect(modelPicker!.x).toBeGreaterThanOrEqual(0);
+    expect(modelPicker!.x + modelPicker!.width).toBeLessThanOrEqual(390);
+    expect(modelPicker!.y).toBeGreaterThanOrEqual(0);
+    expect(modelPicker!.y + modelPicker!.height).toBeLessThanOrEqual(844);
+    await page.keyboard.press("Escape");
     await expect(page.getByRole("status")).toContainText("Drag the corner to resize");
 
     await page.setViewportSize({ width: 844, height: 390 });

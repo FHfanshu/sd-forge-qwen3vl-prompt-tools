@@ -4,6 +4,7 @@
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
   import type { Profile } from "../contracts";
+  import { floatingPopover } from "../floating-popover";
   import { useProfileStore } from "../stores/profiles";
   import { useUiStore } from "../stores/ui";
 
@@ -13,6 +14,7 @@
   let open = $state(false);
   let search = $state("");
   let anchor = $state<HTMLDivElement>();
+  let popover = $state<HTMLDivElement>();
   let favoriteIds = $state<string[]>([]);
   let recentIds = $state<string[]>([]);
 
@@ -99,7 +101,8 @@
     if (!favoriteIds.length && activeProfile) favoriteIds = [activeProfile.id];
 
     const close = (event: PointerEvent) => {
-      if (anchor && !anchor.contains(event.target as Node)) open = false;
+      const target = event.target as Node;
+      if (anchor && !anchor.contains(target) && !popover?.contains(target)) open = false;
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && open) {
@@ -134,7 +137,7 @@
   </select>
 
   {#if open}
-    <div class="kl-model-picker-popover" role="dialog" tabindex="-1" aria-label="Select model">
+    <div bind:this={popover} use:floatingPopover={() => anchor} class="kl-model-picker-popover" role="dialog" tabindex="-1" aria-label="Select model">
       <button type="button" class="kl-model-picker-add" onclick={openProfiles}><Plus size={15} /> Add provider</button>
       <label class="kl-model-picker-search">
         <Search size={16} aria-hidden="true" />
