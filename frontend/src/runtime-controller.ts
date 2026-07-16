@@ -30,6 +30,7 @@ interface LoomRun {
   leaseTimer: ReturnType<typeof setInterval> | null;
   toolResults: Map<string, unknown>;
   toolPromises: Map<string, Promise<unknown>>;
+  pendingTurnEvents: RawRecord[];
   resolve(value: RawRecord): void;
   done: Promise<RawRecord>;
 }
@@ -493,6 +494,7 @@ export class LoomRuntimeController {
     let turnIndex = 0;
     (Array.isArray(conversation.messages) ? conversation.messages : []).forEach((raw, index) => {
       const message = mapConversationMessage(raw, index, branches, turnIndex);
+      if (message.role === "system") return;
       messages.push(message);
       if (message.role === "assistant") turnIndex += 1;
     });
@@ -527,6 +529,7 @@ export class LoomRuntimeController {
       leaseTimer: null,
       toolResults: new Map(),
       toolPromises: new Map(),
+      pendingTurnEvents: [],
       resolve,
       done,
     };
@@ -566,13 +569,37 @@ export class LoomRuntimeController {
         await onEvent(data.type ? data : { type: event.event, payload: data.payload ?? data });
       }
     } catch (error) {
-      if (!run.finished && !run.cancelled && !isAbortError(error)) this.finishRun(run, { status: "error", error: errorText(error) });
+      if (run.finished || run.cancelled || isAbortError(error)) return;
+      if (path === "/tools/events") return;
+      const runtime = await this.client.request<RawRecord>("/runtime").catch(() => null);
+      const activeTurnId = String(asRecord(runtime).active_turn_id ?? "");
+      if (runtime && activeTurnId && (!run.turnId || activeTurnId === run.turnId)) {
+        const snapshot = asRecord(runtime.active_turn);
+        run.turnId = activeTurnId;
+        run.text = String(snapshot.text ?? run.text);
+        run.reasoning = String(snapshot.reasoning ?? run.reasoning);
+        run.usage = snapshot.usage ?? run.usage;
+        if (run.text || run.reasoning) this.updateStreamingMessage(run);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        if (!run.finished && !run.cancelled) void this.consumeStream(path, run, cursor, onEvent);
+        return;
+      }
+      const lastTurn = asRecord(asRecord(runtime).last_turn);
+      if (runtime && run.turnId && String(lastTurn.turn_id ?? "") === run.turnId) {
+        await this.handleTurnEvent(run, { type: "turn_ended", payload: lastTurn });
+        return;
+      }
+      this.finishRun(run, { status: "error", error: errorText(error) });
     }
   }
 
   private async handleTurnEvent(run: LoomRun, event: RawRecord): Promise<void> {
     const type = String(event.type ?? event.event ?? "");
     const payload = asRecord(event.payload ?? event);
+    if (!run.turnId && payload.turn_id) {
+      run.pendingTurnEvents.push(event);
+      return;
+    }
     if (run.turnId && payload.turn_id && String(payload.turn_id) !== run.turnId) return;
     if (type === "text_delta") {
       run.text += String(payload.text ?? "");
@@ -663,6 +690,8 @@ export class LoomRuntimeController {
         signal: run.controller.signal,
       });
       run.turnId = String(accepted.turn_id ?? run.turnId);
+      const pendingEvents = run.pendingTurnEvents.splice(0);
+      for (const event of pendingEvents) await this.handleTurnEvent(run, event);
       await run.done;
     } catch (error) {
       if (run.cancelled || isAbortError(error)) return;
@@ -770,8 +799,29 @@ export class LoomRuntimeController {
       (Array.isArray(asRecord(data).events) ? asRecord(data).events : []).forEach((event: unknown, index: number) => {
         const value = asRecord(event);
         const message = asRecord(value.message ?? value.payload ?? value);
-        const role = String(value.event_type ?? message.role ?? "").includes("user") ? "user" : "assistant";
-        messages.push(chatMessageSchema.parse({ id: `legacy-${index}`, role, content: textFromContent(message.content), status: "complete", attachments: message.image ? [{ id: `legacy-image-${index}`, name: String(message.filename ?? "reference image"), dataUrl: String(message.image) }] : [] }));
+        const eventType = String(value.event_type ?? message.role ?? "");
+        const attachments = message.image ? [{ id: `legacy-image-${index}`, name: String(message.filename ?? "reference image"), dataUrl: String(message.image) }] : [];
+        if (eventType === "tool_result") {
+          const result = asRecord(message.result);
+          const failed = result.ok === false || Boolean(result.error);
+          messages.push(chatMessageSchema.parse({
+            id: `legacy-${index}`,
+            role: "tool",
+            content: "",
+            status: failed ? "error" : "complete",
+            tool: {
+              name: String(message.tool ?? "Tool"),
+              status: failed ? "error" : "complete",
+              detail: failed ? "Tool failed in this archived session" : "Completed in this archived session",
+            },
+            attachments,
+          }));
+          return;
+        }
+        const content = textFromContent(message.content).trim();
+        if (!content) return;
+        const role = eventType.includes("user") ? "user" : eventType.includes("error") ? "error" : "assistant";
+        messages.push(chatMessageSchema.parse({ id: `legacy-${index}`, role, content, status: role === "error" ? "error" : "complete", attachments }));
       });
       useChatStore.getState().setMessages(messages);
       useChatStore.getState().setQueue([]);

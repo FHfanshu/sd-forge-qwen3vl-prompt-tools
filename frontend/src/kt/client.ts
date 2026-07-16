@@ -70,7 +70,8 @@ export class KTClient {
     return retryOperation(async () => {
       let response: Response;
       try {
-        response = await withCancellation(this.fetchImpl(joinUrl(this.baseUrl, path), init), signal);
+        const fetchImpl = this.fetchImpl;
+        response = await withCancellation(fetchImpl(joinUrl(this.baseUrl, path), init), signal);
       } catch (error) {
         throw networkError(error);
       }
@@ -111,8 +112,9 @@ export class KTClient {
         const headers = new Headers(init.headers);
         headers.set("Accept", "text/event-stream");
         if (cursor) headers.set("Last-Event-ID", cursor);
+        const fetchImpl = this.fetchImpl;
         const response = await withCancellation(
-          this.fetchImpl(joinUrl(this.baseUrl, path), { ...init, headers }),
+          fetchImpl(joinUrl(this.baseUrl, path), { ...init, headers }),
           signal,
         );
         if (!response.ok) throw await errorFromResponse(response);

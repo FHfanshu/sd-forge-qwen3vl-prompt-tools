@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { LoomRuntimeController } from "../src/runtime-controller";
+import { useChatStore } from "../src/stores/chat";
 import { useRuntimeStore } from "../src/stores/runtime";
 
 function controllerWith(
@@ -66,5 +67,121 @@ describe("runtime session history", () => {
     await task;
     expect(stream).toHaveBeenCalledWith("/turns/events", expect.objectContaining({ lastEventId: "0" }));
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders archived tool results as compact tool cards instead of raw JSON", async () => {
+    useChatStore.getState().reset();
+    const host = {
+      getLegacySession: vi.fn(() => Promise.resolve({
+        events: [
+          { event_type: "user_message", payload: { content: "Review this prompt" } },
+          { event_type: "assistant_message", payload: { content: "", tool_calls: [{ tool: "read_prompt" }] } },
+          { event_type: "tool_result", payload: { tool: "read_prompt", result: { ok: true }, content: '{"prompt":"secret raw payload"}' } },
+          { event_type: "tool_result", payload: { tool: "ask_teacher", result: { ok: false, error: "https://private.invalid failed" } } },
+        ],
+      })),
+    } as never;
+    const controller = new LoomRuntimeController(host, {} as never);
+
+    await controller.actions.selectHistory({ id: "legacy-1", source: "legacy", title: "Archive", preview: "", updatedAt: "now", messageCount: 4 });
+
+    const messages = useChatStore.getState().messages;
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toMatchObject({ role: "user", content: "Review this prompt" });
+    expect(messages[1]).toMatchObject({ role: "tool", content: "", tool: { name: "read_prompt", status: "complete" } });
+    expect(messages[2]).toMatchObject({ role: "tool", content: "", status: "error", tool: { name: "ask_teacher", status: "error" } });
+    expect(JSON.stringify(messages)).not.toContain("private.invalid");
+    expect(JSON.stringify(messages)).not.toContain("secret raw payload");
+  });
+
+  it("keeps internal system prompts out of restored KT conversations", async () => {
+    useChatStore.getState().reset();
+    vi.stubGlobal("localStorage", { getItem: vi.fn(() => null), setItem: vi.fn(), removeItem: vi.fn() });
+    const host = {
+      assistantConfig: vi.fn(() => ({ profile_id: "local" })),
+      profileStore: { requestProjection: vi.fn(() => ({})) },
+    } as never;
+    const client = {
+      request: vi.fn((path: string) => {
+        if (path === "/sessions/open") return Promise.resolve({ session: { session_id: "kt-1" } });
+        if (path === "/sessions/kt-1") return Promise.resolve({
+          messages: [
+            { id: "system", role: "system", content: "private runtime instructions" },
+            { id: "user", role: "user", content: "Hello" },
+            { id: "assistant", role: "assistant", content: "Hi" },
+          ],
+        });
+        if (path === "/runtime") return Promise.resolve({});
+        throw new Error(`unexpected path: ${path}`);
+      }),
+    } as never;
+    const controller = new LoomRuntimeController(host, client);
+
+    await controller.openSession("kt-1", true);
+
+    expect(useChatStore.getState().messages.map((message) => message.content)).toEqual(["Hello", "Hi"]);
+    vi.unstubAllGlobals();
+  });
+
+  it("does not let a stale terminal event finish a newly accepted turn", async () => {
+    useChatStore.getState().reset();
+    const host = {
+      claimToolBridge: vi.fn(() => Promise.resolve({ owned: true, bridge_id: "bridge" })),
+      assistantConfig: vi.fn(() => ({ timeout: 120 })),
+      captureForgeState: vi.fn(() => ({})),
+    } as never;
+    const client = {
+      request: vi.fn((path: string) => {
+        if (path === "/runtime") return Promise.resolve({ turn_event_sequence: 0, tool_event_sequence: 0 });
+        if (path === "/turns") return Promise.resolve({ turn_id: "new-turn" });
+        throw new Error(`unexpected path: ${path}`);
+      }),
+      stream: vi.fn(async function* (path: string) {
+        if (path === "/turns/events") {
+          yield { sequence: 1, data: { type: "turn_ended", payload: { turn_id: "old-turn", status: "completed", text: "old" } } };
+          yield { sequence: 2, data: { type: "text_delta", payload: { turn_id: "new-turn", text: "new" } } };
+          yield { sequence: 3, data: { type: "turn_ended", payload: { turn_id: "new-turn", status: "completed", text: "new" } } };
+        }
+      }),
+    } as never;
+    const controller = new LoomRuntimeController(host, client);
+    useRuntimeStore.getState().setSession({ session_id: "kt-1" });
+
+    await controller.sendMessage({ text: "hello", attachments: [], riskMode: "normal", reasoning: "low" });
+
+    expect(useChatStore.getState().messages.some((message) => message.role === "assistant" && message.content === "old")).toBe(false);
+    expect(useChatStore.getState().messages.some((message) => message.role === "assistant" && message.content === "new" && message.status === "complete")).toBe(true);
+  });
+
+  it("keeps an active turn alive when its SSE connection drops", async () => {
+    useChatStore.getState().reset();
+    let turnStreamCalls = 0;
+    const host = {
+      claimToolBridge: vi.fn(() => Promise.resolve({ owned: true, bridge_id: "bridge" })),
+      assistantConfig: vi.fn(() => ({ timeout: 120 })),
+      captureForgeState: vi.fn(() => ({})),
+    } as never;
+    const client = {
+      request: vi.fn((path: string) => {
+        if (path === "/runtime") return Promise.resolve(turnStreamCalls > 1
+          ? { active_turn_id: "", last_turn: { turn_id: "turn-1", status: "completed", text: "recovered" } }
+          : { active_turn_id: "turn-1", active_turn: { turn_id: "turn-1", text: "partial" }, turn_event_sequence: 0, tool_event_sequence: 0 });
+        if (path === "/turns") return Promise.resolve({ turn_id: "turn-1" });
+        throw new Error(`unexpected path: ${path}`);
+      }),
+      stream: vi.fn(async function* (path: string) {
+        if (path === "/tools/events") return;
+        turnStreamCalls += 1;
+        if (turnStreamCalls === 1) throw new TypeError("connection reset");
+        yield { sequence: 2, data: { type: "turn_ended", payload: { turn_id: "turn-1", status: "completed", text: "recovered" } } };
+      }),
+    } as never;
+    const controller = new LoomRuntimeController(host, client);
+    useRuntimeStore.getState().setSession({ session_id: "kt-1" });
+
+    await controller.sendMessage({ text: "hello", attachments: [], riskMode: "normal", reasoning: "low" });
+
+    expect(turnStreamCalls).toBe(2);
+    expect(useChatStore.getState().messages.some((message) => message.role === "assistant" && message.content === "recovered" && message.status === "complete")).toBe(true);
   });
 });

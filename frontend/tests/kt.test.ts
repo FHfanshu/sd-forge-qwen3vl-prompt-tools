@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { KTClient } from "../src/kt/client";
 import { KTHttpError, classifyRetry, retryOperation } from "../src/kt/retry";
 import { parseSSEFrame, SSEParser } from "../src/kt/sse";
 
@@ -61,5 +62,22 @@ describe("KT retry classification", () => {
     controller.abort();
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     expect(attempts).toBe(1);
+  });
+});
+
+describe("KT client fetch invocation", () => {
+  it("calls fetch without binding the KTClient instance as its receiver", async () => {
+    let receiver: unknown;
+    const fetchImpl = function (this: unknown) {
+      receiver = this;
+      return Promise.resolve(new Response('{"ok":true}', {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }));
+    } as typeof fetch;
+    const client = new KTClient({ fetchImpl, retry: { maxAttempts: 1 } });
+
+    await expect(client.request("/runtime")).resolves.toEqual({ ok: true });
+    expect(receiver).toBeUndefined();
   });
 });
