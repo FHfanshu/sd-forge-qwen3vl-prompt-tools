@@ -490,6 +490,14 @@
         session.value = state.session_profile_id;
         session.disabled = !session.options.length;
         session.closest(".loom-profile-route-card")?.classList.toggle("loom-profile-route-unavailable", !session.options.length);
+        const naming = panel.querySelector("#loom_naming_profile");
+        naming.replaceChildren();
+        state.profiles.filter(function (item) { return item.enabled && item.runtime === "llama-once"; }).forEach(function (item) {
+            naming.appendChild(option(item.id, item.display_name));
+        });
+        naming.value = state.naming_profile_id;
+        naming.disabled = !naming.options.length;
+        naming.closest(".loom-profile-route-card")?.classList.toggle("loom-profile-route-unavailable", !naming.options.length);
         const editorHost = panel.querySelector("#loom_profile_editor_host");
         editorHost.replaceChildren(createEditor(panel, state, profile));
         applyProfileVisibility(panel, profile);
@@ -566,10 +574,19 @@
             renderModelProfileSettings();
         });
         const session = document.createElement("select");
-        const sessionLabel = routeControl("session", "profiles.session_profile", "Session title and summary", t("profiles.route.session.hint", "Names and summarizes saved sessions locally"), session);
+        const sessionLabel = routeControl("session", "profiles.session_profile", "Session context model", t("profiles.route.session.hint", "Supports local session work"), session);
         session.id = "loom_session_profile";
         session.addEventListener("change", function () {
             tools.profileStore.setSession(session.value);
+            updateStatus(panel, t("profiles.status.saved", "Saved"), "success");
+            dispatchProfileChange(tools.profileStore.load());
+            renderModelProfileSettings();
+        });
+        const naming = document.createElement("select");
+        const namingLabel = routeControl("naming", "profiles.naming_profile", "Session naming model", "Creates a title and one-line session description with a temporary local llama-once server.", naming);
+        naming.id = "loom_naming_profile";
+        naming.addEventListener("change", function () {
+            tools.profileStore.setNaming(naming.value);
             updateStatus(panel, t("profiles.status.saved", "Saved"), "success");
             dispatchProfileChange(tools.profileStore.load());
             renderModelProfileSettings();
@@ -592,7 +609,7 @@
                 updateStatus(panel, String(error?.message || error), "error");
             }
         });
-        roleSelectors.append(runtimeControl, teacherLabel, sessionLabel);
+        roleSelectors.append(runtimeControl, teacherLabel, sessionLabel, namingLabel);
         const close = button("×", "loom-profile-close");
         close.title = t("profiles.close", "Close");
         close.setAttribute("aria-label", t("profiles.close", "Close"));

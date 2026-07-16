@@ -247,6 +247,7 @@
             active_profile_id: "moyuu-gemini",
             teacher_profile_id: "moyuu-gemini",
             session_profile_id: "local-qwen-once",
+            naming_profile_id: "local-qwen-once",
             profiles: deepCloneProfileData(DEFAULT_PROFILES)
         };
     }
@@ -287,7 +288,10 @@
         const localIds = profiles.filter(function (profile) { return profile.enabled && ["llama-endpoint", "llama-once"].includes(profile.runtime); }).map(function (profile) { return profile.id; });
         const requestedSession = String(source.session_profile_id || "local-qwen-once");
         const sessionId = localIds.includes(requestedSession) ? requestedSession : (localIds.includes("local-qwen-once") ? "local-qwen-once" : (localIds[0] || ""));
-        return { version: PROFILE_SCHEMA_VERSION, active_profile_id: activeId, teacher_profile_id: teacherId, session_profile_id: sessionId, profiles: profiles };
+        const onceIds = profiles.filter(function (profile) { return profile.enabled && profile.runtime === "llama-once"; }).map(function (profile) { return profile.id; });
+        const requestedNaming = String(source.naming_profile_id || sessionId || "");
+        const namingId = onceIds.includes(requestedNaming) ? requestedNaming : (onceIds.includes("local-qwen-once") ? "local-qwen-once" : (onceIds[0] || ""));
+        return { version: PROFILE_SCHEMA_VERSION, active_profile_id: activeId, teacher_profile_id: teacherId, session_profile_id: sessionId, naming_profile_id: namingId, profiles: profiles };
     }
 
     function modelProfileValidationErrors(profile) {
@@ -334,6 +338,10 @@
         const sessionProfile = state.profiles.find(function (profile) { return profile.id === state.session_profile_id; });
         if (state.session_profile_id && (!sessionProfile || !sessionProfile.enabled || !["llama-endpoint", "llama-once"].includes(sessionProfile.runtime))) {
             errors.push("session profile must be an enabled local llama profile");
+        }
+        const namingProfile = state.profiles.find(function (profile) { return profile.id === state.naming_profile_id; });
+        if (state.naming_profile_id && (!namingProfile || !namingProfile.enabled || namingProfile.runtime !== "llama-once")) {
+            errors.push("naming profile must be an enabled llama-once profile");
         }
         return errors;
     }
@@ -604,6 +612,7 @@
                 if (state.active_profile_id === id) state.active_profile_id = fallback.id;
                 if (state.teacher_profile_id === id) state.teacher_profile_id = fallback.id;
                 if (state.session_profile_id === id) state.session_profile_id = state.profiles.find(function (profile) { return profile.enabled && ["llama-endpoint", "llama-once"].includes(profile.runtime); })?.id || "";
+                if (state.naming_profile_id === id) state.naming_profile_id = state.profiles.find(function (profile) { return profile.enabled && profile.runtime === "llama-once"; })?.id || "";
             }
             save(state);
             return deepCloneProfileData(updated);
@@ -621,6 +630,7 @@
             if (state.active_profile_id === id) state.active_profile_id = fallback.id;
             if (state.teacher_profile_id === id) state.teacher_profile_id = fallback.id;
             if (state.session_profile_id === id) state.session_profile_id = state.profiles.find(function (item) { return item.enabled && ["llama-endpoint", "llama-once"].includes(item.runtime); })?.id || "";
+            if (state.naming_profile_id === id) state.naming_profile_id = state.profiles.find(function (item) { return item.enabled && item.runtime === "llama-once"; })?.id || "";
             save(state);
             return deepCloneProfileData(profile);
         }
@@ -648,6 +658,15 @@
             const profile = state.profiles.find(function (item) { return item.id === id && item.enabled && ["llama-endpoint", "llama-once"].includes(item.runtime); });
             if (!profile) throw new RangeError(`unknown, disabled, or non-local profile: ${id}`);
             state.session_profile_id = id;
+            save(state);
+            return deepCloneProfileData(profile);
+        }
+
+        function setNaming(id) {
+            const state = load();
+            const profile = state.profiles.find(function (item) { return item.id === id && item.enabled && item.runtime === "llama-once"; });
+            if (!profile) throw new RangeError("unknown, disabled, or non-llama-once naming profile");
+            state.naming_profile_id = id;
             save(state);
             return deepCloneProfileData(profile);
         }
@@ -703,6 +722,7 @@
             setActive: setActive,
             setTeacher: setTeacher,
             setSession: setSession,
+            setNaming: setNaming,
             restoreDefaults: restoreDefaults,
             requestProjection: requestProjection,
             scrubApiKeys: scrubApiKeys
@@ -742,6 +762,7 @@
         setActiveModelProfile: profileStore ? profileStore.setActive : null,
         setTeacherModelProfile: profileStore ? profileStore.setTeacher : null,
         setSessionModelProfile: profileStore ? profileStore.setSession : null,
+        setNamingModelProfile: profileStore ? profileStore.setNaming : null,
         restoreDefaultModelProfiles: profileStore ? profileStore.restoreDefaults : null,
         projectModelProfileRequest: profileStore ? profileStore.requestProjection : null
     });

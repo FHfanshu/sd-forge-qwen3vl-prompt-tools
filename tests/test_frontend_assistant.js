@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const vm = require("node:vm");
 
 global.window = {
     location: { href: "http://127.0.0.1:7860" },
@@ -59,6 +60,84 @@ test("assistant attachments normalize single and multiple images", () => {
     const second = { name: "two.png", dataUrl: "data:image/png;base64,AA==" };
     assert.deepEqual(tools.normalizedAssistantAttachments(first), [first]);
     assert.deepEqual(tools.normalizedAssistantAttachments([first, null, second]), [first, second]);
+});
+
+test("file input snapshots selected images before clearing", () => {
+    const source = fs.readFileSync(path.resolve(__dirname, "../javascript/kohaku_loom_boot.js"), "utf8");
+    assert.match(source, /const files = Array\.from\(fileInput\.files \|\| \[\]\);\s*fileInput\.value = "";\s*acceptAssistantImageFiles\(files\);/);
+});
+
+test("Svelte readiness removes legacy UI without recreating it", () => {
+    const source = fs.readFileSync(path.resolve(__dirname, "../javascript/kohaku_loom_boot.js"), "utf8");
+    const callbacks = {};
+    const calls = { remove: 0, settings: 0, restore: 0 };
+    const documentElement = {
+        classList: { toggle() {} },
+        dataset: {},
+        addEventListener() {}
+    };
+    const context = {
+        Element: class Element {},
+        document: {
+            documentElement,
+            body: {},
+            addEventListener() {},
+            querySelector() { return null; },
+            querySelectorAll() { return []; }
+        },
+        onAfterUiUpdate(callback) { callbacks.afterUpdate = callback; },
+        onUiLoaded(callback) { callbacks.uiLoaded = callback; },
+        window: {
+            KohakuLoomSvelteUi: { UI_READY: true },
+            addEventListener() {},
+            kohakuLoom: {
+                loomApp: () => null,
+                loomMainApp: () => null,
+                removeAssistantWindow: () => { calls.remove += 1; },
+                setupModelProfileSettingsWindow: () => { calls.settings += 1; },
+                restoreAssistantSession: () => { calls.restore += 1; }
+            }
+        }
+    };
+    context.window.document = context.document;
+    vm.runInNewContext(source, context);
+
+    callbacks.uiLoaded();
+    callbacks.afterUpdate();
+
+    assert.deepEqual(calls, { remove: 2, settings: 0, restore: 0 });
+});
+
+test("locale hints resolve without recursing through their own export", async () => {
+    const source = fs.readFileSync(path.resolve(__dirname, "../javascript/kohaku_loom_01_i18n.js"), "utf8");
+    const context = {
+        CustomEvent: class CustomEvent { constructor(type, options) { this.type = type; this.detail = options?.detail; } },
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+        localStorage: { getItem: () => null, removeItem() {}, setItem() {} },
+        navigator: { language: "en-US", languages: ["en-US"] },
+        window: { addEventListener() {}, dispatchEvent() {}, kohakuLoom: {} }
+    };
+    vm.runInNewContext(source, context);
+    await context.window.kohakuLoom.loadI18nBundle();
+
+    assert.equal(context.window.kohakuLoom.getLocaleHints().locale, "en");
+});
+
+test("released Svelte boot mounts only through the Forge UI callback", () => {
+    const source = fs.readFileSync(path.resolve(__dirname, "../javascript/kohaku_loom_99_boot.js"), "utf8");
+    let callback;
+    let mounts = 0;
+    const context = {
+        window: {
+            KohakuLoomSvelteUi: { UI_READY: true, mountSvelteUi: () => { mounts += 1; } },
+            onUiLoaded: (next) => { callback = next; }
+        }
+    };
+    vm.runInNewContext(source, context);
+
+    assert.equal(mounts, 0);
+    callback();
+    assert.equal(mounts, 1);
 });
 
 test("user messages have an always-visible edit and resend action", () => {

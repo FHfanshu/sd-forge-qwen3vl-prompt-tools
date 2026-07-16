@@ -121,14 +121,15 @@
         panel.setAttribute("role", "dialog");
         panel.setAttribute("aria-label", t("assistant.title", "LLM 提示词助手"));
         panel.innerHTML = `
-            <div class="loom-assistant-head"><div class="loom-assistant-brand"><div><strong>${t("assistant.title", "LLM 提示词助手")}</strong></div></div><div class="loom-assistant-head-buttons"><button type="button" id="loom_assistant_sessions" class="loom-assistant-icon-button" title="会话历史" aria-label="会话历史">☰</button><button type="button" id="loom_assistant_new_session" class="loom-assistant-icon-button" title="新建会话" aria-label="新建会话">＋</button><button type="button" id="loom_assistant_settings_open" class="loom-assistant-icon-button" title="${t("assistant.settings", "设置")}" aria-label="${t("assistant.settings", "设置")}">⚙</button><button type="button" id="loom_assistant_close" class="loom-assistant-close" title="${t("assistant.close", "关闭")}" aria-label="${t("assistant.close", "关闭")}">×</button></div></div>
+            <div class="loom-assistant-head"><div class="loom-assistant-brand"><div><strong>${t("assistant.title", "LLM 提示词助手")}</strong><span id="loom_assistant_token_totals" class="loom-assistant-token-totals"></span></div></div><div class="loom-assistant-head-buttons"><button type="button" id="loom_assistant_sessions" class="loom-assistant-icon-button" title="会话历史" aria-label="会话历史">☰</button><button type="button" id="loom_assistant_new_session" class="loom-assistant-icon-button" title="新建会话" aria-label="新建会话">＋</button><button type="button" id="loom_assistant_settings_open" class="loom-assistant-icon-button" title="${t("assistant.settings", "设置")}" aria-label="${t("assistant.settings", "设置")}">⚙</button><button type="button" id="loom_assistant_close" class="loom-assistant-close" title="${t("assistant.close", "关闭")}" aria-label="${t("assistant.close", "关闭")}">×</button></div></div>
             <div id="loom_assistant_messages" role="log" aria-live="polite"><div class="loom-assistant-empty"><div class="loom-assistant-quick-actions"><button type="button" data-loom-assistant-prompt="Read the current prompt and style template, then analyze its subject, composition, camera, lighting, and spatial relationships. Do not edit it.">${t("assistant.quick.analyze", "分析结构")}</button><button type="button" data-loom-assistant-prompt="Read the current prompt, then improve its composition and spatial relationships. Apply the changes directly with edit_prompt.">${t("assistant.quick.compose", "强化构图")}</button><button type="button" data-loom-assistant-prompt="Read the current prompt, remove redundancy and ambiguity while preserving its intent. Apply the refined prompt directly with edit_prompt.">${t("assistant.quick.refine", "精炼表达")}</button></div></div></div>
+            <ol id="loom_assistant_queue" class="loom-assistant-queue" aria-label="待处理消息"></ol>
             <div class="loom-assistant-composer">
                 <div id="loom_assistant_attachment" class="loom-assistant-attachment loom-assistant-attachment-empty"></div>
                 <textarea id="loom_assistant_input" rows="1" aria-label="${t("assistant.input.placeholder", "描述你想分析、补充或修改的提示词内容...")}" placeholder="${t("assistant.input.placeholder", "描述你想分析、补充或修改的提示词内容...")}"></textarea>
                 <div class="loom-assistant-actions">
                     <div class="loom-assistant-action-group"><button type="button" id="loom_assistant_attach" class="loom-assistant-icon-action" title="${t("assistant.attach", "附图")}" aria-label="${t("assistant.attach", "附图")}">${assistantIcon("attach")}</button><button type="button" id="loom_assistant_read" class="loom-assistant-icon-action" title="${t("assistant.read", "读取")}" aria-label="${t("assistant.read", "读取")}">${assistantIcon("read")}</button><button type="button" id="loom_assistant_clear" class="loom-assistant-icon-action" title="${t("assistant.clear", "清空")}" aria-label="${t("assistant.clear", "清空")}">${assistantIcon("clear")}</button></div>
-                    <div class="loom-assistant-action-group loom-assistant-route-controls"><button type="button" id="loom_assistant_reasoning" class="loom-assistant-compact-control loom-assistant-runtime-control">${assistantIcon("reasoning")}<span>low</span></button><div class="loom-assistant-model-control">${assistantIcon("model")}<button type="button" id="loom_assistant_model" class="loom-assistant-runtime-control" aria-haspopup="listbox" aria-expanded="false"><span class="loom-assistant-model-name"></span>${assistantIcon("chevron")}</button><div id="loom_assistant_model_menu" class="loom-assistant-model-menu" role="listbox" aria-label="${t("settings.model", "模型")}" hidden></div></div><button type="button" id="loom_assistant_stop" class="loom-assistant-icon-action loom-assistant-stop" title="${t("assistant.stop", "终止")}" aria-label="${t("assistant.stop", "终止")}" hidden>${assistantIcon("stop")}</button><button type="button" id="loom_assistant_send" class="loom-assistant-icon-action loom-assistant-primary" title="${t("assistant.send", "发送")}" aria-label="${t("assistant.send", "发送")}">${assistantIcon("send")}</button></div>
+                    <div class="loom-assistant-action-group loom-assistant-route-controls"><button type="button" id="loom_assistant_agent_mode" class="loom-assistant-mode-control" aria-pressed="false">Normal</button><button type="button" id="loom_assistant_reasoning" class="loom-assistant-compact-control loom-assistant-runtime-control">${assistantIcon("reasoning")}<span>low</span></button><div class="loom-assistant-model-control">${assistantIcon("model")}<button type="button" id="loom_assistant_model" class="loom-assistant-runtime-control" aria-haspopup="listbox" aria-expanded="false"><span class="loom-assistant-model-name"></span>${assistantIcon("chevron")}</button><div id="loom_assistant_model_menu" class="loom-assistant-model-menu" role="listbox" aria-label="${t("settings.model", "模型")}" hidden></div></div><button type="button" id="loom_assistant_stop" class="loom-assistant-icon-action loom-assistant-stop" title="${t("assistant.stop", "终止")}" aria-label="${t("assistant.stop", "终止")}" hidden>${assistantIcon("stop")}</button><button type="button" id="loom_assistant_send" class="loom-assistant-icon-action loom-assistant-primary" title="${t("assistant.send", "发送")}" aria-label="${t("assistant.send", "发送")}">${assistantIcon("send")}</button></div>
                     <footer class="loom-assistant-attribution">Powered by <a href="https://github.com/Kohaku-Lab/KohakuTerrarium" target="_blank" rel="noopener noreferrer">KohakuTerrarium</a></footer>
                 </div>
                 <input id="loom_assistant_file" type="file" accept="image/*" multiple hidden>
@@ -138,9 +139,22 @@
         const emptyStateTemplate = panel.querySelector(".loom-assistant-empty")?.cloneNode(true);
         restoreAssistantPosition(panel);
         syncAssistantRouteLabel();
+        tools.syncAssistantAgentMode?.();
         panel.querySelector("#loom_assistant_settings_open").addEventListener("click", openModelProfileSettings);
         panel.querySelector("#loom_assistant_new_session").addEventListener("click", function () { tools.createAssistantSession?.(); });
         panel.querySelector("#loom_assistant_sessions").addEventListener("click", function () { tools.openAssistantSessionHistory?.(); });
+        panel.querySelector("#loom_assistant_agent_mode").addEventListener("click", async function (event) {
+            const button = event.currentTarget;
+            const next = assistantState.agentMode === "yolo" ? "normal" : "yolo";
+            button.disabled = true;
+            try {
+                await tools.setAssistantAgentMode?.(next);
+            } catch (error) {
+                addAssistantMessage("error", String(error?.message || error));
+            } finally {
+                button.disabled = false;
+            }
+        });
         const modelButton = panel.querySelector("#loom_assistant_model");
         const modelMenu = panel.querySelector("#loom_assistant_model_menu");
         function toggleModelMenu(open) {
@@ -212,7 +226,7 @@
             fileInput.click();
         });
         fileInput.addEventListener("change", function () {
-            const files = fileInput.files;
+            const files = Array.from(fileInput.files || []);
             fileInput.value = "";
             acceptAssistantImageFiles(files);
         });
@@ -471,6 +485,11 @@
     }
 
     function setupQwenTools() {
+        if (window.KohakuLoomSvelteUi?.UI_READY === true) {
+            removeAssistantWindow();
+            setupPullRefreshGuard();
+            return;
+        }
         if (typeof tools.loadI18nBundle === "function" && !tools.loomI18nReady) {
             if (!tools.loomI18nSetupWaiting) {
                 tools.loomI18nSetupWaiting = true;

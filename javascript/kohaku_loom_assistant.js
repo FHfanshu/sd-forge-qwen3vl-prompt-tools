@@ -25,7 +25,9 @@
         "search_danbooru_tags",
         "inspect_danbooru_tag",
         "inspect_danbooru_tags",
-        "related_danbooru_tags"
+        "related_danbooru_tags",
+        "read_txt2img_state",
+        "apply_txt2img_patch"
     ];
     const ASSISTANT_REPEATABLE_READ_TOOLS = new Set([
         "read_prompt",
@@ -37,7 +39,8 @@
         "search_danbooru_tags",
         "inspect_danbooru_tag",
         "inspect_danbooru_tags",
-        "related_danbooru_tags"
+        "related_danbooru_tags",
+        "read_txt2img_state"
     ]);
     function assistantRepeatedToolAction(name, count) {
         if (count < 4) return "execute";

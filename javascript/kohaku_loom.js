@@ -91,8 +91,36 @@
         promptReads: {},
         promptStyles: null,
         loadedPromptSkills: {},
-        running: null
+        running: null,
+        queue: [],
+        queueVersions: {},
+        sessionUsage: {}
     };
+    const assistantBridgeId = globalThis.crypto?.randomUUID?.() || `loom-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    function assistantOperationId(kind) {
+        return `${assistantBridgeId}:${kind}:${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
+    }
+
+    async function claimAssistantToolBridge() {
+        const response = await fetch("/kohaku-loom/kt/tools/bridge", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ bridge_id: assistantBridgeId })
+        });
+        return response.ok ? response.json() : null;
+    }
+
+    async function startAssistantBridgeLease(run) {
+        const claim = await claimAssistantToolBridge().catch(function () { return null; });
+        run.bridgeTimer = globalThis.setInterval(function () { claimAssistantToolBridge().catch(function () { }); }, 5000);
+        return claim;
+    }
+
+    function stopAssistantBridgeLease(run) {
+        if (run?.bridgeTimer) globalThis.clearInterval(run.bridgeTimer);
+        if (run) run.bridgeTimer = null;
+    }
 
     const loomVisionPresets = {
         "Gemma 4 12B": "gemma-4-12b-it",
@@ -815,7 +843,7 @@
         return value.length > limit ? `${value.slice(0, limit)}...` : value;
     }
 
-    function updateAssistantStreamingMessage(item, text, reasoning, renderMarkdown) {
+    function updateAssistantStreamingMessage(item, text, reasoning, renderMarkdown, recovery) {
         if (!item) return;
         const reasoningWasOpen = item.querySelector?.(".loom-assistant-reasoning")?.open;
         item.replaceChildren();
@@ -838,6 +866,15 @@
             item.appendChild(body);
         }
         if (text) window.kohakuLoom.appendAssistantCopyAction?.(item, text);
+        if (recovery) {
+            const marker = document.createElement("div");
+            marker.className = "loom-assistant-partial-marker";
+            marker.textContent = recovery;
+            item.appendChild(marker);
+            item.dataset.loomPartial = "1";
+        } else {
+            delete item.dataset.loomPartial;
+        }
         const log = item.closest("#loom_assistant_messages");
         if (log) log.scrollTop = log.scrollHeight;
     }
@@ -852,6 +889,20 @@
         if (thoughts > 0) details.push(`thinking ${thoughts}`);
         if (cached > 0) details.push(`cache ${cached}`);
         return `思考中... ↑ ${input} tokens ↓ ${output} tokens${details.length ? ` (${details.join(", ")})` : ""}`;
+    }
+
+    function normalizeAssistantUsage(usage) {
+        const value = usage && usage.usage ? usage.usage : (usage || {});
+        const input = Number(value.input_tokens ?? value.prompt_tokens) || 0;
+        const output = Number(value.output_tokens ?? value.completion_tokens) || 0;
+        const cached = Number(value.cached_tokens ?? value.cache_read_input_tokens) || 0;
+        const total = Number(value.total_tokens) || input + output;
+        return { prompt_tokens: input, completion_tokens: output, cached_tokens: cached, total_tokens: total };
+    }
+
+    function formatAssistantSessionUsage(usage) {
+        const value = normalizeAssistantUsage(usage);
+        return value.total_tokens ? `Σ ${value.total_tokens} tokens` : "";
     }
 
     function assistantUsesGeminiVisionDelegate(config) {
@@ -895,6 +946,11 @@
         setTextboxValue,
         switchMainTab,
         assistantState,
+        assistantBridgeId,
+        assistantOperationId,
+        claimAssistantToolBridge,
+        startAssistantBridgeLease,
+        stopAssistantBridgeLease,
         loomVisionPresets,
         defaultVisionPreset,
         visionModelForPreset,
@@ -934,6 +990,8 @@
         truncateAssistantText,
         updateAssistantStreamingMessage,
         formatAssistantTokenStatus,
+        normalizeAssistantUsage,
+        formatAssistantSessionUsage,
         analyzeAssistantAttachmentWithGemini,
         assistantUsesGeminiVisionDelegate
     });
