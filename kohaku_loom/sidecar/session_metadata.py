@@ -79,6 +79,8 @@ def serialize_branch_view(value: Any) -> dict[str, int]:
 def metadata_payload(session_id: str, session_path: Path) -> dict[str, Any]:
     value = read_metadata(session_path)
     status = str(value.get("status") or "pending")
+    stored_count = value.get("message_count")
+    message_count = int(stored_count) if stored_count is not None else len(source_messages(value.get("source")))
     return {
         "session_id": session_id,
         "title": str(value.get("title") or ""),
@@ -89,6 +91,7 @@ def metadata_payload(session_id: str, session_path: Path) -> dict[str, Any]:
         "updated_at": value.get("updated_at"),
         "error": str(value.get("error") or ""),
         "retry_count": int(value.get("retry_count") or 0),
+        "message_count": max(0, message_count),
         "branch_view": normalize_branch_view(value.get("branch_view")),
     }
 
@@ -170,9 +173,12 @@ class SessionMetadataQueue:
             return current
         if current["status"] == "completed" and not force:
             return current
-        source = read_metadata(path).get("source")
-        if not source:
-            source = metadata_source(self._messages_for_session(session_id))
+        messages = [message for message in self._messages_for_session(session_id) if isinstance(message, dict)]
+        visible_messages = [message for message in messages if str(message.get("role") or "").lower() != "system"]
+        source = metadata_source(messages)
+        if not source["user"] and not source["assistant"]:
+            return current
+        source = read_metadata(path).get("source") or source
         now = time.time()
         next_value = {
             **read_metadata(path),
@@ -185,6 +191,7 @@ class SessionMetadataQueue:
             "updated_at": now,
             "error": "",
             "retry_count": current["retry_count"],
+            "message_count": len(visible_messages),
             "source": source,
         }
         write_metadata(path, next_value)

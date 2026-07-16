@@ -12,6 +12,7 @@ from kohaku_loom.sidecar.session_metadata import (
     generate_metadata,
     metadata_path,
     metadata_payload,
+    write_metadata,
 )
 
 
@@ -23,6 +24,17 @@ class SessionMetadataTests(unittest.TestCase):
         ])
         self.assertEqual("Create a copper-haired portrait with rainy window lighting.", title)
         self.assertIn("copper-haired", description)
+
+    def test_old_metadata_infers_count_from_source_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old.kohakutr"
+            path.touch()
+            write_metadata(path, {
+                "status": "completed",
+                "source": {"user": "Hello", "assistant": "Hi"},
+            })
+
+            self.assertEqual(2, metadata_payload("old", path)["message_count"])
 
     def test_generated_response_is_parsed_without_extra_text(self):
         profile = {"profile_id": "local", "runtime": "llama-once"}
@@ -61,6 +73,54 @@ class SessionMetadataTests(unittest.TestCase):
                 self.assertEqual("Two title", metadata_payload("two", paths["two"])["title"])
                 self.assertTrue(metadata_path(paths["one"]).is_file())
                 self.assertGreaterEqual(len(published), 4)
+
+        asyncio.run(run())
+
+    def test_queue_does_not_schedule_empty_sessions(self):
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "empty.kohakutr"
+                path.touch()
+                queue = SessionMetadataQueue(
+                    lambda: {"profile_id": "local", "runtime": "llama-once"},
+                    lambda _session_id: [{"role": "system", "content": "internal instructions"}],
+                    lambda _session_id: path,
+                    lambda: False,
+                    lambda *_args: None,
+                )
+
+                result = queue.schedule("empty")
+
+                self.assertEqual("pending", result["status"])
+                self.assertEqual({}, queue._tasks)
+                self.assertFalse(metadata_path(path).exists())
+
+        asyncio.run(run())
+
+    def test_queue_records_non_system_message_count(self):
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "one.kohakutr"
+                path.touch()
+                queue = SessionMetadataQueue(
+                    lambda: {"profile_id": "local", "runtime": "llama-once"},
+                    lambda _session_id: [
+                        {"role": "system", "content": "internal instructions"},
+                        {"role": "user", "content": "Hello"},
+                        {"role": "assistant", "content": "Hi"},
+                    ],
+                    lambda _session_id: path,
+                    lambda: False,
+                    lambda *_args: None,
+                )
+                with mock.patch(
+                    "kohaku_loom.sidecar.session_metadata.generate_metadata",
+                    return_value=("Greeting", "A short greeting."),
+                ):
+                    queue.schedule("one")
+                    await asyncio.gather(*list(queue._tasks.values()))
+
+                self.assertEqual(2, metadata_payload("one", path)["message_count"])
 
         asyncio.run(run())
 
