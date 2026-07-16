@@ -15,6 +15,9 @@ from typing import Any
 from .runtime_paths import EXTENSION_ROOT, LoomRuntimePaths
 
 
+RUNTIME_CAPABILITY_LEVEL = 2
+
+
 class SidecarManager:
     def __init__(self, extension_root: Path = EXTENSION_ROOT):
         self.extension_root = extension_root.resolve()
@@ -57,6 +60,7 @@ class SidecarManager:
                 "kohakuterrarium_version": version,
                 "source": source,
                 "commit": commit,
+                "capability_level": RUNTIME_CAPABILITY_LEVEL,
                 "installed_at": time.time(),
             }
             self._write_json(self.paths.lock_file, lock)
@@ -107,9 +111,24 @@ class SidecarManager:
                     "import kohakuterrarium; "
                     "from kohakuterrarium.core.agent import Agent; "
                     "from kohakuterrarium.terrarium import Terrarium; "
+                    "from kohakuterrarium.terrarium.creature_host import Creature; "
                     "assert callable(getattr(Agent, 'build', None)); "
                     "assert callable(getattr(Agent, 'run_stream', None)); "
-                    "assert callable(getattr(Terrarium, 'resume', None)); "
+                    "assert callable(getattr(Agent, 'inject_input', None)); "
+                    "assert callable(getattr(Agent, 'edit_pending', None)); "
+                     "assert callable(getattr(Agent, 'cancel_pending', None)); "
+                     "assert callable(getattr(Terrarium, 'resume', None)); "
+                     "assert callable(getattr(Creature, 'run_stream', None)); "
+                     "assert callable(getattr(Creature, 'wait_restoration_ready', None)); "
+                     "from kohakuterrarium.terrarium.service import LocalTerrariumService; "
+                     "assert callable(getattr(LocalTerrariumService, 'regenerate', None)); "
+                     "from kohakuterrarium.session.history import replay_conversation, collect_branch_metadata, select_live_event_ids; "
+                     "assert callable(replay_conversation); "
+                     "assert callable(collect_branch_metadata); "
+                     "assert callable(select_live_event_ids); "
+                     "assert callable(getattr(Agent, '_reload_conversation_under_branch_view', None)); "
+                     "from kohakuterrarium.session.store import SessionStore; "
+                    "assert callable(getattr(SessionStore, 'token_usage', None)); "
                     "print(kohakuterrarium.__version__)"
                 ),
             ],
@@ -124,6 +143,8 @@ class SidecarManager:
         if not isinstance(lock, dict) or lock.get("ready") is not True:
             return False
         if not str(lock.get("kohakuterrarium_version") or "").strip():
+            return False
+        if lock.get("capability_level") != RUNTIME_CAPABILITY_LEVEL:
             return False
         source = lock.get("source")
         commit = str(lock.get("commit") or "")

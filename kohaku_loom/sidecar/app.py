@@ -133,12 +133,29 @@ def create_app(
         authorization: str = Header(default=""),
     ) -> dict[str, Any]:
         authorize(authorization)
-        status = await tool_broker.reply(request_id, payload)
+        bridge_id = str(payload.pop("bridge_id", "") or "")
+        status = await tool_broker.reply(request_id, payload, bridge_id)
         if status == "unknown":
             raise HTTPException(status_code=404, detail="unknown tool request")
         if status == "superseded":
             raise HTTPException(status_code=409, detail="tool request already completed")
+        if status == "foreign":
+            raise HTTPException(status_code=409, detail="tool request belongs to another Forge tab")
         return {"ok": True, "status": status}
+
+    @app.post("/tools/bridge")
+    async def tool_bridge(
+        payload: dict[str, Any] = Body(...),
+        authorization: str = Header(default=""),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        bridge_id = str(payload.get("bridge_id") or "")
+        if payload.get("release"):
+            return {"ok": True, "released": await tool_broker.release_bridge(bridge_id)}
+        try:
+            return {"ok": True, **await tool_broker.claim_bridge(bridge_id)}
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
 
     @app.get("/runtime")
     async def runtime_status(authorization: str = Header(default="")) -> dict[str, Any]:
@@ -161,6 +178,176 @@ def create_app(
         except (FileNotFoundError, ValueError) as error:
             raise HTTPException(status_code=404, detail="session is not active") from error
 
+    @app.get("/sessions/{session_id}/branches")
+    async def session_branches(
+        session_id: str,
+        authorization: str = Header(default=""),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        try:
+            return loom_runtime.branch_metadata(session_id)
+        except (FileNotFoundError, ValueError) as error:
+            raise HTTPException(status_code=404, detail="session is not active") from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get("/sessions/{session_id}/branch-view")
+    async def get_branch_view(
+        session_id: str,
+        authorization: str = Header(default=""),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        try:
+            return loom_runtime.branch_metadata(session_id)
+        except (FileNotFoundError, ValueError) as error:
+            raise HTTPException(status_code=404, detail="session is not active") from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.patch("/sessions/{session_id}/branch-view")
+    async def select_branch_view(
+        session_id: str,
+        payload: dict[str, Any] = Body(...),
+        authorization: str = Header(default=""),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        try:
+            return await loom_runtime.select_branch_view(session_id, payload.get("branch_view"))
+        except (FileNotFoundError, KeyError) as error:
+            raise HTTPException(status_code=404, detail="session is not active") from error
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post("/sessions/{session_id}/branch-view/replay")
+    async def replay_branch_view(
+        session_id: str,
+        payload: dict[str, Any] = Body(default={}),
+        authorization: str = Header(default=""),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        try:
+            return await loom_runtime.replay_branch_view(session_id, payload.get("branch_view"))
+        except (FileNotFoundError, KeyError) as error:
+            raise HTTPException(status_code=404, detail="session is not active") from error
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post("/sessions/{session_id}/regenerate")
+    async def regenerate_last_response(
+        session_id: str,
+        authorization: str = Header(default=""),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        try:
+            return await loom_runtime.regenerate_last_response(session_id)
+        except (FileNotFoundError, KeyError) as error:
+            raise HTTPException(status_code=404, detail="session is not active") from error
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post("/sessions/{session_id}/metadata")
+    async def refresh_session_metadata(
+        session_id: str,
+        payload: dict[str, Any] = Body(default={}),
+        authorization: str = Header(default=""),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        try:
+            metadata = loom_runtime.session_metadata(session_id, refresh=bool(payload.get("refresh", False)))
+            return {"ok": True, "metadata": metadata}
+        except (FileNotFoundError, ValueError) as error:
+            raise HTTPException(status_code=404, detail="session not found") from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post("/sessions/{session_id}/messages")
+    async def enqueue_message(
+        session_id: str,
+        payload: dict[str, Any] = Body(...),
+        authorization: str = Header(default=""),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        try:
+            message = await loom_runtime.enqueue_message(
+                session_id,
+                payload.get("content"),
+                display_content=str(payload.get("display_content") or ""),
+                attachments=payload.get("attachments") if isinstance(payload.get("attachments"), list) else [],
+                operation_id=str(payload.get("operation_id") or ""),
+            )
+            return {"ok": True, "message": message}
+        except (FileNotFoundError, KeyError) as error:
+            raise HTTPException(status_code=404, detail="session not found") from error
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise HTTPException(status_code=409 if "claimed" in str(error) else 400, detail=str(error)) from error
+
+    @app.patch("/sessions/{session_id}/mode")
+    async def set_agent_mode(
+        session_id: str,
+        payload: dict[str, Any] = Body(...),
+        authorization: str = Header(default=""),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        try:
+            session = await loom_runtime.set_agent_mode(session_id, str(payload.get("agent_mode") or ""))
+            return {"ok": True, "session": session}
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail="session not found") from error
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.patch("/sessions/{session_id}/messages/{message_id}")
+    async def edit_message(
+        session_id: str,
+        message_id: str,
+        payload: dict[str, Any] = Body(...),
+        authorization: str = Header(default=""),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        try:
+            message = await loom_runtime.edit_message(
+                session_id,
+                message_id,
+                payload.get("content"),
+                display_content=str(payload.get("display_content") or ""),
+                attachments=payload.get("attachments") if isinstance(payload.get("attachments"), list) else None,
+            )
+            return {"ok": True, "message": message}
+        except (FileNotFoundError, KeyError) as error:
+            raise HTTPException(status_code=404, detail="message not found") from error
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise HTTPException(status_code=409 if "claimed" in str(error) else 400, detail=str(error)) from error
+
+    @app.post("/sessions/{session_id}/messages/{message_id}/cancel")
+    async def cancel_message(
+        session_id: str,
+        message_id: str,
+        authorization: str = Header(default=""),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        try:
+            message = await loom_runtime.cancel_message(session_id, message_id)
+            return {"ok": True, "message": message}
+        except (FileNotFoundError, KeyError) as error:
+            raise HTTPException(status_code=404, detail="message not found") from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post("/sessions/{session_id}/messages/{message_id}/retry")
+    async def retry_message(
+        session_id: str,
+        message_id: str,
+        authorization: str = Header(default=""),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        try:
+            message = await loom_runtime.retry_message(session_id, message_id)
+            return {"ok": True, "message": message}
+        except (FileNotFoundError, KeyError) as error:
+            raise HTTPException(status_code=404, detail="message not found") from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
     @app.post("/sessions/open")
     async def open_session(
         payload: dict[str, Any] = Body(...),
@@ -173,6 +360,7 @@ def create_app(
                 session_id=str(payload.get("session_id") or ""),
                 resume=bool(payload.get("resume", False)),
                 forge_bridge=bool(payload.get("forge_bridge", True)),
+                agent_mode=str(payload.get("agent_mode") or "normal"),
             )
             return {"ok": True, "session": session}
         except KeyError as error:
@@ -201,7 +389,11 @@ def create_app(
             timeout = float(timeout_value) if timeout_value is not None else None
             if timeout is not None and timeout <= 0:
                 raise ValueError("timeout must be greater than zero")
-            return await loom_runtime.start_turn(payload.get("content"), timeout)
+            return await loom_runtime.start_turn(
+                payload.get("content"),
+                timeout,
+                str(payload.get("operation_id") or ""),
+            )
         except (RuntimeError, TypeError, ValueError) as error:
             raise HTTPException(status_code=409 if "already active" in str(error) else 400, detail=str(error)) from error
 
