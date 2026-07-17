@@ -35,8 +35,10 @@ export function clampWindowLayout(
   viewport = readViewportRect(),
   minimum: WindowMinimum = WINDOW_MINIMUM,
 ): WindowLayout {
-  const width = Math.max(minimum.width, Math.min(layout.width, Math.max(minimum.width, viewport.width - 16)));
-  const height = Math.max(minimum.height, Math.min(layout.height, Math.max(minimum.height, viewport.height - 16)));
+  const availableWidth = Math.max(1, viewport.width - 16);
+  const availableHeight = Math.max(1, viewport.height - 16);
+  const width = Math.min(Math.max(minimum.width, layout.width), availableWidth);
+  const height = Math.min(Math.max(minimum.height, layout.height), availableHeight);
   const minLeft = viewport.left + 8;
   const minTop = viewport.top + 8;
   const maxLeft = Math.max(minLeft, viewport.left + viewport.width - width - 8);
@@ -170,6 +172,14 @@ export function pointerWindow(node: HTMLElement, options: PointerWindowOptions) 
 }
 
 export type LayoutViewport = "desktop" | "mobilePortrait" | "mobileLandscape";
+
+export function minimumForViewport(kind: LayoutViewport): WindowMinimum {
+  if (kind === "desktop") return WINDOW_MINIMUM;
+  return {
+    width: 300,
+    height: kind === "mobileLandscape" ? 240 : 360,
+  };
+}
 
 export function viewportKind(): LayoutViewport {
   if (typeof window === "undefined") return "desktop";

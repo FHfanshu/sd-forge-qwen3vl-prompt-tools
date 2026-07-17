@@ -27,6 +27,22 @@ describe("Svelte chat surface", () => {
     expect(screen.getByText("1 / 2")).toBeInTheDocument();
   });
 
+  it("keeps tool results and reasoning folded with a one-line reasoning preview", async () => {
+    const user = userEvent.setup();
+    const { container } = render(Surface, { initialOpen: true, messages: mockMessages, actions: {} });
+
+    const toolResult = container.querySelector<HTMLDetailsElement>("[data-tool-result='true']");
+    expect(toolResult).not.toBeNull();
+    expect(toolResult?.open).toBe(false);
+    await user.click(toolResult!.querySelector("summary")!);
+    expect(toolResult?.open).toBe(true);
+
+    const reasoning = container.querySelector<HTMLDetailsElement>(".kl-reasoning");
+    expect(reasoning).not.toBeNull();
+    expect(reasoning?.open).toBe(false);
+    expect(reasoning?.querySelector(".kl-reasoning-preview")).toHaveTextContent(mockMessages[2].reasoning!);
+  });
+
   it("defers Markdown parsing while an assistant message is streaming", () => {
     render(Surface, {
       initialOpen: true,
@@ -77,6 +93,22 @@ describe("Svelte chat surface", () => {
     expect(newSession).toHaveBeenCalledTimes(2);
   });
 
+  it("waits for launcher session creation before sending", async () => {
+    const user = userEvent.setup();
+    let releaseSession!: () => void;
+    const newSession = vi.fn(() => new Promise<void>((resolve) => { releaseSession = resolve; }));
+    const sendMessage = vi.fn();
+    render(Surface, { actions: { newSession, sendMessage } });
+
+    await user.click(screen.getByRole("button", { name: "Open Kohaku Loom" }));
+    await user.type(screen.getByRole("textbox", { name: "Message Kohaku Loom" }), "No duplicate session");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    releaseSession();
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "No duplicate session" })));
+  });
+
   it("sends through the typed action interface and switches modes", async () => {
     const user = userEvent.setup();
     const sendMessage = vi.fn();
@@ -87,6 +119,24 @@ describe("Svelte chat surface", () => {
     await user.click(screen.getByRole("button", { name: "Permission mode: confirmations required" }));
     await user.click(screen.getByRole("button", { name: "Allow direct edits" }));
     expect(screen.getByRole("button", { name: "Permission mode: direct edits" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("loads Edit into the composer and reruns only through the existing send button", async () => {
+    const user = userEvent.setup();
+    const sendMessage = vi.fn();
+    render(Surface, { initialOpen: true, messages: mockMessages, actions: { sendMessage } });
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const composer = screen.getByRole("textbox", { name: "Message Kohaku Loom" });
+    expect(composer).toHaveValue(mockMessages[0].content);
+    expect(screen.getByText("Editing message")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /save/i })).not.toBeInTheDocument();
+    await user.clear(composer);
+    await user.type(composer, "Edited request");
+    expect(sendMessage).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "Edited request", editOf: mockMessages[0].id }));
   });
 
   it("starts a new chat from the dedicated header action", async () => {
@@ -112,14 +162,28 @@ describe("Svelte chat surface", () => {
     render(Surface, { initialOpen: true, actions: {} });
 
     expect(screen.getByText("Thinking…")).toBeInTheDocument();
+    useChatStore.getState().appendMessage({ id: "assistant-active", role: "assistant", content: "", reasoning: "draft rationale", status: "streaming" });
     useRuntimeStore.getState().setWorking("generating");
     expect(await screen.findByText("Generating response…")).toBeInTheDocument();
+    expect(screen.getByText("Reasoning: draft rationale")).toBeInTheDocument();
     useRuntimeStore.getState().setWorking("tool", "edit_prompt");
     expect(await screen.findByText("Running tool…")).toBeInTheDocument();
-    expect(screen.getByText("edit_prompt")).toBeInTheDocument();
+    expect(screen.getByText("Tool: edit_prompt")).toBeInTheDocument();
 
     useChatStore.getState().cancelRequest();
     await waitFor(() => expect(screen.queryByText("Running tool…")).not.toBeInTheDocument());
+  });
+
+  it("keeps the composer input and actions inside one rounded shell", () => {
+    const { container } = render(Surface, { initialOpen: true, actions: {} });
+    const composer = container.querySelector("form.kl-composer");
+
+    expect(composer).not.toBeNull();
+    expect(composer?.querySelector("textarea")).toBeInTheDocument();
+    expect(composer?.querySelector(".kl-composer-bottom")).toBeInTheDocument();
+    expect(composer?.querySelector(".kl-send-button")).toBeInTheDocument();
+    expect(composer?.querySelector(".kl-composer-bottom")?.closest("form")).toBe(composer);
+    expect(composer?.querySelector(".kl-send-button")?.closest("form")).toBe(composer);
   });
 
   it("switches the active model from the composer", async () => {

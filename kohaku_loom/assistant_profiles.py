@@ -57,19 +57,23 @@ def normalize_model_profile(payload: dict[str, Any]) -> dict[str, Any]:
 
     model = _model_value(source)
     endpoint = _optional_string(source, "endpoint")
+    enabled = source.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise RuntimeError("enabled must be a boolean")
     if not model:
         raise RuntimeError(f"model/model_id is required for runtime {runtime!r}")
-    if runtime in {REMOTE_HTTP, LLAMA_ENDPOINT}:
+    if enabled and runtime in {REMOTE_HTTP, LLAMA_ENDPOINT}:
         if not endpoint:
             raise RuntimeError(f"endpoint is required for runtime {runtime!r}")
         _validate_http_url(endpoint, "endpoint")
-    if runtime == LLAMA_ONCE:
+    if enabled and runtime == LLAMA_ONCE:
         model_path = _optional_string(source, "model_path")
         if not model_path:
             raise RuntimeError("model_path is required for runtime 'llama-once'")
         normalized["model_path"] = model_path
         normalized["local_model_path"] = model_path
 
+    normalized["enabled"] = enabled
     normalized["endpoint"] = endpoint.rstrip("/") if endpoint else ""
     normalized["model"] = model
     normalized["model_id"] = model

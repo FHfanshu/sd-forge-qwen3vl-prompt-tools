@@ -1,13 +1,27 @@
-import type { LoomActionHandlers, ChatAttachment, ChatMessage, HistoryRow, Profile, QueuedMessage, SendMessageInput, BranchMetadata, BranchTurn, RuntimeSession, RiskMode } from "./contracts";
+import type { LoomActionHandlers, ChatMessage, HistoryRow, Profile, SendMessageInput, BranchMetadata, RuntimeSession, RiskMode, PendingToolApproval } from "./contracts";
 import { getHostApi, type KohakuLoomHostApi, type KohakuLoomNamespace } from "./bridge";
 import { KTClient } from "./kt/client";
-import { isAbortError } from "./kt/retry";
-import { attachmentSchema, chatMessageSchema, queuedMessageSchema } from "./contracts";
+import { createAbortError, isAbortError } from "./kt/retry";
+import { chatMessageSchema } from "./contracts";
 import { useChatStore } from "./stores/chat";
 import { useProfileStore } from "./stores/profiles";
 import { useRuntimeStore } from "./stores/runtime";
 import { useUiStore } from "./stores/ui";
 import { normalizeProfile, normalizeProfileState } from "./profile-adapter";
+import { SessionTransition } from "./session-transition";
+import {
+  adaptTool,
+  asRecord,
+  contentForMessage,
+  errorText,
+  mapConversationMessage,
+  mapHistory,
+  mapQueuedMessage,
+  normalizeBranchMetadata,
+  operationId,
+  textFromContent,
+  usageFrom,
+} from "./runtime-formatters";
 
 type RawRecord = Record<string, any>;
 
@@ -30,214 +44,29 @@ interface LoomRun {
   toolPromises: Map<string, Promise<unknown>>;
   activeTools: Map<string, string>;
   pendingTurnEvents: RawRecord[];
+  cancelRequested: boolean;
+  acceptanceTask: Promise<RawRecord> | null;
   resolve(value: RawRecord): void;
   done: Promise<RawRecord>;
 }
 
-function asRecord(value: unknown): RawRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as RawRecord : {};
-}
-
-function textFromContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return content == null ? "" : JSON.stringify(content);
-  return content.filter((part) => asRecord(part).type === "text").map((part) => String(asRecord(part).text ?? "")).join("\n");
-}
-
-function attachmentsFromContent(content: unknown): ChatAttachment[] {
-  if (!Array.isArray(content)) return [];
-  return content.flatMap((part, index) => {
-    const value = asRecord(part);
-    const image = asRecord(value.image_url);
-    if (value.type !== "image_url" || typeof image.url !== "string") return [];
-    return [{
-      id: `server-attachment-${index}-${String(image.url).slice(-12)}`,
-      name: String(asRecord(value.meta).source_name ?? "reference image"),
-      dataUrl: image.url,
-    }];
-  });
-}
-
-function attachmentsFromMessage(content: unknown, rawAttachments: unknown): ChatAttachment[] {
-  const inline = attachmentsFromContent(content);
-  if (inline.length || !Array.isArray(rawAttachments)) return inline;
-  return rawAttachments.flatMap((item, index) => {
-    const parsed = attachmentSchema.safeParse(item);
-    if (parsed.success) return [parsed.data];
-    const value = asRecord(item);
-    const dataUrl = String(value.dataUrl ?? value.data_url ?? "");
-    if (!dataUrl) return [];
-    return [{
-      id: String(value.id ?? `server-attachment-${index}`),
-      name: String(value.name ?? "reference image"),
-      dataUrl,
-      mimeType: value.mimeType ? String(value.mimeType) : undefined,
-      size: Number.isFinite(Number(value.size)) ? Number(value.size) : undefined,
-    }];
-  });
-}
-
-function usageFrom(value: unknown): ChatMessage["usage"] {
-  const source = asRecord(asRecord(value).usage ?? value);
-  const number = (candidate: unknown): number | undefined => {
-    const parsed = Number(candidate);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
-  };
-  const inputTokens = number(source.input_tokens ?? source.prompt_tokens);
-  const outputTokens = number(source.output_tokens ?? source.completion_tokens);
-  const totalTokens = number(source.total_tokens) ?? (inputTokens !== undefined && outputTokens !== undefined ? inputTokens + outputTokens : undefined);
-  const latencyMs = number(source.latency_ms ?? source.latencyMs);
-  const durationSeconds = number(source.duration_s);
-  const resolvedLatency = latencyMs ?? (durationSeconds === undefined ? undefined : Math.round(durationSeconds * 1000));
-  if ([inputTokens, outputTokens, totalTokens, resolvedLatency].every((item) => item === undefined)) return undefined;
-  return { inputTokens, outputTokens, totalTokens, latencyMs: resolvedLatency };
-}
-
-function branchForTurn(branches: BranchMetadata | null, turnIndex: number): { index: number; count: number } {
-  const turn = branches?.turns?.find((item) => item.turnIndex === turnIndex);
-  if (!turn) return { index: 0, count: 1 };
-  const selected = turn.selectedBranchId ?? turn.latestBranch ?? turn.branches[0] ?? 0;
-  const index = Math.max(0, turn.branches.indexOf(selected));
-  return { index, count: Math.max(1, turn.branchCount || turn.branches.length) };
-}
-
-function normalizeBranchMetadata(value: unknown): BranchMetadata | null {
-  const raw = asRecord(value);
-  if (!Object.keys(raw).length) return null;
-  const numberMap = (candidate: unknown): Record<string, number> => {
-    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return {};
-    return Object.fromEntries(Object.entries(candidate as RawRecord).flatMap(([key, item]) => {
-      const parsed = Number(item);
-      return Number.isFinite(parsed) ? [[key, parsed]] : [];
-    }));
-  };
-  const turns: BranchTurn[] = Array.isArray(raw.turns) ? raw.turns.flatMap((item) => {
-    const turn = asRecord(item);
-    const turnIndex = Number(turn.turnIndex ?? turn.turn_index);
-    const branches = Array.isArray(turn.branches) ? turn.branches.map(Number).filter(Number.isFinite) : [];
-    if (!Number.isInteger(turnIndex) || !branches.length) return [];
-    const statuses = asRecord(turn.branchStatuses ?? turn.branch_statuses);
-    return [{
-      turnIndex,
-      branches,
-      branchCount: Math.max(1, Number(turn.branchCount ?? turn.branch_count ?? branches.length)),
-      latestBranch: Number.isFinite(Number(turn.latestBranch ?? turn.latest_branch)) ? Number(turn.latestBranch ?? turn.latest_branch) : undefined,
-      selectedBranchId: Number.isFinite(Number(turn.selectedBranchId ?? turn.selected_branch_id)) ? Number(turn.selectedBranchId ?? turn.selected_branch_id) : undefined,
-      branchStatuses: Object.fromEntries(Object.entries(statuses).map(([key, status]) => [key, String(status)])),
-    }];
-  }) : [];
-  return {
-    ...raw,
-    session_id: raw.session_id ? String(raw.session_id) : undefined,
-    branch_view: numberMap(raw.branch_view),
-    selected_branch_ids: numberMap(raw.selected_branch_ids),
-    branch_counts: numberMap(raw.branch_counts),
-    latest_branch_ids: numberMap(raw.latest_branch_ids),
-    branch_statuses: raw.branch_statuses,
-    turns,
-    final_turn_index: raw.final_turn_index === null || raw.final_turn_index === undefined ? raw.final_turn_index as number | null | undefined : Number(raw.final_turn_index),
-  };
-}
-
-function mapConversationMessage(rawValue: unknown, index: number, branches: BranchMetadata | null, turnIndex: number): ChatMessage {
-  const raw = asRecord(rawValue);
-  const roleValue = String(raw.role ?? raw.event_type ?? "assistant").toLowerCase();
-  const role = roleValue === "user" ? "user" : roleValue === "tool" ? "tool" : roleValue === "system" ? "system" : roleValue === "error" ? "error" : "assistant";
-  const messageTurnIndex = Number(raw.turn_index ?? raw.turnIndex);
-  const resolvedTurnIndex = Number.isInteger(messageTurnIndex) ? messageTurnIndex : turnIndex;
-  const branch = role === "assistant" ? branchForTurn(branches, resolvedTurnIndex) : { index: 0, count: 1 };
-  const rawStatus = String(raw.status ?? raw.state ?? "complete").toLowerCase();
-  const status = rawStatus === "streaming" ? "streaming" : rawStatus === "cancelled" || rawStatus === "interrupted" ? "cancelled" : rawStatus === "error" || rawStatus === "failed" ? "error" : "complete";
-  const tool = raw.tool || raw.tool_name ? {
-    name: String(raw.tool?.name ?? raw.tool_name ?? raw.name ?? "tool"),
-    status: rawStatus === "error" || rawStatus === "failed" ? "error" : "complete",
-    detail: raw.tool?.detail ? String(raw.tool.detail) : undefined,
-  } : undefined;
-  return chatMessageSchema.parse({
-    id: String(raw.id ?? raw.message_id ?? `server-message-${index}`),
-    role,
-    content: textFromContent(raw.content ?? raw.text ?? ""),
-    status,
-    reasoning: raw.reasoning ? String(raw.reasoning) : undefined,
-    usage: usageFrom(raw.usage),
-    tool,
-    attachments: attachmentsFromMessage(raw.content, raw.attachments),
-    branchIndex: branch.index,
-    branchCount: branch.count,
-    branchTurnIndex: role === "assistant" ? resolvedTurnIndex : undefined,
-    createdAt: Math.max(0, Number(raw.created_at ?? raw.createdAt ?? Date.now()) || Date.now()),
-  });
-}
-
-function mapQueuedMessage(rawValue: unknown): QueuedMessage {
-  const raw = asRecord(rawValue);
-  return queuedMessageSchema.parse({
-    id: String(raw.message_id ?? raw.id),
-    text: String(raw.display_content ?? textFromContent(raw.content ?? "")),
-    attachments: Array.isArray(raw.attachments) ? raw.attachments : attachmentsFromContent(raw.content),
-    state: raw.state,
-    kind: raw.kind,
-    error: raw.error ? String(raw.error) : undefined,
-    turnId: raw.turn_id ? String(raw.turn_id) : undefined,
-    sequence: Number.isFinite(Number(raw.sequence)) ? Number(raw.sequence) : undefined,
-    updatedAt: Number.isFinite(Number(raw.updated_at)) ? Number(raw.updated_at) : undefined,
-    createdAt: Math.max(0, Number(raw.created_at ?? Date.now()) || Date.now()),
-  });
+interface BridgeLease {
+  owned: boolean;
+  bridgeId: string;
+  pendingRequests: RawRecord[];
 }
 
 function mapProfile(rawValue: unknown): Profile {
   return normalizeProfile(rawValue);
 }
 
-function mapHistory(rawValue: unknown, source: "KT" | "legacy"): HistoryRow {
-  const raw = asRecord(rawValue);
-  const id = String(raw.session_id ?? raw.id);
-  const modified = raw.modified_at ?? raw.updated_at ?? raw.created_at;
-  const timestamp = typeof modified === "number" ? new Date(modified * (modified < 10_000_000_000 ? 1000 : 1)).toLocaleString() : String(modified ?? "");
-  const suppliedTitle = String(raw.title ?? raw.name ?? "").trim();
-  const title = suppliedTitle || (source === "legacy" ? "Legacy session" : "Untitled session");
-  const preview = String(raw.preview ?? raw.description ?? raw.summary ?? "");
-  return { id, source, title, preview, updatedAt: timestamp || "", messageCount: Math.max(0, Number(raw.message_count ?? raw.messageCount ?? 0) || 0) };
-}
-
-function contentForMessage(input: SendMessageInput): string | RawRecord[] {
-  const parts: RawRecord[] = [];
-  if (input.text) parts.push({ type: "text", text: input.text });
-  input.attachments.forEach((attachment) => parts.push({
-    type: "image_url",
-    image_url: { url: attachment.dataUrl, detail: "high" },
-    meta: { source_type: "attachment", source_name: attachment.name },
-  }));
-  return parts.length === 1 && parts[0].type === "text" ? input.text : parts;
-}
-
-function operationId(prefix: string): string {
-  const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return `svelte-ui:${prefix}:${random}`;
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function adaptTool(toolValue: unknown): RawRecord {
-  const tool = asRecord(toolValue);
-  const name = String(tool.tool ?? tool.name ?? "");
-  const args = asRecord(tool.arguments ?? tool.args ?? {});
-  if (name === "forge_resource") {
-    const action = String(args.action ?? "");
-    if (action === "search") return { tool: "search_resources", arguments: args };
-    if (action === "inspect") return { tool: "inspect_resource", arguments: { ...args, id: args.resource_id } };
-    if (action === "apply") return { tool: "apply_resource", arguments: { ...args, id: args.resource_id } };
-  }
-  if (name === "initialize_prompt") return { tool: name, arguments: { ...args, positive_prompt: args.positive_prompt ?? args.positive, negative_prompt: args.negative_prompt ?? args.negative } };
-  if (name === "edit_prompt") {
-    const field = args.field === "negative" ? "negative" : "positive";
-    const promptKey = field === "negative" ? "negative_prompt" : "positive_prompt";
-    const hashKey = field === "negative" ? "negative_prompt_hash" : "positive_prompt_hash";
-    return { tool: name, arguments: { ...args, field, prompt: args.prompt ?? args[promptKey], base_hash: args.base_hash ?? args[hashKey] ?? args.prompt_hash } };
-  }
-  return { tool: name, arguments: args };
+function parseBridgeLease(value: unknown): BridgeLease | null {
+  const record = asRecord(value);
+  if (typeof record.owned !== "boolean" || typeof record.bridge_id !== "string" || !record.bridge_id.trim()) return null;
+  const pendingRequests = Array.isArray(record.pending_requests)
+    ? record.pending_requests.filter((item): item is RawRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    : [];
+  return { owned: record.owned, bridgeId: record.bridge_id.trim(), pendingRequests };
 }
 
 export class LoomRuntimeController {
@@ -249,6 +78,9 @@ export class LoomRuntimeController {
   private mounted = false;
   private historyEventsAbort: AbortController | null = null;
   private historyEventsTask: Promise<void> | null = null;
+  private readonly sessionTransition = new SessionTransition();
+  private disposed = false;
+  private readonly toolApprovals = new Map<string, { run: LoomRun; resolve(approved: boolean): void }>();
 
   constructor(host: KohakuLoomHostApi, client = new KTClient({ baseUrl: host.ktBaseUrl })) {
     this.host = host;
@@ -262,7 +94,6 @@ export class LoomRuntimeController {
       readPrompt: () => this.readPrompt(),
       clearChat: () => useChatStore.getState().reset(),
       copyMessage: async (message) => navigator.clipboard?.writeText(message.content),
-      editResend: (message) => this.editResend(message),
       regenerate: (message) => this.regenerate(message),
       changeBranch: (message, branchIndex) => this.changeBranch(message, branchIndex),
       removeQueuedMessage: (id) => this.removeQueuedMessage(id),
@@ -272,6 +103,8 @@ export class LoomRuntimeController {
       newSession: () => this.newSession(),
       openSettings: () => this.host.openSettings(),
       setRiskMode: (mode) => this.setRiskMode(mode),
+      approveTool: (requestId) => this.approveTool(requestId),
+      rejectTool: (requestId) => this.rejectTool(requestId),
     };
   }
 
@@ -296,10 +129,22 @@ export class LoomRuntimeController {
   }
 
   destroy(): void {
+    this.disposed = true;
+    this.stopRequest();
     this.mounted = false;
     this.historyEventsAbort?.abort();
     this.historyEventsAbort = null;
     this.historyEventsTask = null;
+  }
+
+  approveTool(requestId = useRuntimeStore.getState().pendingToolApproval?.requestId ?? ""): void {
+    const pending = this.toolApprovals.get(requestId);
+    if (pending) pending.resolve(true);
+  }
+
+  rejectTool(requestId = useRuntimeStore.getState().pendingToolApproval?.requestId ?? ""): void {
+    const pending = this.toolApprovals.get(requestId);
+    if (pending) pending.resolve(false);
   }
 
   reloadProfiles(): Profile[] {
@@ -409,6 +254,10 @@ export class LoomRuntimeController {
   }
 
   async openSession(sessionId = "", resume = Boolean(sessionId)): Promise<RuntimeSession> {
+    return this.sessionTransition.run(() => this.openSessionInternal(sessionId, resume));
+  }
+
+  private async openSessionInternal(sessionId = "", resume = Boolean(sessionId)): Promise<RuntimeSession> {
     if (this.activeRun && !this.activeRun.finished) throw new Error("Cannot switch sessions while a turn is active");
     await this.syncProfiles();
     const config = asRecord(this.host.assistantConfig());
@@ -436,7 +285,17 @@ export class LoomRuntimeController {
   private async ensureSession(): Promise<string> {
     const existing = useRuntimeStore.getState().sessionId;
     if (existing) return existing;
-    return (await this.openSession("", false)).session_id;
+    return this.sessionTransition.run(async () => {
+      const current = useRuntimeStore.getState().sessionId;
+      if (current) return current;
+      const runtime = await this.client.request<RawRecord>("/runtime");
+      const activeSessionId = String(asRecord(runtime.active_session).session_id ?? "");
+      if (activeSessionId) {
+        await this.applySession(activeSessionId, runtime);
+        return activeSessionId;
+      }
+      return (await this.openSessionInternal("", false)).session_id;
+    });
   }
 
   private async applySession(sessionId: string, runtime?: RawRecord): Promise<void> {
@@ -476,15 +335,21 @@ export class LoomRuntimeController {
   }
 
   private applyConversation(conversation: RawRecord): void {
-    const branches = (conversation.branches ?? null) as BranchMetadata | null;
+    const branches = normalizeBranchMetadata(conversation.branches ?? null);
     useRuntimeStore.getState().setBranches(branches);
     const messages: ChatMessage[] = [];
-    let turnIndex = 0;
+    const turnIndices = branches?.turns?.map((turn) => turn.turnIndex).sort((a, b) => a - b) ?? [];
+    let userPosition = -1;
+    let turnIndex = turnIndices[0] ?? 1;
     (Array.isArray(conversation.messages) ? conversation.messages : []).forEach((raw, index) => {
+      const value = asRecord(raw);
+      if (String(value.role ?? value.event_type ?? "").toLowerCase() === "user") {
+        userPosition += 1;
+        turnIndex = turnIndices[userPosition] ?? userPosition + 1;
+      }
       const message = mapConversationMessage(raw, index, branches, turnIndex);
       if (message.role === "system") return;
       messages.push(message);
-      if (message.role === "assistant") turnIndex += 1;
     });
     useChatStore.getState().setMessages(messages);
     this.syncQueue(Array.isArray(conversation.queue) ? conversation.queue : []);
@@ -520,6 +385,8 @@ export class LoomRuntimeController {
       toolPromises: new Map(),
       activeTools: new Map(),
       pendingTurnEvents: [],
+      cancelRequested: false,
+      acceptanceTask: null,
       resolve,
       done,
     };
@@ -576,28 +443,40 @@ export class LoomRuntimeController {
   }
 
   private async startStreams(run: LoomRun): Promise<void> {
-    const claim = await this.host.claimToolBridge();
-    const claimRecord = asRecord(claim);
-    if (claim === null || claim === undefined || claimRecord.owned === false) throw new Error("Forge tool bridge is unavailable or owned by another tab");
-    run.bridgeId = String(claimRecord.bridge_id ?? "");
-    run.leaseTimer = setInterval(() => { void this.host.claimToolBridge().then((next) => { run.bridgeId = String(asRecord(next).bridge_id ?? run.bridgeId); }).catch(() => undefined); }, 5000);
+    const claim = parseBridgeLease(await this.host.claimToolBridge());
+    if (!claim) throw new Error("Forge tool bridge returned an invalid lease");
+    if (!claim.owned) throw new Error("Forge tool bridge is unavailable or owned by another tab");
+    if (this.disposed || run.finished || run.cancelled || run.controller.signal.aborted) {
+      if (this.host.releaseToolBridge) await this.host.releaseToolBridge().catch(() => undefined);
+      return;
+    }
+    run.bridgeId = claim.bridgeId;
+    run.leaseTimer = setInterval(() => { void this.refreshBridgeLease(run); }, 5000);
     void this.consumeStream("/turns/events", run, "turnCursor", (event) => this.handleTurnEvent(run, event));
     void this.consumeStream("/tools/events", run, "toolCursor", (event) => this.handleToolEvent(run, event));
-    const pending = Array.isArray(claimRecord.pending_requests) ? claimRecord.pending_requests : [];
-    for (const request of pending) await this.handleToolEvent(run, { type: "tool_request", payload: request });
+    for (const request of claim.pendingRequests) {
+      if (run.finished || run.cancelled) return;
+      await this.handleToolEvent(run, { type: "tool_request", payload: request });
+    }
   }
 
   private async consumeStream(path: string, run: LoomRun, cursor: "turnCursor" | "toolCursor", onEvent: (event: RawRecord) => Promise<void> | void): Promise<void> {
     try {
       for await (const event of this.client.stream(path, { signal: run.controller.signal, lastEventId: String(run[cursor]) })) {
-        if (run.finished || run.cancelled) return;
-        run[cursor] = Math.max(run[cursor], Number(event.sequence ?? 0));
+        if (this.disposed || run.finished || run.cancelled) return;
+        const sequence = Number(event.sequence ?? 0);
+        if (Number.isFinite(sequence)) run[cursor] = Math.max(run[cursor], sequence);
         const data = asRecord(event.data);
         await onEvent(data.type ? data : { type: event.event, payload: data.payload ?? data });
       }
+      if (!run.finished && !run.cancelled) throw new Error(`${path} ended before its terminal event`);
     } catch (error) {
       if (run.finished || run.cancelled || isAbortError(error)) return;
-      if (path === "/tools/events") return;
+      if (path === "/tools/events") {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        if (!run.finished && !run.cancelled) void this.consumeStream(path, run, cursor, onEvent);
+        return;
+      }
       const runtime = await this.client.request<RawRecord>("/runtime").catch(() => null);
       const activeTurnId = String(asRecord(runtime).active_turn_id ?? "");
       if (runtime && activeTurnId && (!run.turnId || activeTurnId === run.turnId)) {
@@ -621,6 +500,7 @@ export class LoomRuntimeController {
   }
 
   private async handleTurnEvent(run: LoomRun, event: RawRecord): Promise<void> {
+    if (this.disposed || run.finished || run.cancelled) return;
     const type = String(event.type ?? event.event ?? "");
     const payload = asRecord(event.payload ?? event);
     if (!run.turnId && payload.turn_id) {
@@ -664,6 +544,8 @@ export class LoomRuntimeController {
   }
 
   private async handleToolEvent(run: LoomRun, event: RawRecord): Promise<void> {
+    if (this.disposed || run.finished || run.cancelled) return;
+    if (typeof this.host.claimToolBridge === "function" && !(await this.refreshBridgeLease(run))) return;
     if (String(event.type ?? event.event ?? "") !== "tool_request") return;
     const payload = asRecord(event.payload ?? event);
     const requestId = String(payload.request_id ?? "");
@@ -676,12 +558,21 @@ export class LoomRuntimeController {
         const tool = adaptTool({ tool: payload.tool, arguments: payload.arguments });
         const name = String(tool.tool ?? "tool");
         const args = asRecord(tool.arguments);
-        if (String(payload.agent_mode) === "yolo") args._yolo_authorized = true;
         run.activeTools.set(requestId, name);
         this.syncWorking(run);
-        try {
-          result = await this.host.executeTool({ ...tool, arguments: args }, run.controller.signal);
-        } finally {
+        if (String(payload.agent_mode) === "yolo") args._yolo_authorized = true;
+        if (String(payload.agent_mode) !== "yolo" && this.requiresToolApproval(name, args)) {
+          const approved = await this.awaitToolApproval(run, requestId, name, args);
+          if (!approved) result = { ok: false, error: "Tool execution was denied by the user" };
+        }
+        if (result === undefined) {
+          try {
+            result = await this.host.executeTool({ ...tool, arguments: args }, run.controller.signal);
+          } finally {
+            run.activeTools.delete(requestId);
+            this.syncWorking(run);
+          }
+        } else {
           run.activeTools.delete(requestId);
           this.syncWorking(run);
         }
@@ -710,6 +601,62 @@ export class LoomRuntimeController {
     run.leaseTimer = null;
     run.resolve(result);
     run.controller.abort();
+    for (const [requestId, pending] of this.toolApprovals) {
+      if (pending.run === run) pending.resolve(false);
+    }
+    const release = this.host.releaseToolBridge;
+    if (release) void release.call(this.host).catch(() => undefined);
+  }
+
+  private requiresToolApproval(name: string, args: RawRecord): boolean {
+    return name === "edit_prompt"
+      || name === "initialize_prompt"
+      || name === "patch_current_prompt"
+      || name === "multi_patch_current_prompt"
+      || (name === "apply_resource" && String(args.action ?? "apply") === "apply")
+      || (name === "forge_resource" && String(args.action ?? "") === "apply");
+  }
+
+  private async awaitToolApproval(run: LoomRun, requestId: string, name: string, args: RawRecord): Promise<boolean> {
+    if (run.cancelled || run.finished || this.disposed) return false;
+    const approval: PendingToolApproval = { requestId, name, arguments: Object.fromEntries(Object.entries(args).filter(([key]) => !key.startsWith("_"))) };
+    useRuntimeStore.getState().setPendingToolApproval(approval);
+    return new Promise<boolean>((resolve) => {
+      const pending = {
+        run,
+        resolve: (approved: boolean) => {
+          this.toolApprovals.delete(requestId);
+          if (useRuntimeStore.getState().pendingToolApproval?.requestId === requestId) useRuntimeStore.getState().setPendingToolApproval(null);
+          resolve(approved);
+        },
+      };
+      this.toolApprovals.set(requestId, pending);
+      if (run.controller.signal.aborted) pending.resolve(false);
+    });
+  }
+
+  private loseBridgeLease(run: LoomRun, message: string): false {
+    const turnId = run.turnId;
+    run.cancelled = true;
+    run.cancelRequested = true;
+    useRuntimeStore.getState().setError(message);
+    this.finishRun(run, { status: "error", error: message });
+    if (turnId) void this.cancelAcceptedTurn(run, turnId);
+    return false;
+  }
+
+  private async refreshBridgeLease(run: LoomRun): Promise<boolean> {
+    if (this.disposed || run.finished || run.cancelled) return false;
+    if (typeof this.host.claimToolBridge !== "function") return true;
+    try {
+      const next = parseBridgeLease(await this.host.claimToolBridge());
+      if (!next) return this.loseBridgeLease(run, "Forge tool bridge returned an invalid lease");
+      if (!next.owned) return this.loseBridgeLease(run, "Forge tool bridge was taken by another tab");
+      run.bridgeId = next.bridgeId;
+      return true;
+    } catch {
+      return this.loseBridgeLease(run, "Forge tool bridge could not be renewed");
+    }
   }
 
   private async runTurn(input: SendMessageInput, run: LoomRun, sessionId: string): Promise<void> {
@@ -718,13 +665,25 @@ export class LoomRuntimeController {
       run.turnCursor = Number(runtime.turn_event_sequence) || 0;
       run.toolCursor = Number(runtime.tool_event_sequence) || 0;
       await this.startStreams(run);
+      if (run.cancelled || run.finished || run.controller.signal.aborted) return;
       const config = asRecord(this.host.assistantConfig());
-      const accepted = await this.client.request<RawRecord>("/turns", {
+      const acceptedTask = this.client.request<RawRecord>("/turns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: contentForMessage(input), timeout: config.timeout ?? asRecord(config.parameters).timeout ?? 120, operation_id: operationId("turn") }),
         signal: run.controller.signal,
+        body: JSON.stringify({ content: contentForMessage(input), timeout: config.timeout ?? asRecord(config.parameters).timeout ?? 120, operation_id: operationId("turn") }),
       });
+      run.acceptanceTask = acceptedTask;
+      void acceptedTask.then((late) => {
+        const lateTurnId = String(late.turn_id ?? "");
+        if (run.cancelRequested && lateTurnId) void this.cancelAcceptedTurn(run, lateTurnId);
+      }).catch(() => undefined);
+      const aborted = new Promise<RawRecord>((_, reject) => {
+        const abort = () => reject(createAbortError());
+        if (run.controller.signal.aborted) abort();
+        else run.controller.signal.addEventListener("abort", abort, { once: true });
+      });
+      const accepted = await Promise.race([acceptedTask, aborted]);
       run.turnId = String(accepted.turn_id ?? run.turnId);
       const pendingEvents = run.pendingTurnEvents.splice(0);
       for (const event of pendingEvents) await this.handleTurnEvent(run, event);
@@ -758,8 +717,12 @@ export class LoomRuntimeController {
   }
 
   async sendMessage(input: SendMessageInput): Promise<void> {
+    if (input.editOf) {
+      await this.editAndRerun(input);
+      return;
+    }
+    const sessionId = await this.ensureSession();
     if (this.activeRun && !this.activeRun.finished) {
-      const sessionId = await this.ensureSession();
       const content = contentForMessage(input);
       const response = await this.client.request<{ message: unknown }>(`/sessions/${encodeURIComponent(sessionId)}/messages`, {
         method: "POST",
@@ -769,7 +732,6 @@ export class LoomRuntimeController {
       useChatStore.getState().upsertQueue(mapQueuedMessage(response.message));
       return;
     }
-    const sessionId = await this.ensureSession();
     const userId = `user-${operationId("message")}`;
     this.snapshots.set(userId, this.host.captureForgeState());
     useChatStore.getState().appendMessage({ id: userId, role: "user", content: input.text, attachments: input.attachments, status: "complete" });
@@ -795,9 +757,15 @@ export class LoomRuntimeController {
     const run = this.activeRun;
     if (!run || run.finished) return;
     run.cancelled = true;
+    run.cancelRequested = true;
     useChatStore.getState().cancelRequest();
     this.finishRun(run, { status: "interrupted", cancelled: true });
-    if (run.turnId) void this.client.request(`/turns/${encodeURIComponent(run.turnId)}/cancel`, { method: "POST" }).catch(() => undefined);
+    if (run.turnId) void this.cancelAcceptedTurn(run, run.turnId);
+  }
+
+  private async cancelAcceptedTurn(run: LoomRun, turnId: string): Promise<void> {
+    run.turnId = turnId;
+    await this.client.request(`/turns/${encodeURIComponent(turnId)}/cancel`, { method: "POST" }).catch(() => undefined);
   }
 
   async readPrompt(): Promise<void> {
@@ -807,10 +775,26 @@ export class LoomRuntimeController {
     useChatStore.getState().appendMessage({ id: `tool-read-prompt-${Date.now()}`, role: "tool", content: detail, status: "complete", tool: { name: "read_prompt", status: "complete", detail } });
   }
 
-  async editResend(message: ChatMessage): Promise<void> {
-    const snapshot = this.snapshots.get(message.id);
+  private async editAndRerun(input: SendMessageInput): Promise<void> {
+    if (this.activeRun && !this.activeRun.finished) throw new Error("Wait for the active response before editing a message");
+    const sessionId = useRuntimeStore.getState().sessionId;
+    const messages = useChatStore.getState().messages;
+    const target = messages.find((message) => message.id === input.editOf);
+    if (!sessionId || !target || target.role !== "user" || target.branchTurnIndex === undefined) {
+      throw new Error("The message is no longer available to edit");
+    }
+    const userPosition = messages.filter((message) => message.role === "user").findIndex((message) => message.id === target.id);
+    if (userPosition < 0) throw new Error("The message is no longer available to edit");
+    const snapshot = this.snapshots.get(target.id);
     if (snapshot) this.host.restoreForgeState(snapshot);
-    await this.sendMessage({ text: message.content, attachments: message.attachments, riskMode: "normal", reasoning: "low", editOf: message.id });
+    const response = await this.client.request<BranchMetadata>(`/sessions/${encodeURIComponent(sessionId)}/edit-rerun`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: contentForMessage(input), turn_index: target.branchTurnIndex, user_position: userPosition, operation_id: operationId("edit-rerun") }),
+    });
+    useRuntimeStore.getState().setBranches(normalizeBranchMetadata(response));
+    const conversation = await this.client.request<RawRecord>(`/sessions/${encodeURIComponent(sessionId)}`);
+    this.applyConversation(conversation);
   }
 
   async removeQueuedMessage(id: string): Promise<void> {
@@ -885,12 +869,14 @@ export class LoomRuntimeController {
   }
 
   async newSession(): Promise<void> {
-    if (this.activeRun && !this.activeRun.finished) throw new Error("Cannot create a new session while a turn is active");
-    await this.client.request("/sessions/close", { method: "POST" });
-    useRuntimeStore.getState().reset();
-    useRuntimeStore.getState().setError(null);
-    useChatStore.getState().reset();
-    await this.openSession("", false);
+    await this.sessionTransition.run(async () => {
+      if (this.activeRun && !this.activeRun.finished) throw new Error("Cannot create a new session while a turn is active");
+      await this.client.request("/sessions/close", { method: "POST" });
+      useRuntimeStore.getState().reset();
+      useRuntimeStore.getState().setError(null);
+      useChatStore.getState().reset();
+      await this.openSessionInternal("", false);
+    });
   }
 
   async changeBranch(message: ChatMessage, branchIndex: number): Promise<void> {
@@ -899,7 +885,11 @@ export class LoomRuntimeController {
     const branches = useRuntimeStore.getState().branches;
     if (!sessionId || turnIndex === undefined || !branches?.turns) return;
     const turn = branches.turns.find((item) => item.turnIndex === turnIndex);
-    const branchId = turn?.branches[branchIndex];
+    const selected = turn?.selectedBranchId ?? turn?.latestBranch;
+    const selectedGroup = turn?.userGroups?.find((group) => group.branches.includes(selected ?? -1));
+    const branchId = message.role === "user"
+      ? turn?.userGroups?.[branchIndex]?.branches.at(-1)
+      : (selectedGroup?.branches ?? turn?.branches ?? [])[branchIndex];
     if (branchId === undefined) return;
     const nextView = { ...(branches.branch_view ?? {}), [String(turnIndex)]: branchId };
     const response = await this.client.request<BranchMetadata>(`/sessions/${encodeURIComponent(sessionId)}/branch-view`, {
@@ -915,7 +905,11 @@ export class LoomRuntimeController {
   async regenerate(_message: ChatMessage): Promise<void> {
     const sessionId = useRuntimeStore.getState().sessionId;
     if (!sessionId) return;
-    const response = await this.client.request<BranchMetadata>(`/sessions/${encodeURIComponent(sessionId)}/regenerate`, { method: "POST" });
+    const response = await this.client.request<BranchMetadata>(`/sessions/${encodeURIComponent(sessionId)}/regenerate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operation_id: operationId("regenerate") }),
+    });
     useRuntimeStore.getState().setBranches(response);
     const conversation = await this.client.request<RawRecord>(`/sessions/${encodeURIComponent(sessionId)}`);
     this.applyConversation(conversation);

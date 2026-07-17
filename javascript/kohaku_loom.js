@@ -89,6 +89,15 @@
         return response.ok ? response.json() : null;
     }
 
+    async function releaseAssistantToolBridge() {
+        const response = await fetch("/kohaku-loom/kt/tools/bridge", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ bridge_id: assistantBridgeId, release: true })
+        });
+        return response.ok ? response.json() : null;
+    }
+
     function assistantConfig(routeOverride) {
         const profiles = window.kohakuLoom && window.kohakuLoom.profileStore;
         if (!profiles) throw new Error("Model Profile store is unavailable");
@@ -821,6 +830,7 @@
         switchMainTab,
         assistantState,
         claimAssistantToolBridge,
+        releaseAssistantToolBridge,
         assistantConfig,
         activePromptTarget,
         promptFieldRootForTarget,

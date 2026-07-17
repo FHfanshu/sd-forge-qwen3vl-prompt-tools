@@ -67,6 +67,10 @@ export class KTClient {
   ): Promise<T> {
     const { retry: requestRetry, ...init } = options;
     const signal = init.signal ?? undefined;
+    const method = String(init.method ?? "GET").toUpperCase();
+    const retry = ["GET", "HEAD", "OPTIONS"].includes(method)
+      ? { ...this.retryDefaults, ...requestRetry }
+      : { ...this.retryDefaults, ...requestRetry, maxAttempts: 1 };
     return retryOperation(async () => {
       let response: Response;
       try {
@@ -84,11 +88,7 @@ export class KTClient {
         throw new Error(`KT response JSON decoding failed: ${String(error)}`);
       }
       return schema ? parseBoundary(schema, value, "KT response") : value as T;
-    }, {
-      ...this.retryDefaults,
-      ...requestRetry,
-      signal,
-    });
+    }, { ...retry, signal });
   }
 
   async *stream<T = unknown>(

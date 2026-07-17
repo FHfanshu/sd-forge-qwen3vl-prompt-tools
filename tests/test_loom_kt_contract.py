@@ -63,12 +63,22 @@ class KohakuTerrariumContractTests(unittest.IsolatedAsyncioTestCase):
                 "edit_prompt",
                 "initialize_prompt",
                 "forge_resource",
+                "danbooru",
+                "load_prompt_skill",
             },
             names,
         )
         edit = next(tool for tool in tools if tool.tool_name == "edit_prompt")
         self.assertIn("prompt", edit.parameters["properties"])
         self.assertNotIn("diff", edit.parameters["required"])
+
+    async def test_direct_tools_expose_danbooru_actions_and_prompt_skill_name(self):
+        tools = {tool.tool_name: tool for tool in forge_tools(ForgeToolBroker())}
+        self.assertEqual(
+            {"search", "inspect", "inspect_batch", "related"},
+            set(tools["danbooru"].parameters["properties"]["action"]["enum"]),
+        )
+        self.assertEqual(["name"], tools["load_prompt_skill"].parameters["required"])
 
     async def test_yolo_tools_are_separate_and_fail_closed_in_normal_mode(self):
         broker = ForgeToolBroker()
@@ -83,6 +93,41 @@ class KohakuTerrariumContractTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("yolo_mode_required", result.error)
         self.assertEqual([], [event for event in broker.events_after(0) if event["type"] == "tool_request"])
+
+    async def test_forge_tool_unwraps_structured_content_arguments(self):
+        broker = ForgeToolBroker()
+        tool = next(tool for tool in forge_tools(broker) if tool.tool_name == "edit_prompt")
+        arguments = {
+            "content": json.dumps(
+                {
+                    "field": "positive",
+                    "base_hash": "fnv1a:prompt",
+                    "prompt": "subject, warm lighting",
+                }
+            )
+        }
+        task = asyncio.create_task(tool._execute(arguments))
+        request = await self._wait_for_request(broker)
+        self.assertEqual(
+            {
+                "field": "positive",
+                "base_hash": "fnv1a:prompt",
+                "prompt": "subject, warm lighting",
+            },
+            request["payload"]["arguments"],
+        )
+        await broker.reply(request["payload"]["request_id"], {"ok": True, "changed": True})
+        self.assertIsNone((await task).error)
+
+    async def test_danbooru_compatibility_recovers_content_query(self):
+        tool = next(tool for tool in forge_tools(ForgeToolBroker()) if tool.tool_name == "danbooru")
+        with mock.patch(
+            "kohaku_loom.kt_tools.search_danbooru_tags",
+            return_value={"ok": True, "items": []},
+        ) as search:
+            result = await tool._execute({"content": "search from below"})
+        self.assertIsNone(result.error)
+        search.assert_called_once_with("from below", "", 12, None)
 
     async def test_yolo_request_keeps_issued_authorization_after_mode_switch(self):
         broker = ForgeToolBroker()

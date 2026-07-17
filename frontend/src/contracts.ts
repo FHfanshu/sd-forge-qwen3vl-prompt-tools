@@ -40,6 +40,8 @@ const chatAttachmentSchema = z.object({
   size: z.number().int().nonnegative().optional(),
 });
 
+const createdAtSchema = z.number().finite().nonnegative().transform((value) => Math.trunc(value)).default(() => Date.now());
+
 export const chatMessageSchema = z.object({
   id: z.string().min(1),
   role: z.enum(["user", "assistant", "system", "error", "tool"]),
@@ -61,7 +63,7 @@ export const chatMessageSchema = z.object({
   branchIndex: z.number().int().nonnegative().default(0),
   branchCount: z.number().int().positive().default(1),
   branchTurnIndex: z.number().int().nonnegative().optional(),
-  createdAt: z.number().int().nonnegative().default(() => Date.now()),
+  createdAt: createdAtSchema,
 });
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ChatMessageInput = z.input<typeof chatMessageSchema>;
@@ -79,7 +81,7 @@ export const queuedMessageSchema = z.object({
   turnId: z.string().optional(),
   sequence: z.number().int().nonnegative().optional(),
   updatedAt: z.number().finite().optional(),
-  createdAt: z.number().int().nonnegative().default(() => Date.now()),
+  createdAt: createdAtSchema,
 });
 export type QueuedMessage = z.infer<typeof queuedMessageSchema>;
 export type QueuedMessageInput = z.input<typeof queuedMessageSchema>;
@@ -259,6 +261,8 @@ export interface BranchTurn {
   latestBranch?: number;
   selectedBranchId?: number;
   branchStatuses?: Record<string, string>;
+  userGroups?: Array<{ content: string; branches: number[] }>;
+  selectedUserGroupIndex?: number;
 }
 
 export interface BranchMetadata {
@@ -289,6 +293,12 @@ export interface RuntimeSession {
   [key: string]: unknown;
 }
 
+export interface PendingToolApproval {
+  requestId: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
 export interface LoomActionHandlers {
   sendMessage(input: SendMessageInput): void | Promise<void>;
   stopRequest(): void;
@@ -298,7 +308,6 @@ export interface LoomActionHandlers {
   readPrompt(): void | Promise<void>;
   clearChat(): void;
   copyMessage(message: ChatMessage): void | Promise<void>;
-  editResend(message: ChatMessage): void | Promise<void>;
   regenerate(message: ChatMessage): void | Promise<void>;
   changeBranch(message: ChatMessage, branchIndex: number): void | Promise<void>;
   removeQueuedMessage(id: string): void;
@@ -306,6 +315,8 @@ export interface LoomActionHandlers {
   newSession(): void | Promise<void>;
   openSettings(): void;
   setRiskMode(mode: RiskMode): void | Promise<void>;
+  approveTool?(requestId?: string): void;
+  rejectTool?(requestId?: string): void;
   retryQueuedMessage?(id: string): void | Promise<void>;
   editQueuedMessage?(id: string, input: SendMessageInput): void | Promise<void>;
 }

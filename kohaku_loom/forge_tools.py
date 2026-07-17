@@ -7,6 +7,8 @@ from typing import Any, Callable
 from kohakuterrarium.modules.tool.base import BaseTool, ExecutionMode, ToolResult
 
 from .forge_bridge import ForgeToolBroker
+from .kt_tools import DanbooruTool, PromptSkillTool
+from .tool_args import unwrap_object_content
 
 
 class ForgeBridgeTool(BaseTool):
@@ -23,7 +25,11 @@ class ForgeBridgeTool(BaseTool):
 
     async def _execute(self, args: dict[str, Any], **_: Any) -> ToolResult:
         try:
-            result = await self.broker.request(self.tool_name, args, self.timeout)
+            result = await self.broker.request(
+                self.tool_name,
+                unwrap_object_content(args),
+                self.timeout,
+            )
         except TimeoutError as error:
             return ToolResult(output=str(error), error="forge_tool_timeout")
         except asyncio.CancelledError:
@@ -235,6 +241,8 @@ def forge_tools(broker: ForgeToolBroker, timeout: float = 300.0) -> list[BaseToo
         EditPromptTool(broker, timeout),
         InitializePromptTool(broker, timeout),
         ResourceTool(broker, timeout),
+        DanbooruTool(),
+        PromptSkillTool(),
     ]
 
 

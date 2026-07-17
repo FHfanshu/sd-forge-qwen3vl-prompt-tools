@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 
@@ -10,6 +13,10 @@ _STATE_KEY = "loom:message_queue_v1"
 _TERMINAL_STATES = {"delivered", "cancelled"}
 _TERMINAL_RETAIN = 50
 _OPERATION_RETAIN = 200
+_QUEUE_LOCK_TIMEOUT = 10.0
+_QUEUE_LOCKS: dict[str, threading.RLock] = {}
+_QUEUE_LOCKS_GUARD = threading.Lock()
+_HELD_EXTERNAL_LOCKS = threading.local()
 
 
 def _json_value(value: Any) -> Any:
@@ -22,9 +29,11 @@ class LoomMessageQueue:
     def __init__(self, store: Any, agent_name: str):
         self.store = store
         self.agent_name = agent_name
+        self._lock_key = self._resource_key(store)
 
     def list(self) -> list[dict[str, Any]]:
-        return [dict(item) for item in self._load()["messages"]]
+        with self._locked():
+            return [dict(item) for item in self._load()["messages"]]
 
     def active(self) -> list[dict[str, Any]]:
         return [item for item in self.list() if item.get("state") not in _TERMINAL_STATES]
@@ -41,51 +50,55 @@ class LoomMessageQueue:
     ) -> dict[str, Any]:
         if kind not in {"primary", "guide"}:
             raise ValueError("message kind must be primary or guide")
-        state = self._load()
-        state["sequence"] += 1
-        item = {
-            "message_id": uuid.uuid4().hex,
-            "sequence": state["sequence"],
-            "kind": kind,
-            "state": "pending" if kind == "primary" else "guide_waiting",
-            "content": _json_value(content),
-            "display_content": str(display_content or ""),
-            "attachments": _json_value(attachments or []),
-            "created_at": time.time(),
-            "updated_at": time.time(),
-            "turn_id": str(turn_id or ""),
-            "claimed_at": None,
-            "error": "",
-            "operation_id": str(operation_id or ""),
-        }
-        state["messages"].append(item)
-        self._save(state)
-        self._event("loom_message_queued", item)
-        return dict(item)
+        with self._locked():
+            state = self._load()
+            state["sequence"] += 1
+            item = {
+                "message_id": uuid.uuid4().hex,
+                "sequence": state["sequence"],
+                "kind": kind,
+                "state": "pending" if kind == "primary" else "guide_waiting",
+                "content": _json_value(content),
+                "display_content": str(display_content or ""),
+                "attachments": _json_value(attachments or []),
+                "created_at": time.time(),
+                "updated_at": time.time(),
+                "turn_id": str(turn_id or ""),
+                "claimed_at": None,
+                "error": "",
+                "operation_id": str(operation_id or ""),
+            }
+            state["messages"].append(item)
+            self._save(state)
+            self._event("loom_message_queued", item)
+            return dict(item)
 
     def get(self, message_id: str) -> dict[str, Any]:
-        for item in self._load()["messages"]:
-            if item.get("message_id") == message_id:
-                return dict(item)
-        raise KeyError(message_id)
+        with self._locked():
+            for item in self._load()["messages"]:
+                if item.get("message_id") == message_id:
+                    return dict(item)
+            raise KeyError(message_id)
 
     def by_operation(self, operation_id: str) -> dict[str, Any] | None:
         operation_id = str(operation_id or "")
         if not operation_id:
             return None
-        message = next(
-            (dict(item) for item in self._load()["messages"] if item.get("operation_id") == operation_id),
-            None,
-        )
-        if message is not None:
-            return message
-        return next(
-            (dict(item) for item in self._load()["operations"] if item.get("operation_id") == operation_id),
-            None,
-        )
+        with self._locked():
+            message = next(
+                (dict(item) for item in self._load()["messages"] if item.get("operation_id") == operation_id),
+                None,
+            )
+            if message is not None:
+                return message
+            return next(
+                (dict(item) for item in self._load()["operations"] if item.get("operation_id") == operation_id),
+                None,
+            )
 
     def operations(self) -> list[dict[str, Any]]:
-        return [dict(item) for item in self._load()["operations"]]
+        with self._locked():
+            return [dict(item) for item in self._load()["operations"]]
 
     def edit(
         self,
@@ -94,84 +107,144 @@ class LoomMessageQueue:
         display_content: str = "",
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        state, item = self._mutable(message_id)
-        if item["state"] not in {"pending", "guide_waiting"}:
-            raise RuntimeError("message is already claimed")
-        item["content"] = _json_value(content)
-        item["display_content"] = str(display_content or item.get("display_content") or "")
-        if attachments is not None:
-            item["attachments"] = _json_value(attachments)
-        item["updated_at"] = time.time()
-        item["error"] = ""
-        self._save(state)
-        self._event("loom_message_edited", item)
-        return dict(item)
+        with self._locked():
+            state, item = self._mutable(message_id)
+            if item["state"] not in {"pending", "guide_waiting"}:
+                raise RuntimeError("message is already claimed")
+            item["content"] = _json_value(content)
+            item["display_content"] = str(display_content or item.get("display_content") or "")
+            if attachments is not None:
+                item["attachments"] = _json_value(attachments)
+            item["updated_at"] = time.time()
+            item["error"] = ""
+            self._save(state)
+            self._event("loom_message_edited", item)
+            return dict(item)
 
     def cancel(self, message_id: str) -> dict[str, Any]:
-        state, item = self._mutable(message_id)
-        if item["state"] not in {"pending", "guide_waiting"}:
-            raise RuntimeError("message is already claimed")
-        item["state"] = "cancelled"
-        item["updated_at"] = time.time()
-        self._save(state)
-        self._event("loom_message_cancelled", item)
-        return dict(item)
+        with self._locked():
+            state, item = self._mutable(message_id)
+            if item["state"] not in {"pending", "guide_waiting"}:
+                raise RuntimeError("message is already claimed")
+            item["state"] = "cancelled"
+            item["updated_at"] = time.time()
+            self._save(state)
+            self._event("loom_message_cancelled", item)
+            return dict(item)
 
     def mark(self, message_id: str, target: str, **updates: Any) -> dict[str, Any]:
-        state, item = self._mutable(message_id)
-        item["state"] = target
-        item["updated_at"] = time.time()
-        item.update(_json_value(updates))
-        self._save(state)
-        self._event(f"loom_message_{target}", item)
-        return dict(item)
+        with self._locked():
+            state, item = self._mutable(message_id)
+            item["state"] = target
+            item["updated_at"] = time.time()
+            item.update(_json_value(updates))
+            self._save(state)
+            self._event(f"loom_message_{target}", item)
+            return dict(item)
 
     def next_primary(self) -> dict[str, Any] | None:
-        candidates = [
-            item for item in self._load()["messages"]
-            if item.get("kind") == "primary" and item.get("state") in {"pending", "failed"}
-        ]
-        return dict(min(candidates, key=lambda item: item["sequence"])) if candidates else None
+        with self._locked():
+            candidates = [
+                item for item in self._load()["messages"]
+                if item.get("kind") == "primary" and item.get("state") in {"pending", "failed"}
+            ]
+            return dict(min(candidates, key=lambda item: item["sequence"])) if candidates else None
 
     def pending_primary_count(self) -> int:
-        return sum(
-            item.get("kind") == "primary" and item.get("state") in {"pending", "failed"}
-            for item in self._load()["messages"]
-        )
+        with self._locked():
+            return sum(
+                item.get("kind") == "primary" and item.get("state") in {"pending", "failed"}
+                for item in self._load()["messages"]
+            )
 
     def waiting_guides(self) -> list[dict[str, Any]]:
-        return [
-            dict(item) for item in self._load()["messages"]
-            if item.get("kind") == "guide" and item.get("state") == "guide_waiting"
-        ]
+        with self._locked():
+            return [
+                dict(item) for item in self._load()["messages"]
+                if item.get("kind") == "guide" and item.get("state") == "guide_waiting"
+            ]
 
     def has_failed_primary(self) -> bool:
-        return any(
-            item.get("kind") == "primary" and item.get("state") == "failed"
-            for item in self._load()["messages"]
-        )
+        with self._locked():
+            return any(
+                item.get("kind") == "primary" and item.get("state") == "failed"
+                for item in self._load()["messages"]
+            )
 
     def recover_interrupted(self) -> list[dict[str, Any]]:
-        state = self._load()
-        changed: list[dict[str, Any]] = []
-        for item in state["messages"]:
-            if item.get("state") == "guide_waiting":
-                item["kind"] = "primary"
-                item["state"] = "pending"
-                item["updated_at"] = time.time()
-                changed.append(dict(item))
-            elif item.get("state") in {"running", "claimed"}:
-                if item.get("state") == "claimed":
+        with self._locked():
+            state = self._load()
+            changed: list[dict[str, Any]] = []
+            for item in state["messages"]:
+                if item.get("state") == "guide_waiting":
                     item["kind"] = "primary"
-                item["state"] = "failed"
-                item["error"] = "Runtime interrupted before the turn completed"
-                item["updated_at"] = time.time()
-                changed.append(dict(item))
-        if changed:
-            self._save(state)
-            for item in changed:
-                self._event("loom_message_recovered", item)
-        return changed
+                    item["state"] = "pending"
+                    item["updated_at"] = time.time()
+                    changed.append(dict(item))
+                elif item.get("state") in {"running", "claimed"}:
+                    if item.get("state") == "claimed":
+                        item["kind"] = "primary"
+                    item["state"] = "failed"
+                    item["error"] = "Runtime interrupted before the turn completed"
+                    item["updated_at"] = time.time()
+                    changed.append(dict(item))
+            if changed:
+                self._save(state)
+                for item in changed:
+                    self._event("loom_message_recovered", item)
+            return changed
+
+    @staticmethod
+    def _resource_key(store: Any) -> str:
+        path = getattr(store, "path", None)
+        if isinstance(path, (str, Path)):
+            try:
+                return f"path:{Path(path).resolve()}"
+            except OSError:
+                return f"path:{path}"
+        return f"store:{id(store)}"
+
+    @contextmanager
+    def _locked(self):
+        with _QUEUE_LOCKS_GUARD:
+            thread_lock = _QUEUE_LOCKS.setdefault(self._lock_key, threading.RLock())
+        with thread_lock:
+            held = getattr(_HELD_EXTERNAL_LOCKS, "locks", None)
+            if held is None:
+                held = {}
+                _HELD_EXTERNAL_LOCKS.locks = held
+            if self._lock_key in held:
+                yield
+                return
+            external = self._external_lock()
+            if external is None:
+                yield
+                return
+            try:
+                deadline = time.monotonic() + _QUEUE_LOCK_TIMEOUT
+                while True:
+                    try:
+                        external.acquire()
+                        break
+                    except Exception as error:
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("Loom message queue is busy") from error
+                        time.sleep(0.05)
+                held[self._lock_key] = external
+                yield
+            finally:
+                held.pop(self._lock_key, None)
+                external.release()
+
+    def _external_lock(self):
+        path = getattr(self.store, "path", None)
+        if not isinstance(path, (str, Path)):
+            return None
+        try:
+            from kohakuterrarium.utils.file_lock import FileLock
+        except ImportError:
+            return None
+        return FileLock(str(Path(path).with_name(Path(path).name + ".loom-queue.lock")))
 
     def _load(self) -> dict[str, Any]:
         try:

@@ -7,12 +7,13 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from typing import Any, Callable
 
 from kohaku_loom.forge_bridge import ForgeToolBroker
 from kohaku_loom.profile_store import LoomProfileStore
 from kohaku_loom.runtime_paths import LoomRuntimePaths
 from kohaku_loom.sidecar import branch_runtime
+from kohaku_loom.sidecar.event_log import RuntimeEventLog
 from kohaku_loom.sidecar.message_queue import LoomMessageQueue
 from kohaku_loom.sidecar.session_metadata import SessionMetadataQueue, metadata_payload, read_metadata, source_messages
 
@@ -20,54 +21,6 @@ from kohaku_loom.sidecar.session_metadata import SessionMetadataQueue, metadata_
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _AGENT_MODES = {"normal", "yolo"}
 _YOLO_TOOL_NAMES = {"read_txt2img_state", "apply_txt2img_patch"}
-
-
-class RuntimeEventLog:
-    def __init__(self, limit: int = 2000, on_publish: Callable[[], None] | None = None):
-        self._limit = max(20, limit)
-        self._on_publish = on_publish
-        self._events: list[dict[str, Any]] = []
-        self._condition = asyncio.Condition()
-        self._sequence = 0
-
-    @property
-    def sequence(self) -> int:
-        return self._sequence
-
-    async def publish(self, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-        self._sequence += 1
-        event = {
-            "sequence": self._sequence,
-            "type": event_type,
-            "created_at": time.time(),
-            "payload": json.loads(json.dumps(payload, ensure_ascii=False, default=str)),
-        }
-        self._events.append(event)
-        if len(self._events) > self._limit:
-            del self._events[: len(self._events) - self._limit]
-        if self._on_publish is not None:
-            self._on_publish()
-        async with self._condition:
-            self._condition.notify_all()
-        return event
-
-    def after(self, sequence: int) -> list[dict[str, Any]]:
-        return [dict(event) for event in self._events if int(event["sequence"]) > int(sequence)]
-
-    async def subscribe(self, sequence: int = 0, keepalive: float = 15.0) -> AsyncIterator[dict[str, Any] | None]:
-        cursor = int(sequence)
-        while True:
-            events = self.after(cursor)
-            if events:
-                for event in events:
-                    cursor = int(event["sequence"])
-                    yield event
-                continue
-            try:
-                async with self._condition:
-                    await asyncio.wait_for(self._condition.wait(), timeout=max(1.0, keepalive))
-            except asyncio.TimeoutError:
-                yield None
 
 
 @dataclass
@@ -460,12 +413,17 @@ class LoomSidecarRuntime:
     async def replay_branch_view(self, session_id: str, branch_view: Any = None) -> dict[str, Any]:
         return await branch_runtime.replay(self, session_id, branch_view)
 
-    async def regenerate_last_response(self, session_id: str) -> dict[str, Any]:
-        return await branch_runtime.regenerate(self, session_id)
+    async def regenerate_last_response(self, session_id: str, operation_id: str = "") -> dict[str, Any]:
+        return await branch_runtime.regenerate(self, session_id, operation_id)
+
+    async def edit_and_rerun_message(self, session_id: str, content: Any, turn_index: int, user_position: int, operation_id: str = "") -> dict[str, Any]:
+        return await branch_runtime.edit_and_rerun(self, session_id, content, turn_index, user_position, operation_id)
 
     async def cancel_turn(self, turn_id: str) -> str:
         async with self._lock:
             if not self.has_active_turn or turn_id != self._turn_id or self.active is None:
+                return "unknown"
+            if self._turn_snapshot.get("terminal") is not None:
                 return "unknown"
             self._cancel_requested = True
             self.active.creature.agent.interrupt()
@@ -789,6 +747,15 @@ class LoomSidecarRuntime:
         turn_id: str,
         terminal: dict[str, Any],
     ) -> None:
+        async with self._lock:
+            await self._settle_turn_locked(session, turn_id, terminal)
+
+    async def _settle_turn_locked(
+        self,
+        session: ActiveSession,
+        turn_id: str,
+        terminal: dict[str, Any],
+    ) -> None:
         try:
             queue = self._queue(session)
         except RuntimeError:
@@ -796,9 +763,10 @@ class LoomSidecarRuntime:
                 self._paused = True
             return
         successful = str(terminal.get("status") or "").lower() in {"ok", "completed"}
+        interrupted = bool(terminal.get("interrupted_by_user"))
         if self._active_message_id:
-            target = "delivered" if successful and not self._cancel_requested else "failed"
-            error = terminal.get("error") or ("cancelled" if self._cancel_requested else terminal.get("status") or "failed")
+            target = "delivered" if successful and not self._cancel_requested and not interrupted else "failed"
+            error = terminal.get("error") or ("cancelled" if self._cancel_requested or interrupted else terminal.get("status") or "failed")
             item = queue.mark(
                 self._active_message_id,
                 target,
@@ -830,7 +798,7 @@ class LoomSidecarRuntime:
                         {"session_id": session.session_id, "message": claimed},
                     )
 
-            guide_success = successful and not self._cancel_requested
+            guide_success = successful and not self._cancel_requested and not interrupted
             for claimed in queue.list():
                 if claimed.get("kind") != "guide" or claimed.get("state") != "claimed" or claimed.get("turn_id") != turn_id:
                     continue
@@ -842,7 +810,7 @@ class LoomSidecarRuntime:
                 )
                 await self.events.publish("message_updated", {"session_id": session.session_id, "message": settled})
 
-        if successful and not self._cancel_requested:
+        if successful and not self._cancel_requested and not interrupted:
             self._paused = False
             self._resume_agent(session)
             self._schedule_drain()

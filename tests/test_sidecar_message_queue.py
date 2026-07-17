@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -19,6 +20,12 @@ class FakeStore:
 
     def append_event(self, agent, event_type, data):
         self.events.append((agent, event_type, dict(data)))
+
+
+class PathStore(FakeStore):
+    def __init__(self, path):
+        super().__init__()
+        self.path = str(path)
 
 
 class LoomMessageQueueTests(unittest.TestCase):
@@ -114,6 +121,30 @@ class LoomMessageQueueTests(unittest.TestCase):
 
         self.assertEqual(original["message_id"], replay["message_id"])
         self.assertEqual("delivered", replay["state"])
+
+    def test_concurrent_path_backed_enqueues_keep_all_sequences(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = PathStore(Path(directory) / "session.kohakutr")
+            queues = [LoomMessageQueue(store, "loom") for _ in range(2)]
+            results = []
+            errors = []
+
+            def enqueue(queue, index):
+                try:
+                    results.append(queue.enqueue(f"message-{index}", kind="primary"))
+                except BaseException as error:  # noqa: BLE001
+                    errors.append(error)
+
+            threads = [threading.Thread(target=enqueue, args=(queues[index % 2], index)) for index in range(20)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        self.assertEqual([], errors)
+        self.assertEqual(20, len(results))
+        self.assertEqual(list(range(1, 21)), sorted(item["sequence"] for item in results))
+        self.assertEqual(20, len(LoomMessageQueue(store, "loom").list()))
 
 
 if __name__ == "__main__":

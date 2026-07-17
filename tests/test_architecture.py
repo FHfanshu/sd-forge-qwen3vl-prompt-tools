@@ -14,6 +14,7 @@ SKIP_PARTS = {
     ".pytest_cache",
     "__pycache__",
     "bin",
+    "coverage",
     "node_modules",
     "test-results",
 }
@@ -108,7 +109,7 @@ class ArchitectureTests(unittest.TestCase):
         self.assertEqual([], oversized)
 
     def test_package_import_graph_has_no_cycles(self):
-        files = sorted(PACKAGE.glob("*.py"))
+        files = sorted(PACKAGE.rglob("*.py"))
         known_modules = {module_name(path) for path in files}
         graph = {module_name(path): package_imports(path, known_modules) for path in files}
         cycle = find_cycle(graph)
@@ -116,7 +117,7 @@ class ArchitectureTests(unittest.TestCase):
 
     def test_package_modules_do_not_import_generic_facade(self):
         offenders = []
-        for path in sorted(PACKAGE.glob("*.py")):
+        for path in sorted(PACKAGE.rglob("*.py")):
             if path.name == "generic.py":
                 continue
             deps = package_imports(path, {"kohaku_loom.generic"})

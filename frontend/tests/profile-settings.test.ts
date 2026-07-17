@@ -7,8 +7,10 @@ import { useProfileStore } from "../src/stores/profiles";
 import { useUiStore } from "../src/stores/ui";
 
 beforeEach(() => {
+  document.body.removeAttribute("style");
   useProfileStore.getState().reset();
   useUiStore.getState().reset();
+  useI18nStore.getState().clearManualLocale();
   useI18nStore.getState().reset();
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });

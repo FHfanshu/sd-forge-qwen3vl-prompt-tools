@@ -53,7 +53,6 @@ export const noopActions: LoomActionHandlers = {
   copyMessage: async (message) => {
     if (typeof navigator !== "undefined" && navigator.clipboard) await navigator.clipboard.writeText(message.content);
   },
-  editResend: () => undefined,
   regenerate: () => undefined,
   changeBranch: () => undefined,
   removeQueuedMessage: () => undefined,
@@ -61,4 +60,6 @@ export const noopActions: LoomActionHandlers = {
   newSession: () => undefined,
   openSettings: () => undefined,
   setRiskMode: () => undefined,
+  approveTool: () => undefined,
+  rejectTool: () => undefined,
 };

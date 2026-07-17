@@ -1,6 +1,7 @@
 import base64
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -49,10 +50,54 @@ class SecurityBoundaryTests(unittest.TestCase):
         is_file.assert_not_called()
 
     def test_model_paths_reject_unc_before_filesystem_access(self):
-        with patch.object(model_paths.Path, "exists") as exists:
+        with patch.object(model_paths.Path, "is_file") as is_file:
             with self.assertRaisesRegex(RuntimeError, "远程"):
                 model_paths.resolve_vision_model_pair("自定义", r"\\attacker\share\model.gguf", "", False)
-        exists.assert_not_called()
+        is_file.assert_not_called()
+
+    def test_model_paths_reject_directories_as_model_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model_dir = root / "model.gguf"
+            mmproj_dir = root / "mmproj-model.gguf"
+            model_dir.mkdir()
+            mmproj_dir.mkdir()
+
+            with self.assertRaisesRegex(RuntimeError, "找不到"):
+                model_paths.resolve_vision_model_pair("自定义", str(model_dir), "", False)
+            with self.assertRaisesRegex(RuntimeError, "找不到"):
+                model_paths.resolve_vision_model_pair("自定义", str(root / "model.bin"), str(mmproj_dir), False)
+
+    def test_related_mmproj_ignores_directory_named_like_a_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "model.gguf"
+            model.touch()
+            (root / "00-mmproj.gguf").mkdir()
+            valid = root / "01-mmproj.gguf"
+            valid.touch()
+
+            self.assertEqual(str(valid), model_paths._find_related_mmproj(model))
+
+    def test_zip_extraction_rejects_windows_traversal_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "payload.zip"
+            target = root / "target"
+            target.mkdir()
+            with zipfile.ZipFile(archive, "w") as zip_file:
+                zip_file.writestr(r"..\outside.exe", b"bad")
+
+            with self.assertRaisesRegex(RuntimeError, "可疑路径"):
+                model_paths._safe_extract_zip(archive, target)
+
+            with zipfile.ZipFile(archive, "w") as zip_file:
+                info = zipfile.ZipInfo("link")
+                info.external_attr = (0o120777 << 16) | 0xA0000000
+                zip_file.writestr(info, "outside.txt")
+
+            with self.assertRaisesRegex(RuntimeError, "可疑路径"):
+                model_paths._safe_extract_zip(archive, target)
 
     def test_inline_image_rejects_decoded_payload_over_limit(self):
         raw = base64.b64encode(b"123456789").decode("ascii")

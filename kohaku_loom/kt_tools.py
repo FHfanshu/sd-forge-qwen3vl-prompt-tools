@@ -12,6 +12,30 @@ from .danbooru import (
     related_danbooru_tags,
     search_danbooru_tags,
 )
+from .prompt_skills import load_prompt_skill
+from .tool_args import unwrap_object_content
+
+
+def _compat_danbooru_arguments(args: dict[str, Any]) -> dict[str, Any]:
+    normalized = unwrap_object_content(args)
+    if normalized.get("action"):
+        return normalized
+
+    content = str(normalized.get("content") or "").strip()
+    if not content:
+        return normalized
+    command, _, query = content.partition(" ")
+    command = command.lower()
+    query = query.strip()
+    if command in {"search", "find", "lookup"} and query:
+        normalized.update({"action": "search", "query": query})
+    elif command == "inspect" and query and "," not in query:
+        normalized.update({"action": "inspect", "name": query})
+    elif command == "related" and query:
+        normalized.update({"action": "related", "name": query})
+    else:
+        normalized.update({"action": "search", "query": query or content})
+    return normalized
 
 
 class DanbooruTool(BaseTool):
@@ -46,6 +70,7 @@ class DanbooruTool(BaseTool):
     }
 
     async def _execute(self, args: dict[str, Any], **_: Any) -> ToolResult:
+        args = _compat_danbooru_arguments(args)
         action = str(args.get("action") or "").strip()
         try:
             if action == "search":
@@ -78,5 +103,37 @@ class DanbooruTool(BaseTool):
             else:
                 return ToolResult(output="Unsupported Danbooru action.", error="unsupported_action")
             return ToolResult(output=json.dumps(value, ensure_ascii=False))
+        except Exception as error:
+            return ToolResult(output=str(error), error=type(error).__name__)
+
+
+class PromptSkillTool(BaseTool):
+    @property
+    def tool_name(self) -> str:
+        return "load_prompt_skill"
+
+    @property
+    def description(self) -> str:
+        return "Load a named prompt-engineering skill reference for the current task."
+
+    @property
+    def execution_mode(self) -> ExecutionMode:
+        return ExecutionMode.DIRECT
+
+    parameters = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+        },
+        "required": ["name"],
+    }
+
+    async def _execute(self, args: dict[str, Any], **_: Any) -> ToolResult:
+        try:
+            value = await asyncio.to_thread(load_prompt_skill, str(args.get("name") or ""))
+            output = json.dumps(value, ensure_ascii=False)
+            if isinstance(value, dict) and value.get("ok") is False:
+                return ToolResult(output=output, error=str(value.get("error") or "prompt_skill_unavailable"))
+            return ToolResult(output=output)
         except Exception as error:
             return ToolResult(output=str(error), error=type(error).__name__)

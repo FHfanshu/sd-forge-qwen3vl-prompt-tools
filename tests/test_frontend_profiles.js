@@ -81,6 +81,7 @@ test("serialize and load normalize data without sharing references", () => {
     const saved = tools.profileStore.save(original);
     saved.profiles[0].api_key = "changed-outside";
     assert.equal(tools.profileStore.load().profiles[0].api_key, "moyuu-secret");
+    assert.equal(storage.getItem(tools.PROFILE_STORAGE_KEY).includes("moyuu-secret"), false);
     assert.deepEqual(storage.writes.map(([key]) => key), [tools.PROFILE_STORAGE_KEY]);
 });
 
@@ -196,6 +197,7 @@ test("legacy migration preserves current config, keys, local paths, and active r
     assert.equal(local.n_ctx, 32768);
     assert.equal(local.n_gpu_layers, 42);
     assert.equal(storage.getItem("loom_assistant_api_key_openai"), "openai-secret");
+    assert.equal(storage.getItem(tools.PROFILE_STORAGE_KEY).includes("openai-secret"), false);
     assert.deepEqual(new Set(storage.writes.map(([key]) => key)), new Set([tools.PROFILE_STORAGE_KEY]));
 
     storage.writes.length = 0;
@@ -333,9 +335,11 @@ test("refresh persistence retains profile selection and independent keys", () =>
 
     tools = loadModule(storage);
     assert.equal(tools.profileStore.current().id, "deepseek");
-    assert.equal(tools.profileStore.current().api_key, "key-b");
+    assert.equal(tools.profileStore.current().api_key, "");
+    assert.equal(tools.profileStore.current().has_api_key, true);
     assert.equal(tools.profileStore.teacher().id, "local-llama-once");
     assert.equal(tools.profileStore.session().id, "local-llama-endpoint");
     assert.throws(() => tools.profileStore.setSession("deepseek"), /non-local profile/);
-    assert.equal(tools.profileStore.load().profiles.find((profile) => profile.id === "gemini").api_key, "key-a");
+    assert.equal(tools.profileStore.load().profiles.find((profile) => profile.id === "gemini").api_key, "");
+    assert.equal(tools.profileStore.load().profiles.find((profile) => profile.id === "gemini").has_api_key, true);
 });

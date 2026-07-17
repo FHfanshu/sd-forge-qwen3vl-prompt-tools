@@ -76,7 +76,7 @@ async function installMockHost(page: Page): Promise<void> {
     });
     const empty = () => new Response(null, { status: 204 });
     let queued = false;
-    const queuedMessage = () => ({ message_id: "queued-1", display_content: "Queued follow-up", content: "Queued follow-up", attachments: [], state: "pending", created_at: Date.now() });
+  const queuedMessage = () => ({ message_id: "queued-1", display_content: "Queued follow-up", content: "Queued follow-up", attachments: [], state: "pending", created_at: Date.now() / 1000 });
     const sse = (slow: boolean, signal?: AbortSignal | null) => {
       const encoder = new TextEncoder();
       let closed = false;
@@ -153,8 +153,10 @@ async function installMockHost(page: Page): Promise<void> {
         executeAssistantTool: async () => ({ ok: true }),
         assistantConfig: () => ({ profile_id: "mock-remote", timeout: 30, parameters: { timeout: 30 } }),
         profileStore,
-        claimToolBridge: async () => ({ owned: true, bridge_id: "mock-bridge", pending_requests: [] }),
-        claimAssistantToolBridge: async () => ({ owned: true, bridge_id: "mock-bridge", pending_requests: [] }),
+         claimToolBridge: async () => ({ owned: true, bridge_id: "mock-bridge", pending_requests: [] }),
+         releaseToolBridge: async () => ({ released: true }),
+         claimAssistantToolBridge: async () => ({ owned: true, bridge_id: "mock-bridge", pending_requests: [] }),
+         releaseAssistantToolBridge: async () => ({ released: true }),
         syncProfiles: async () => ({}),
         profileChat: async () => ({ text: "OK" }),
         listLegacySessions: async () => ({ sessions: [{ id: "legacy-1", title: "Legacy prompt session", preview: "Imported history", message_count: 1, modified_at: 1_690_000_000 }] }),
@@ -230,6 +232,15 @@ test("mounted desktop UI exercises chat, history, profiles, and attachments", as
   await expect(page.getByText("Review this composition", { exact: true })).toBeVisible();
   await expect(page.getByText("Mock assistant reply", { exact: true })).toBeVisible();
   await expect(page.getByText("12 in · 4 out · 0.2s", { exact: true })).toBeVisible();
+  const userMessage = page.locator(".kl-message-user").filter({ hasText: "Review this composition" });
+  await expect(userMessage).toBeVisible();
+  const userMessageStyle = await userMessage.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { alignSelf: style.alignSelf, backgroundColor: style.backgroundColor };
+  });
+  expect(userMessageStyle.alignSelf).toBe("flex-end");
+  expect(userMessageStyle.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+  await capture(page, "chat-messages");
 
   await page.getByRole("button", { name: "Open settings" }).click();
   const settings = page.getByRole("dialog", { name: "Model profiles" });

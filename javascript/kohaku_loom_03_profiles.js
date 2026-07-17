@@ -340,7 +340,13 @@
         const normalized = normalizeProfileState(state);
         const errors = profileStateValidationErrors(normalized);
         if (errors.length) throw new TypeError(errors.join("; "));
-        return JSON.stringify(normalized);
+        const persisted = deepCloneProfileData(normalized);
+        persisted.profiles = persisted.profiles.map(function (profile) {
+            profile.has_api_key = Boolean(profile.api_key || profile.has_api_key);
+            profile.api_key = "";
+            return profile;
+        });
+        return JSON.stringify(persisted);
     }
 
     function deserializeProfileState(serialized) {
@@ -517,17 +523,55 @@
             throw new TypeError("Profile store requires localStorage-compatible storage");
         }
 
+        const ephemeralApiKeys = new Map();
+
+        function rememberEphemeralKeys(state) {
+            (state.profiles || []).forEach(function (profile) {
+                const apiKey = String(profile.api_key || "");
+                if (apiKey) ephemeralApiKeys.set(profile.id, apiKey);
+            });
+            return state;
+        }
+
+        function stateWithEphemeralKeys(state) {
+            rememberEphemeralKeys(state);
+            const result = deepCloneProfileData(state);
+            result.profiles = result.profiles.map(function (profile) {
+                const next = profile;
+                next.api_key = ephemeralApiKeys.get(next.id) || "";
+                next.has_api_key = Boolean(next.api_key || next.has_api_key);
+                return next;
+            });
+            return result;
+        }
+
+        function sanitizedState(state) {
+            const result = deepCloneProfileData(state);
+            result.profiles = result.profiles.map(function (profile) {
+                const next = profile;
+                const apiKey = String(next.api_key || "");
+                if (apiKey) ephemeralApiKeys.set(next.id, apiKey);
+                next.has_api_key = Boolean(apiKey || next.has_api_key || ephemeralApiKeys.get(next.id));
+                next.api_key = "";
+                return next;
+            });
+            return result;
+        }
+
         function save(state) {
             const normalized = normalizeProfileState(state);
-            storage.setItem(PROFILE_STORAGE_KEY, serializeProfileState(normalized));
-            return deepCloneProfileData(normalized);
+            const sanitized = sanitizedState(normalized);
+            storage.setItem(PROFILE_STORAGE_KEY, serializeProfileState(sanitized));
+            return stateWithEphemeralKeys(normalized);
         }
 
         function load() {
             const serialized = storage.getItem(PROFILE_STORAGE_KEY);
             if (serialized !== null) {
                 try {
-                    return deepCloneProfileData(deserializeProfileState(serialized));
+                    const parsed = deserializeProfileState(serialized);
+                    const hasPlaintextKey = parsed.profiles.some(function (profile) { return Boolean(profile.api_key); });
+                    return hasPlaintextKey ? save(parsed) : stateWithEphemeralKeys(parsed);
                 } catch (_error) {
                     return createDefaultProfileState();
                 }
@@ -684,6 +728,7 @@
 
         function scrubApiKeys() {
             const state = load();
+            ephemeralApiKeys.clear();
             state.profiles = state.profiles.map(function (profile) {
                 const next = deepCloneProfileData(profile);
                 next.has_api_key = Boolean(next.api_key || next.has_api_key);

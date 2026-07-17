@@ -13,6 +13,51 @@ function controllerWith(
 }
 
 describe("runtime session history", () => {
+  it("routes edited composer sends through native edit-and-rerun and restores version metadata", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    useRuntimeStore.getState().setSession({ session_id: "kt-1" });
+    useChatStore.getState().setMessages([
+      { id: "user-1", role: "user", content: "Original", status: "complete", attachments: [], branchIndex: 0, branchCount: 1, branchTurnIndex: 1, createdAt: 1 },
+      { id: "assistant-1", role: "assistant", content: "Old answer", status: "complete", attachments: [], branchIndex: 0, branchCount: 1, branchTurnIndex: 1, createdAt: 2 },
+    ]);
+    const host = { restoreForgeState: vi.fn() } as never;
+    let selectedOriginal = false;
+    const request = vi.fn((path: string, _options?: RequestInit) => {
+      if (path === "/sessions/kt-1/edit-rerun") return Promise.resolve({
+        branch_view: { "1": 2 },
+        turns: [{ turn_index: 1, branches: [1, 2], selected_branch_id: 2, user_groups: [{ content: "Original", branches: [1] }, { content: "Edited", branches: [2] }], selected_user_group_index: 1 }],
+      });
+      if (path === "/sessions/kt-1/branch-view") {
+        selectedOriginal = true;
+        return Promise.resolve({ branch_view: { "1": 1 }, turns: [{ turn_index: 1, branches: [1, 2], selected_branch_id: 1, user_groups: [{ content: "Original", branches: [1] }, { content: "Edited", branches: [2] }], selected_user_group_index: 0 }] });
+      }
+      if (path === "/sessions/kt-1") return Promise.resolve({
+        branches: { branch_view: { "1": selectedOriginal ? 1 : 2 }, turns: [{ turn_index: 1, branches: [1, 2], selected_branch_id: selectedOriginal ? 1 : 2, user_groups: [{ content: "Original", branches: [1] }, { content: "Edited", branches: [2] }], selected_user_group_index: selectedOriginal ? 0 : 1 }] },
+        messages: selectedOriginal
+          ? [{ role: "user", content: "Original" }, { role: "assistant", content: "Old answer" }]
+          : [{ role: "user", content: "Edited" }, { role: "assistant", content: "New answer" }],
+      });
+      throw new Error(`unexpected path: ${path}`);
+    });
+    const controller = new LoomRuntimeController(host, { request } as never);
+
+    await controller.sendMessage({ text: "Edited", attachments: [], riskMode: "normal", reasoning: "low", editOf: "user-1" });
+
+    expect(request).toHaveBeenNthCalledWith(1, "/sessions/kt-1/edit-rerun", expect.objectContaining({ method: "POST" }));
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toMatchObject({ content: "Edited", turn_index: 1, user_position: 0 });
+    expect(useChatStore.getState().messages[0]).toMatchObject({ content: "Edited", branchIndex: 1, branchCount: 2, branchTurnIndex: 1 });
+    expect(useChatStore.getState().messages[1]).toMatchObject({ content: "New answer", branchCount: 1 });
+    expect(request.mock.calls.some(([path]) => path === "/turns")).toBe(false);
+
+    await controller.changeBranch(useChatStore.getState().messages[0], 0);
+
+    const branchRequest = request.mock.calls.find(([path]) => path === "/sessions/kt-1/branch-view");
+    expect(JSON.parse(String(branchRequest?.[1]?.body))).toMatchObject({ branch_view: { "1": 1 } });
+    expect(useChatStore.getState().messages[0]).toMatchObject({ content: "Original", branchIndex: 0, branchCount: 2 });
+    expect(useChatStore.getState().messages[1]).toMatchObject({ content: "Old answer" });
+  });
+
   it("keeps legacy sessions visible when the KT sidecar is unavailable", async () => {
     const controller = controllerWith(
       Promise.reject(new Error("sidecar unavailable")),
@@ -47,6 +92,16 @@ describe("runtime session history", () => {
     const rows = await controller.loadHistory();
 
     expect(rows[0]).toMatchObject({ id: "kt-1", title: "Untitled session" });
+  });
+
+  it("normalizes fractional sidecar queue timestamps to integer milliseconds", () => {
+    useChatStore.getState().reset();
+    const controller = new LoomRuntimeController({} as never, {} as never);
+    const internals = controller as unknown as { syncQueue(messages: unknown[]): void };
+
+    internals.syncQueue([{ message_id: "queued-1", display_content: "Follow up", state: "pending", created_at: 1_700_000_000.125 }]);
+
+    expect(useChatStore.getState().queue[0].createdAt).toBe(1_700_000_000_125);
   });
 
   it("refreshes the archive when async metadata generation publishes an event", async () => {
@@ -109,8 +164,8 @@ describe("runtime session history", () => {
         if (path === "/sessions/kt-1") return Promise.resolve({
           messages: [
             { id: "system", role: "system", content: "private runtime instructions" },
-            { id: "user", role: "user", content: "Hello" },
-            { id: "assistant", role: "assistant", content: "Hi" },
+            { id: "user", role: "user", content: "Hello", created_at: 1_700_000_000.25 },
+            { id: "assistant", role: "assistant", content: "Hi", created_at: 1_700_000_001.75 },
           ],
         });
         if (path === "/runtime") return Promise.resolve({});
@@ -122,6 +177,7 @@ describe("runtime session history", () => {
     await controller.openSession("kt-1", true);
 
     expect(useChatStore.getState().messages.map((message) => message.content)).toEqual(["Hello", "Hi"]);
+    expect(useChatStore.getState().messages.map((message) => message.createdAt)).toEqual([1_700_000_000_250, 1_700_000_001_750]);
     vi.unstubAllGlobals();
   });
 
@@ -160,6 +216,23 @@ describe("runtime session history", () => {
     expect(request.mock.calls[0]).toEqual(["/sessions/close", { method: "POST" }]);
     expect(useRuntimeStore.getState().sessionId).toBe("fresh");
     expect(useChatStore.getState().messages).toEqual([]);
+  });
+
+  it("adopts the sidecar active session instead of opening a duplicate", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    const request = vi.fn((path: string) => {
+      if (path === "/runtime") return Promise.resolve({ active_session: { session_id: "surviving", agent_mode: "normal" } });
+      if (path === "/sessions/surviving") return Promise.resolve({ messages: [] });
+      throw new Error(`unexpected path: ${path}`);
+    });
+    const controller = new LoomRuntimeController({} as never, { request } as never);
+
+    const sessionId = await (controller as unknown as { ensureSession(): Promise<string> }).ensureSession();
+
+    expect(sessionId).toBe("surviving");
+    expect(useRuntimeStore.getState().sessionId).toBe("surviving");
+    expect(request.mock.calls.some(([path]) => path === "/sessions/open")).toBe(false);
   });
 
   it("coalesces streaming deltas into one render per animation frame", async () => {
@@ -202,8 +275,8 @@ describe("runtime session history", () => {
     useChatStore.getState().beginRequest("tool-run");
     useRuntimeStore.getState().setWorking("thinking");
 
-    const pending = internals.handleToolEvent(run, { type: "tool_request", payload: { request_id: "request-1", tool: "edit_prompt", arguments: {} } });
-    expect(useRuntimeStore.getState()).toMatchObject({ workingPhase: "tool", workingTool: "edit_prompt" });
+    const pending = internals.handleToolEvent(run, { type: "tool_request", payload: { request_id: "request-1", tool: "read_prompt", arguments: {} } });
+    expect(useRuntimeStore.getState()).toMatchObject({ workingPhase: "tool", workingTool: "read_prompt" });
     release({ ok: true });
     await pending;
 
@@ -272,5 +345,175 @@ describe("runtime session history", () => {
 
     expect(turnStreamCalls).toBe(2);
     expect(useChatStore.getState().messages.some((message) => message.role === "assistant" && message.content === "recovered" && message.status === "complete")).toBe(true);
+  });
+
+  it("recovers an active turn after a clean SSE EOF without a terminal event", async () => {
+    useChatStore.getState().reset();
+    let turnStreamCalls = 0;
+    const host = {
+      claimToolBridge: vi.fn(() => Promise.resolve({ owned: true, bridge_id: "bridge" })),
+      assistantConfig: vi.fn(() => ({ timeout: 120 })),
+      captureForgeState: vi.fn(() => ({})),
+    } as never;
+    const client = {
+      request: vi.fn((path: string) => {
+        if (path === "/runtime") return Promise.resolve(turnStreamCalls > 1
+          ? { active_turn_id: "", last_turn: { turn_id: "turn-eof", status: "completed", text: "recovered after EOF" } }
+          : { active_turn_id: "turn-eof", active_turn: { turn_id: "turn-eof", text: "partial" }, turn_event_sequence: 0, tool_event_sequence: 0 });
+        if (path === "/turns") return Promise.resolve({ turn_id: "turn-eof" });
+        throw new Error(`unexpected path: ${path}`);
+      }),
+      stream: vi.fn(async function* (path: string) {
+        if (path === "/tools/events") return;
+        turnStreamCalls += 1;
+        if (turnStreamCalls === 1) {
+          yield { sequence: 1, data: { type: "text_delta", payload: { turn_id: "turn-eof", text: "partial" } } };
+          return;
+        }
+        yield { sequence: 2, data: { type: "turn_ended", payload: { turn_id: "turn-eof", status: "completed", text: "recovered after EOF" } } };
+      }),
+    } as never;
+    const controller = new LoomRuntimeController(host, client);
+    useRuntimeStore.getState().setSession({ session_id: "kt-1" });
+
+    await controller.sendMessage({ text: "hello", attachments: [], riskMode: "normal", reasoning: "low" });
+
+    expect(turnStreamCalls).toBe(2);
+    expect(useChatStore.getState().messages.some((message) => message.role === "assistant" && message.content === "recovered after EOF" && message.status === "complete")).toBe(true);
+  });
+
+  it("reconnects the tool stream and replies to a request after the first connection fails", async () => {
+    useChatStore.getState().reset();
+    let releaseTurn!: () => void;
+    let releaseTools!: () => void;
+    const turnReleased = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const toolReplied = new Promise<void>((resolve) => { releaseTools = resolve; });
+    let toolStreamCalls = 0;
+    const host = {
+      claimToolBridge: vi.fn(() => Promise.resolve({ owned: true, bridge_id: "bridge" })),
+      assistantConfig: vi.fn(() => ({ timeout: 120 })),
+      captureForgeState: vi.fn(() => ({})),
+      executeTool: vi.fn(async () => {
+        releaseTurn();
+        return { ok: true, value: "read" };
+      }),
+    };
+    const clientMock = {
+      request: vi.fn((path: string) => {
+        if (path === "/runtime") return Promise.resolve({ turn_event_sequence: 0, tool_event_sequence: 0 });
+        if (path === "/turns") return Promise.resolve({ turn_id: "turn-tools" });
+        if (path === "/tools/replies/request-1") {
+          releaseTools();
+          return Promise.resolve({ ok: true });
+        }
+        throw new Error(`unexpected path: ${path}`);
+      }),
+      stream: vi.fn(async function* (path: string) {
+        if (path === "/turns/events") {
+          await turnReleased;
+          yield { sequence: 2, data: { type: "turn_ended", payload: { turn_id: "turn-tools", status: "completed", text: "tool complete" } } };
+          return;
+        }
+        toolStreamCalls += 1;
+        if (toolStreamCalls === 1) throw new TypeError("connection reset");
+        yield { sequence: 3, data: { type: "tool_request", payload: { request_id: "request-1", tool: "read_prompt", arguments: {} } } };
+        await toolReplied;
+      }),
+    };
+    const controller = new LoomRuntimeController(host as never, clientMock as never);
+    useRuntimeStore.getState().setSession({ session_id: "kt-1" });
+
+    await controller.sendMessage({ text: "hello", attachments: [], riskMode: "normal", reasoning: "low" });
+
+    expect(toolStreamCalls).toBeGreaterThanOrEqual(2);
+    expect(host.executeTool).toHaveBeenCalledOnce();
+    expect(clientMock.request).toHaveBeenCalledWith("/tools/replies/request-1", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("rejects malformed bridge leases and cancels an accepted turn", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    const host = {
+      claimToolBridge: vi.fn(() => Promise.resolve({})),
+      releaseToolBridge: vi.fn(() => Promise.resolve({ ok: true })),
+    };
+    const cancel = vi.fn(() => Promise.resolve({ ok: true }));
+    const client = { request: vi.fn((path: string) => path.endsWith("/cancel") ? cancel() : Promise.resolve({})) };
+    const controller = new LoomRuntimeController(host as never, client as never);
+    const internals = controller as unknown as {
+      createRun(requestId: string, runtime?: Record<string, unknown>): unknown;
+      refreshBridgeLease(run: unknown): Promise<boolean>;
+    };
+    const run = internals.createRun("lease-loss");
+
+    expect(await internals.refreshBridgeLease(run)).toBe(false);
+    expect(useRuntimeStore.getState().error).toContain("invalid lease");
+    expect(cancel).not.toHaveBeenCalled();
+    expect(host.releaseToolBridge).toHaveBeenCalledOnce();
+  });
+
+  it("cancels an accepted turn when bridge ownership is lost during approval", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    let claims = 0;
+    const host = {
+      claimToolBridge: vi.fn(() => Promise.resolve(++claims === 1
+        ? { owned: true, bridge_id: "bridge-a" }
+        : { owned: false, bridge_id: "bridge-b" })),
+      releaseToolBridge: vi.fn(() => Promise.resolve({ ok: true })),
+      executeTool: vi.fn(() => Promise.resolve({ ok: true })),
+    };
+    const client = {
+      request: vi.fn((path: string) => path.endsWith("/cancel")
+        ? Promise.resolve({ ok: true })
+        : Promise.resolve({ ok: true })),
+    };
+    const controller = new LoomRuntimeController(host as never, client as never);
+    const internals = controller as unknown as {
+      createRun(requestId: string, runtime?: Record<string, unknown>): unknown;
+      handleToolEvent(run: unknown, event: Record<string, unknown>): Promise<void>;
+      refreshBridgeLease(run: unknown): Promise<boolean>;
+    };
+    const run = internals.createRun("approval-loss", { active_turn_id: "turn-approval" });
+    const pending = internals.handleToolEvent(run, { type: "tool_request", payload: { request_id: "request-approval", tool: "edit_prompt", arguments: { prompt: "new" } } });
+
+    await vi.waitFor(() => expect(useRuntimeStore.getState().pendingToolApproval?.requestId).toBe("request-approval"));
+    expect(await internals.refreshBridgeLease(run)).toBe(false);
+    await pending;
+
+    expect(host.executeTool).not.toHaveBeenCalled();
+    expect(client.request).toHaveBeenCalledWith("/turns/turn-approval/cancel", { method: "POST" });
+    expect(useRuntimeStore.getState().pendingToolApproval).toBeNull();
+  });
+
+  it("does not submit a turn if destroy wins while the bridge claim is pending", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    let resolveClaim!: (value: unknown) => void;
+    const claimPending = new Promise((resolve) => { resolveClaim = resolve; });
+    const host = {
+      claimToolBridge: vi.fn(() => claimPending),
+      releaseToolBridge: vi.fn(() => Promise.resolve({ ok: true })),
+      assistantConfig: vi.fn(() => ({ timeout: 120 })),
+      captureForgeState: vi.fn(() => ({})),
+    };
+    const client = {
+      request: vi.fn((path: string) => {
+        if (path === "/runtime") return Promise.resolve({ turn_event_sequence: 0, tool_event_sequence: 0 });
+        if (path === "/turns") return Promise.resolve({ turn_id: "should-not-start" });
+        return Promise.resolve({});
+      }),
+    };
+    const controller = new LoomRuntimeController(host as never, client as never);
+    useRuntimeStore.getState().setSession({ session_id: "kt-1" });
+    const sending = controller.sendMessage({ text: "hello", attachments: [], riskMode: "normal", reasoning: "low" });
+
+    await vi.waitFor(() => expect(host.claimToolBridge).toHaveBeenCalledOnce());
+    controller.destroy();
+    resolveClaim({ owned: true, bridge_id: "late-bridge" });
+    await sending;
+
+    expect(client.request.mock.calls.some(([path]) => path === "/turns")).toBe(false);
+    expect(host.releaseToolBridge).toHaveBeenCalled();
   });
 });

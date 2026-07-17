@@ -30,9 +30,13 @@
   let windowElement = $state<HTMLDivElement>();
   let kind = $state<LayoutViewport>(viewportKind());
   let viewport = $state(readViewportRect());
-  const minimum = { width: 340, height: 420 };
+  const minimum = $derived(kind === "desktop"
+    ? { width: 340, height: 420 }
+    : { width: 320, height: kind === "mobileLandscape" ? 240 : 360 });
   const selected = $derived($useProfileStore.profiles.find((profile) => profile.id === $useProfileStore.selectedProfileId) ?? $useProfileStore.profiles[0]);
-  const layout = $derived(clampWindowLayout($useUiStore.profileLayouts[kind], viewport, minimum));
+  const layout = $derived(kind === "desktop"
+    ? clampWindowLayout($useUiStore.profileLayouts[kind], viewport, minimum)
+    : { left: viewport.left, top: viewport.top, width: viewport.width, height: viewport.height });
   const enabledProfiles = $derived($useProfileStore.profiles.filter((profile) => profile.enabled));
   const localProfiles = $derived(enabledProfiles.filter((profile) => profile.runtime !== "remote-http"));
   const namingProfiles = $derived(enabledProfiles.filter((profile) => profile.runtime === "llama-once"));
@@ -78,10 +82,14 @@
   function duplicate(id = selected.id): void { $useProfileStore.duplicateProfile(id); }
   function requestDelete(id: string): void { $useProfileStore.selectProfile(id); confirm = "delete"; }
   function activate(id: string): void { $useProfileStore.activateProfile(id); status = t("profiles.status.saved", "Saved"); }
+  function connectionError(error: unknown): string {
+    const detail = error instanceof Error ? error.message : String(error || "");
+    return detail.replace(/\s+/g, " ").trim().slice(0, 320);
+  }
   async function testConnection(): Promise<void> {
     busy = "test"; status = t("profiles.test.testing", "Testing connection…");
     try { const host = getHostApi(window.kohakuLoom); if (!host) throw new Error("Host unavailable"); await host.profileChat(selected.id, [{ role: "user", content: t("profiles.test.ping", "Ping. Reply with OK.") }]); status = t("profiles.test.success", "Connection successful."); }
-    catch { status = t("profiles.test.error", "Connection failed. Check the model profile."); }
+    catch (error) { const detail = connectionError(error); status = `${t("profiles.test.error", "Connection failed. Check the model profile.")}${detail ? ` ${detail}` : ""}`; }
     finally { busy = null; }
   }
   async function syncModel(): Promise<void> {

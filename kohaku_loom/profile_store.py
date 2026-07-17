@@ -63,17 +63,17 @@ class LoomProfileStore:
             elif raw.get("has_api_key") and existing_secrets.get(profile_id):
                 secrets[profile_id] = existing_secrets[profile_id]
             public_profiles.append(profile)
-        enabled = {profile["profile_id"] for profile in public_profiles}
-        naming_profile_id = self._selected(state, "naming_profile_id", enabled, allow_empty=True)
+        enabled_ids = {profile["profile_id"] for profile in public_profiles if profile.get("enabled", True)}
+        naming_profile_id = self._selected(state, "naming_profile_id", enabled_ids, allow_empty=True)
         if naming_profile_id:
             naming_profile = next(profile for profile in public_profiles if profile["profile_id"] == naming_profile_id)
-            if naming_profile.get("runtime") != LLAMA_ONCE:
+            if not naming_profile.get("enabled", True) or naming_profile.get("runtime") != LLAMA_ONCE:
                 raise ValueError("naming_profile_id must reference an enabled llama-once profile")
         public_state = {
             "version": 1,
-            "active_profile_id": self._selected(state, "active_profile_id", enabled),
-            "teacher_profile_id": self._selected(state, "teacher_profile_id", enabled),
-            "session_profile_id": self._selected(state, "session_profile_id", enabled, allow_empty=True),
+            "active_profile_id": self._selected(state, "active_profile_id", enabled_ids),
+            "teacher_profile_id": self._selected(state, "teacher_profile_id", enabled_ids),
+            "session_profile_id": self._selected(state, "session_profile_id", enabled_ids, allow_empty=True),
             "naming_profile_id": naming_profile_id,
             "profiles": public_profiles,
         }

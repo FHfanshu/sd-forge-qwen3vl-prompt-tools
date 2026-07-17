@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import inspect
+import json
 import time
+from copy import deepcopy
 from typing import Any, Callable
 
 from kohaku_loom.sidecar.session_metadata import (
@@ -12,11 +14,69 @@ from kohaku_loom.sidecar.session_metadata import (
 )
 
 
-def _native_history() -> tuple[Callable, Callable, Callable, Callable, Callable]:
+_OPERATION_KEY = "loom:branch_operations_v1"
+
+
+def _operation_fingerprint(kind: str, payload: Any) -> str:
+    return json.dumps({"kind": kind, "payload": payload}, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+
+
+def _operation_store(session: Any) -> dict[str, Any]:
+    store = getattr(session.creature.agent, "session_store", None)
+    state = getattr(store, "state", None)
+    if state is None or not callable(getattr(state, "get", None)):
+        raise RuntimeError("KohakuTerrarium session store is unavailable")
+    operations = state.get(_OPERATION_KEY)
+    if not isinstance(operations, dict):
+        operations = {}
+        state[_OPERATION_KEY] = operations
+    return operations
+
+
+def _begin_operation(session: Any, kind: str, operation_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    operation_id = str(operation_id or "")
+    if not operation_id:
+        return None
+    operations = _operation_store(session)
+    fingerprint = _operation_fingerprint(kind, payload)
+    existing = operations.get(operation_id)
+    if isinstance(existing, dict):
+        if existing.get("fingerprint") != fingerprint:
+            raise ValueError("operation_id was already used with a different branch operation")
+        if existing.get("status") == "completed" and isinstance(existing.get("result"), dict):
+            return deepcopy(existing["result"])
+        raise RuntimeError("branch operation is already in progress")
+    operations[operation_id] = {
+        "operation_id": operation_id,
+        "kind": kind,
+        "fingerprint": fingerprint,
+        "status": "in_progress",
+        "updated_at": time.time(),
+    }
+    return None
+
+
+def _complete_operation(session: Any, kind: str, operation_id: str, payload: dict[str, Any], result: dict[str, Any]) -> None:
+    operation_id = str(operation_id or "")
+    if not operation_id:
+        return
+    operations = _operation_store(session)
+    operations[operation_id] = {
+        "operation_id": operation_id,
+        "kind": kind,
+        "fingerprint": _operation_fingerprint(kind, payload),
+        "status": "completed",
+        "result": deepcopy(result),
+        "updated_at": time.time(),
+    }
+
+
+def _native_history() -> tuple[Callable, Callable, Callable, Callable, Callable, Callable]:
     from kohakuterrarium.session.history import (
         _index_parent_paths,
         _resolve_selected_branches,
         collect_branch_metadata,
+        collect_user_groups,
         replay_conversation,
         select_live_event_ids,
     )
@@ -25,6 +85,7 @@ def _native_history() -> tuple[Callable, Callable, Callable, Callable, Callable]
         _index_parent_paths,
         _resolve_selected_branches,
         collect_branch_metadata,
+        collect_user_groups,
         replay_conversation,
         select_live_event_ids,
     )
@@ -44,9 +105,9 @@ def _events(session: Any) -> list[dict[str, Any]]:
 def _selected_ids(
     events: list[dict[str, Any]],
     view: dict[int, int],
-    history: tuple[Callable, Callable, Callable, Callable, Callable],
+    history: tuple[Callable, Callable, Callable, Callable, Callable, Callable],
 ) -> dict[int, int]:
-    index_parent_paths, resolve_selected, _collect, _replay, select_live = history
+    index_parent_paths, resolve_selected, _collect, _groups, _replay, select_live = history
     try:
         return dict(resolve_selected(events, index_parent_paths(events), view or None))
     except Exception:
@@ -94,9 +155,10 @@ def _branch_statuses(events: list[dict[str, Any]]) -> dict[tuple[int, int], str]
 
 def _payload(session_id: str, session: Any, events: list[dict[str, Any]], view: dict[int, int]) -> dict[str, Any]:
     history = _native_history()
-    _index_parent_paths, _resolve_selected, collect, _replay, _select_live = history
+    _index_parent_paths, _resolve_selected, collect, collect_groups, _replay, _select_live = history
     selected = _selected_ids(events, view, history)
     metadata = collect(events, branch_view=view or None)
+    user_groups = collect_groups(events, branch_view=view or None)
     statuses = _branch_statuses(events)
     turns: list[dict[str, Any]] = []
     branch_counts: dict[int, int] = {}
@@ -117,6 +179,8 @@ def _payload(session_id: str, session: Any, events: list[dict[str, Any]], view: 
                 "selected_branch_id": selected.get(turn_index),
                 "branch_statuses": states,
                 "events_by_branch": info.get("events_by_branch", {}),
+                "user_groups": user_groups.get(turn_index, {}).get("groups", []),
+                "selected_user_group_index": user_groups.get(turn_index, {}).get("selected_group_idx", 0),
             }
         )
     return {
@@ -264,7 +328,7 @@ async def replay(runtime: Any, session_id: str, raw_view: Any = None) -> dict[st
 
 def _completed_final_response(events: list[dict[str, Any]], view: dict[int, int]) -> bool:
     history = _native_history()
-    _index_parent_paths, _resolve_selected, _collect, replay, select_live = history
+    _index_parent_paths, _resolve_selected, _collect, _groups, replay, select_live = history
     selected = _selected_ids(events, view, history)
     if not selected:
         return False
@@ -281,7 +345,7 @@ def _completed_final_response(events: list[dict[str, Any]], view: dict[int, int]
     )
 
 
-async def regenerate(runtime: Any, session_id: str) -> dict[str, Any]:
+async def regenerate(runtime: Any, session_id: str, operation_id: str = "") -> dict[str, Any]:
     async with runtime._lock:
         session = runtime._active_session(session_id)
         _assert_idle(runtime, session)
@@ -290,12 +354,20 @@ async def regenerate(runtime: Any, session_id: str) -> dict[str, Any]:
         _validate_view(events, view)
         if not _completed_final_response(events, view):
             raise RuntimeError("Only the final completed assistant response can be regenerated")
+        operation_payload = {"session_id": session_id, "branch_view": view}
+        replay = _begin_operation(session, "regenerate", operation_id, operation_payload)
+        if replay is not None:
+            return replay
         _replay_agent(session.creature.agent, events, view)
         await runtime.events.publish(
             "branch_regeneration_started",
             {"session_id": session_id, "branch_view": dict(view)},
         )
-        result = await _native_regenerate(session, view)
+        try:
+            result = await _native_regenerate(session, view)
+        except BaseException:
+            _operation_store(session).pop(str(operation_id or ""), None)
+            raise
         events = _events(session)
         turn_index = result.get("turn_index") if isinstance(result, dict) else None
         branch_id = result.get("branch_id") if isinstance(result, dict) else None
@@ -324,6 +396,73 @@ async def regenerate(runtime: Any, session_id: str) -> dict[str, Any]:
         if isinstance(turn_index, int) and isinstance(branch_id, int):
             payload["branch_status"] = _branch_statuses(events).get((turn_index, branch_id), "incomplete")
         await runtime.events.publish("branch_regeneration_finished", payload)
+        _complete_operation(session, "regenerate", operation_id, operation_payload, payload)
+        return payload
+
+
+async def edit_and_rerun(
+    runtime: Any,
+    session_id: str,
+    content: Any,
+    turn_index: int,
+    user_position: int,
+    operation_id: str = "",
+) -> dict[str, Any]:
+    async with runtime._lock:
+        session = runtime._active_session(session_id)
+        _assert_idle(runtime, session)
+        if not isinstance(turn_index, int) or turn_index < 1:
+            raise ValueError("turn_index must identify an existing user turn")
+        if not isinstance(user_position, int) or user_position < 0:
+            raise ValueError("user_position must identify an existing user message")
+        view = _load_view(session)
+        events = _events(session)
+        _validate_view(events, view)
+        operation_payload = {
+            "session_id": session_id,
+            "content": content,
+            "turn_index": turn_index,
+            "user_position": user_position,
+            "branch_view": view,
+        }
+        replay = _begin_operation(session, "edit-rerun", operation_id, operation_payload)
+        if replay is not None:
+            return replay
+        _replay_agent(session.creature.agent, events, view)
+        await runtime.events.publish(
+            "branch_edit_started",
+            {"session_id": session_id, "branch_view": dict(view), "turn_index": turn_index},
+        )
+        try:
+            result = await _native_edit(session, content, turn_index, user_position, view)
+        except BaseException:
+            _operation_store(session).pop(str(operation_id or ""), None)
+            raise
+        events = _events(session)
+        result_turn = result.get("turn_index") if isinstance(result, dict) else None
+        branch_id = result.get("branch_id") if isinstance(result, dict) else None
+        if not isinstance(result_turn, int):
+            result_turn = getattr(session.creature.agent, "_turn_index", None)
+        if not isinstance(branch_id, int):
+            branch_id = getattr(session.creature.agent, "_branch_id", None)
+        if not isinstance(result_turn, int) or not isinstance(branch_id, int):
+            raise RuntimeError("KohakuTerrarium did not return the edited branch")
+        next_view = {turn: branch for turn, branch in view.items() if turn < result_turn}
+        next_view[result_turn] = branch_id
+        _validate_view(events, next_view)
+        _replay_agent(session.creature.agent, events, next_view)
+        _persist(runtime, session, next_view)
+        payload = _payload(session_id, session, events, next_view)
+        payload.update(
+            {
+                "status": str(result.get("status") or "edited"),
+                "turn_index": result_turn,
+                "branch_id": branch_id,
+                "branch_status": _branch_statuses(events).get((result_turn, branch_id), "incomplete"),
+            }
+        )
+        await runtime.events.publish("branch_edit_finished", payload)
+        _complete_operation(session, "edit-rerun", operation_id, operation_payload, payload)
         return payload
 
 
@@ -334,3 +473,27 @@ async def _native_regenerate(session: Any, view: dict[int, int]) -> dict[str, An
     service = LocalTerrariumService(session.engine)
     result = await service.regenerate(creature_id, turn_index=None, branch_view=dict(view))
     return dict(result) if isinstance(result, dict) else {"status": "regenerating"}
+
+
+async def _native_edit(
+    session: Any,
+    content: Any,
+    turn_index: int,
+    user_position: int,
+    view: dict[int, int],
+) -> dict[str, Any]:
+    from kohakuterrarium.terrarium.service import LocalTerrariumService
+
+    creature_id = str(getattr(session.creature, "creature_id", "") or "loom")
+    service = LocalTerrariumService(session.engine)
+    result = await service.edit_message(
+        creature_id,
+        -1,
+        content,
+        turn_index=turn_index,
+        user_position=user_position,
+        branch_view=dict(view),
+    )
+    if result is False:
+        raise RuntimeError("KohakuTerrarium could not resolve the message to edit")
+    return dict(result) if isinstance(result, dict) else {"status": "edited"}

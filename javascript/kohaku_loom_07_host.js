@@ -116,8 +116,10 @@
             return tools.assistantConfig(routeOverride);
         },
         profileStore: Object.freeze(profileStore),
-        claimToolBridge: function () { return tools.claimAssistantToolBridge(); },
-        claimAssistantToolBridge: function () { return tools.claimAssistantToolBridge(); },
+         claimToolBridge: function () { return tools.claimAssistantToolBridge(); },
+         releaseToolBridge: function () { return tools.releaseAssistantToolBridge(); },
+         claimAssistantToolBridge: function () { return tools.claimAssistantToolBridge(); },
+         releaseAssistantToolBridge: function () { return tools.releaseAssistantToolBridge(); },
         syncProfiles: syncProfiles,
         profileChat: profileChat,
         listLegacySessions: listLegacySessions,

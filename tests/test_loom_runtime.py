@@ -4,11 +4,11 @@ import json
 import asyncio
 import os
 import sys
+import subprocess
 import tempfile
 import types
 import unittest
 from pathlib import Path
-from subprocess import CalledProcessError
 from unittest import mock
 
 from fastapi.testclient import TestClient
@@ -17,7 +17,7 @@ from kohaku_loom.dpapi import protect_text, unprotect_text
 from kohaku_loom.profile_store import LoomProfileStore
 from kohaku_loom.response_text import reasoning_text
 from kohaku_loom.runtime_paths import LoomRuntimePaths
-from kohaku_loom.sidecar_manager import SidecarManager
+from kohaku_loom.sidecar_manager import KOHakuTERRARIUM_COMMIT, SidecarManager, _run_subprocess
 from kohaku_loom.sidecar.message_queue import LoomMessageQueue
 from kohaku_loom.sidecar.runtime import LoomSidecarRuntime
 from kohaku_loom.sidecar.app import create_app
@@ -121,6 +121,20 @@ class ProfileStoreTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "naming_profile_id.*llama-once"):
                 store.import_state(state)
 
+    def test_import_accepts_disabled_profiles_without_runtime_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = profile_state("")
+            state["profiles"][0]["enabled"] = False
+            state["profiles"][0]["endpoint"] = ""
+            state["active_profile_id"] = "local"
+            state["teacher_profile_id"] = "local"
+            store = LoomProfileStore(LoomRuntimePaths.under(Path(directory)))
+
+            imported = store.import_state(state)
+
+        self.assertEqual("local", imported["active_profile_id"])
+        self.assertFalse(next(item for item in imported["profiles"] if item["profile_id"] == "remote")["enabled"])
+
     def test_reimport_preserves_existing_encrypted_key_when_browser_only_knows_it_exists(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = LoomRuntimePaths.under(Path(directory))
@@ -147,31 +161,22 @@ class SidecarManagerTests(unittest.TestCase):
             ):
                 source, commit = manager._install_kohakuterrarium()
 
-        self.assertEqual(("pypi", ""), (source, commit))
+        self.assertEqual(("github-pinned", KOHakuTERRARIUM_COMMIT), (source, commit))
         self.assertIn("--force-reinstall", run.call_args.args[0])
-        self.assertEqual("KohakuTerrarium", run.call_args.args[0][-1])
+        self.assertIn("--no-deps", run.call_args.args[0])
+        self.assertEqual(f"git+https://github.com/Kohaku-Lab/KohakuTerrarium.git@{KOHakuTERRARIUM_COMMIT}", run.call_args.args[0][-1])
 
-    def test_missing_stable_capabilities_fall_back_to_exact_main_commit(self):
-        commit = "a" * 40
+    def test_pinned_install_does_not_resolve_a_mutable_main_branch(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = SidecarManager(Path(directory))
             with (
-                mock.patch.object(
-                    manager,
-                    "_probe_kohakuterrarium",
-                    side_effect=[CalledProcessError(1, "probe"), "2.1.0.dev0"],
-                ),
-                mock.patch.object(manager, "_latest_main_commit", return_value=commit),
+                mock.patch.object(manager, "_probe_kohakuterrarium", return_value="2.1.0.dev0"),
                 mock.patch("kohaku_loom.sidecar_manager.subprocess.run") as run,
             ):
                 source, locked_commit = manager._install_kohakuterrarium()
 
-        self.assertEqual(("github-main", commit), (source, locked_commit))
-        fallback = run.call_args_list[1].args[0]
-        self.assertEqual(
-            f"git+https://github.com/Kohaku-Lab/KohakuTerrarium.git@{commit}",
-            fallback[-1],
-        )
+        self.assertEqual(("github-pinned", KOHakuTERRARIUM_COMMIT), (source, locked_commit))
+        self.assertEqual(1, len(run.call_args_list))
 
     @mock.patch("kohaku_loom.sidecar_manager.os.name", "nt")
     def test_environment_install_uses_plugin_local_config_and_sessions(self):
@@ -181,13 +186,13 @@ class SidecarManagerTests(unittest.TestCase):
             manager.paths.python.parent.mkdir(parents=True)
             manager.paths.python.touch()
             with (
-                mock.patch.object(manager, "_install_kohakuterrarium", return_value=("github-main", "b" * 40)),
+                 mock.patch.object(manager, "_install_kohakuterrarium", return_value=("github-pinned", KOHakuTERRARIUM_COMMIT)),
                 mock.patch.object(manager, "_probe_kohakuterrarium", return_value="2.1.0.dev0"),
                 mock.patch("kohaku_loom.sidecar_manager.subprocess.run") as run,
             ):
                 lock = manager.ensure_environment()
 
-        self.assertEqual("github-main", lock["source"])
+        self.assertEqual("github-pinned", lock["source"])
         self.assertEqual(2, lock["capability_level"])
         package_install = run.call_args_list[1]
         self.assertEqual(str(manager.paths.config), package_install.kwargs["env"]["KT_CONFIG_DIR"])
@@ -211,9 +216,36 @@ class SidecarManagerTests(unittest.TestCase):
         self.assertIn("cancel_pending", probe)
         self.assertIn("SessionStore, 'token_usage'", probe)
         self.assertIn("LocalTerrariumService, 'regenerate'", probe)
+        self.assertIn("LocalTerrariumService, 'edit_message'", probe)
         self.assertIn("replay_conversation", probe)
         self.assertIn("collect_branch_metadata", probe)
+        self.assertIn("collect_user_groups", probe)
         self.assertIn("_reload_conversation_under_branch_view", probe)
+
+    @mock.patch("kohaku_loom.sidecar_manager.os.name", "nt")
+    def test_environment_install_reports_locked_runtime_instead_of_raw_access_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = SidecarManager(root)
+            manager.paths.python.parent.mkdir(parents=True)
+            manager.paths.python.touch()
+            with (
+                mock.patch.object(manager, "_install_kohakuterrarium", side_effect=PermissionError(5, "access denied")),
+                mock.patch.object(manager, "_probe_kohakuterrarium", return_value="2.1.0.dev0"),
+                mock.patch("kohaku_loom.sidecar_manager.subprocess.run"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Stop Forge and retry"):
+                    manager.ensure_environment()
+
+    def test_managed_runtime_commands_bypass_forge_uv_subprocess_hook(self):
+        with mock.patch("kohaku_loom.sidecar_manager.subprocess.run") as patched_run:
+            original_run = mock.Mock(return_value="original")
+            with mock.patch.object(subprocess, "__original_run", original_run, create=True):
+                result = _run_subprocess(["python", "-m", "pip"])
+
+        self.assertEqual("original", result)
+        original_run.assert_called_once_with(["python", "-m", "pip"])
+        patched_run.assert_not_called()
 
 
 class SidecarRuntimeUnitTests(unittest.IsolatedAsyncioTestCase):

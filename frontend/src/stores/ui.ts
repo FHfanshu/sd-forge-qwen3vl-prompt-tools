@@ -10,14 +10,14 @@ export interface LauncherPosition {
 
 const DEFAULT_LAYOUTS: Record<LayoutViewport, WindowLayout> = {
   desktop: { left: 24, top: 9999, width: 460, height: 680 },
-  mobilePortrait: { left: 12, top: 9999, width: 396, height: 620 },
-  mobileLandscape: { left: 12, top: 9999, width: 520, height: 420 },
+  mobilePortrait: { left: 12, top: 9999, width: 360, height: 560 },
+  mobileLandscape: { left: 12, top: 9999, width: 430, height: 270 },
 };
 
 const DEFAULT_PROFILE_LAYOUTS: Record<LayoutViewport, WindowLayout> = {
   desktop: { left: 510, top: 76, width: 700, height: 600 },
-  mobilePortrait: { left: 8, top: 8, width: 396, height: 680 },
-  mobileLandscape: { left: 8, top: 8, width: 620, height: 500 },
+  mobilePortrait: { left: 16, top: 16, width: 360, height: 600 },
+  mobileLandscape: { left: 16, top: 16, width: 460, height: 280 },
 };
 
 const LAYOUT_STORAGE_KEY = "kohaku-loom:ui-layouts:v1";

@@ -224,6 +224,21 @@ class LoomRuntimeResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("failed", item["state"])
         self.assertEqual("cancelled", item["error"])
 
+    async def test_cancel_during_settling_does_not_change_terminal_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = LoomRuntimePaths.under(Path(directory)).ensure()
+            runtime = LoomSidecarRuntime(paths, LoomProfileStore(paths), mock.Mock())
+            runtime.active = mock.Mock(creature=mock.Mock(agent=mock.Mock()))
+            runtime._turn_id = "turn-1"
+            runtime._turn_task = asyncio.create_task(asyncio.sleep(10))
+            runtime._turn_snapshot = {"turn_id": "turn-1", "terminal": {"status": "ok"}}
+
+            status = await runtime.cancel_turn("turn-1")
+            runtime._turn_task.cancel()
+            await asyncio.gather(runtime._turn_task, return_exceptions=True)
+
+        self.assertEqual("unknown", status)
+
 
 if __name__ == "__main__":
     unittest.main()

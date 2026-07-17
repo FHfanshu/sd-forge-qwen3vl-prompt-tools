@@ -235,11 +235,32 @@ def create_app(
     @app.post("/sessions/{session_id}/regenerate")
     async def regenerate_last_response(
         session_id: str,
+        payload: dict[str, Any] = Body(default={}),
         authorization: str = Header(default=""),
     ) -> dict[str, Any]:
         authorize(authorization)
         try:
-            return await loom_runtime.regenerate_last_response(session_id)
+            return await loom_runtime.regenerate_last_response(session_id, str(payload.get("operation_id") or ""))
+        except (FileNotFoundError, KeyError) as error:
+            raise HTTPException(status_code=404, detail="session is not active") from error
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post("/sessions/{session_id}/edit-rerun")
+    async def edit_and_rerun_message(
+        session_id: str,
+        payload: dict[str, Any] = Body(...),
+        authorization: str = Header(default=""),
+    ) -> dict[str, Any]:
+        authorize(authorization)
+        try:
+            return await loom_runtime.edit_and_rerun_message(
+                session_id,
+                payload.get("content", ""),
+                payload.get("turn_index"),
+                payload.get("user_position"),
+                str(payload.get("operation_id") or ""),
+            )
         except (FileNotFoundError, KeyError) as error:
             raise HTTPException(status_code=404, detail="session is not active") from error
         except (RuntimeError, TypeError, ValueError) as error:

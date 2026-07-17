@@ -58,8 +58,6 @@ def native_history_fakes():
             event_id = event.get("event_id")
             if not isinstance(turn, int) or not isinstance(branch, int):
                 continue
-            if turn in selected and branch != selected[turn] and branch_view:
-                continue
             info = result.setdefault(
                 turn,
                 {"branches": [], "latest_branch": 0, "events_by_branch": {}},
@@ -86,6 +84,29 @@ def native_history_fakes():
             )
         }
 
+    def collect_groups(events, *, branch_view=None):
+        meta = collect(events, branch_view=branch_view)
+        contents = {}
+        for event in events:
+            turn = event.get("turn_index")
+            branch = event.get("branch_id")
+            if event.get("type") == "user_message" and isinstance(turn, int) and isinstance(branch, int):
+                contents.setdefault(turn, {}).setdefault(branch, event.get("content", ""))
+        selected = resolve(list(events), {}, branch_view)
+        result = {}
+        for turn, info in meta.items():
+            groups = []
+            for branch in info["branches"]:
+                content = contents.get(turn, {}).get(branch, "")
+                group = next((item for item in groups if item["content"] == content), None)
+                if group:
+                    group["branches"].append(branch)
+                else:
+                    groups.append({"content": content, "branches": [branch]})
+            selected_index = next((index for index, group in enumerate(groups) if selected.get(turn) in group["branches"]), 0)
+            result[turn] = {"groups": groups, "selected_group_idx": selected_index}
+        return result
+
     def replay(events, *, branch_view=None):
         selected = resolve(list(events), {}, branch_view)
         messages = []
@@ -104,7 +125,7 @@ def native_history_fakes():
                     messages.append({"role": "assistant", "content": event.get("content", "")})
         return messages
 
-    return index_parent_paths, resolve, collect, replay, select_live
+    return index_parent_paths, resolve, collect, collect_groups, replay, select_live
 
 
 class BranchFakeStore:
@@ -271,6 +292,32 @@ class BranchRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(3, result["branch_id"])
         self.assertEqual([{2: 2}, {2: 3}], agent.reloads)
 
+    async def test_edit_and_rerun_selects_new_user_message_branch_and_preserves_old_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, session, agent = self.make_runtime(Path(directory), self.events())
+            session.branch_view = {2: 2}
+
+            async def edit_native(_session, content, turn_index, user_position, view):
+                self.assertEqual((content, turn_index, user_position, view), ("edited second", 2, 1, {2: 2}))
+                agent.session_store.events.extend(
+                    [
+                        {"event_id": 12, "type": "user_message", "content": "edited second", "turn_index": 2, "branch_id": 3},
+                        {"event_id": 13, "type": "text_chunk", "content": "edited answer", "turn_index": 2, "branch_id": 3},
+                        {"event_id": 14, "type": "processing_end", "turn_index": 2, "branch_id": 3},
+                    ]
+                )
+                return {"status": "edited", "turn_index": 2, "branch_id": 3}
+
+            with mock.patch.object(branch_runtime, "_native_edit", new=mock.AsyncMock(side_effect=edit_native)):
+                result = await runtime.edit_and_rerun_message("session", "edited second", 2, 1)
+            stored = read_metadata(session.path)
+
+        self.assertEqual({2: 3}, result["branch_view"])
+        self.assertEqual({"2": 3}, stored["branch_view"])
+        self.assertEqual(["second", "edited second"], [group["content"] for group in result["turns"][1]["user_groups"]])
+        self.assertEqual(1, result["turns"][1]["selected_user_group_index"])
+        self.assertEqual([{2: 2}, {2: 3}], agent.reloads)
+
     async def test_native_regenerate_constructs_local_service_with_embedded_view(self):
         session = mock.Mock(creature=mock.Mock(creature_id="loom"), engine=mock.Mock())
         service = mock.Mock()
@@ -292,6 +339,57 @@ class BranchRuntimeTests(unittest.IsolatedAsyncioTestCase):
         service_module.LocalTerrariumService.assert_called_once_with(session.engine)
         service.regenerate.assert_awaited_once_with("loom", turn_index=None, branch_view={1: 1})
         self.assertEqual(2, result["branch_id"])
+
+    async def test_native_edit_targets_stable_user_position_and_branch_view(self):
+        session = mock.Mock(creature=mock.Mock(creature_id="loom"), engine=mock.Mock())
+        service = mock.Mock()
+        service.edit_message = mock.AsyncMock(return_value={"status": "edited", "turn_index": 2, "branch_id": 4})
+        root_module = types.ModuleType("kohakuterrarium")
+        terrarium_module = types.ModuleType("kohakuterrarium.terrarium")
+        service_module = types.ModuleType("kohakuterrarium.terrarium.service")
+        service_module.LocalTerrariumService = mock.Mock(return_value=service)
+        with mock.patch.dict(sys.modules, {"kohakuterrarium": root_module, "kohakuterrarium.terrarium": terrarium_module, "kohakuterrarium.terrarium.service": service_module}):
+            result = await branch_runtime._native_edit(session, "edited", 2, 1, {1: 1, 2: 2})
+
+        service.edit_message.assert_awaited_once_with("loom", -1, "edited", turn_index=2, user_position=1, branch_view={1: 1, 2: 2})
+        self.assertEqual(4, result["branch_id"])
+
+    async def test_branch_operation_replays_same_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            events = self.events()
+            events[9] = {
+                "event_id": 10,
+                "type": "text_chunk",
+                "content": "two",
+                "turn_index": 2,
+                "branch_id": 2,
+            }
+            runtime, session, _agent = self.make_runtime(Path(directory), events)
+            session.branch_view = {2: 2}
+            service_result = {"status": "regenerating", "turn_index": 2, "branch_id": 3}
+            native = mock.AsyncMock(return_value=service_result)
+            with mock.patch.object(branch_runtime, "_native_regenerate", new=native):
+                first = await runtime.regenerate_last_response("session", "operation-1")
+                replay = await runtime.regenerate_last_response("session", "operation-1")
+
+        self.assertEqual(first, replay)
+        native.assert_awaited_once_with(session, {2: 2})
+        self.assertEqual("completed", session.creature.agent.session_store.state["loom:branch_operations_v1"]["operation-1"]["status"])
+
+    async def test_branch_operation_rejects_payload_reuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, session, _agent = self.make_runtime(Path(directory), self.events())
+            with self.assertRaisesRegex(ValueError, "different branch operation"):
+                branch_runtime._begin_operation(session, "regenerate", "operation-1", {"session_id": "session", "branch_view": {2: 1}})
+                branch_runtime._begin_operation(session, "regenerate", "operation-1", {"session_id": "session", "branch_view": {2: 2}})
+
+    async def test_branch_operation_rejects_duplicate_in_progress_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, session, _agent = self.make_runtime(Path(directory), self.events())
+            payload = {"session_id": "session", "branch_view": {2: 1}}
+            branch_runtime._begin_operation(session, "regenerate", "operation-1", payload)
+            with self.assertRaisesRegex(RuntimeError, "already in progress"):
+                branch_runtime._begin_operation(session, "regenerate", "operation-1", payload)
 
 
 class BranchRouteTests(unittest.TestCase):
@@ -324,8 +422,13 @@ class BranchRouteTests(unittest.TestCase):
             async def replay_branch_view(self, session_id, view=None):
                 return {"session_id": session_id, "branch_view": view}
 
-            async def regenerate_last_response(self, session_id):
+            async def regenerate_last_response(self, session_id, operation_id=""):
+                del operation_id
                 return {"session_id": session_id, "status": "regenerating", "branch_id": 2}
+
+            async def edit_and_rerun_message(self, session_id, content, turn_index, user_position, operation_id=""):
+                del operation_id
+                return {"session_id": session_id, "content": content, "turn_index": turn_index, "user_position": user_position, "branch_id": 3}
 
             async def close(self):
                 return None
@@ -338,11 +441,13 @@ class BranchRouteTests(unittest.TestCase):
                 selected = client.patch("/sessions/s/branch-view", headers=headers, json={"branch_view": {"2": 2}})
                 replayed = client.post("/sessions/s/branch-view/replay", headers=headers, json={})
                 regenerated = client.post("/sessions/s/regenerate", headers=headers)
+                edited = client.post("/sessions/s/edit-rerun", headers=headers, json={"content": "edited", "turn_index": 2, "user_position": 1})
 
         self.assertEqual(200, branches.status_code)
         self.assertEqual({"2": 2}, selected.json()["branch_view"])
         self.assertEqual(200, replayed.status_code)
         self.assertEqual(2, regenerated.json()["branch_id"])
+        self.assertEqual({"content": "edited", "turn_index": 2, "user_position": 1, "branch_id": 3}, {key: edited.json()[key] for key in ("content", "turn_index", "user_position", "branch_id")})
 
 
 if __name__ == "__main__":

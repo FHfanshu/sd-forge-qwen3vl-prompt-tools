@@ -17,5 +17,18 @@ export default defineConfig({
     css: true,
     globals: true,
     restoreMocks: true,
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json-summary", "html", "lcov"],
+      reportsDirectory: "./coverage",
+      include: ["src/**/*.{ts,svelte}"],
+      exclude: ["src/main.ts"],
+      thresholds: {
+        lines: 75,
+        functions: 60,
+        branches: 65,
+        statements: 75,
+      },
+    },
   },
 });

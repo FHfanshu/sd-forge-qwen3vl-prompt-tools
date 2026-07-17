@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import urllib.request
 import zipfile
 from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 
 import huggingface_hub
 
@@ -57,7 +59,7 @@ def _find_first_gguf(patterns: list[str]) -> str:
 
 def _find_related_mmproj(model: Path) -> str:
     candidates = sorted(model.parent.glob("*mmproj*.gguf"), key=lambda item: str(item).lower())
-    return str(candidates[0]) if candidates else ""
+    return str(next((item for item in candidates if item.is_file()), ""))
 
 
 def vision_preset_alias(preset: str) -> str:
@@ -82,19 +84,19 @@ def resolve_vision_model_pair(preset: str, model_path: str, mmproj_path: str, ne
     mmproj = mmproj_path.strip().strip('"')
     if _is_remote_windows_path(model) or _is_remote_windows_path(mmproj):
         raise RuntimeError("拒绝远程或设备模型路径。")
-    model_exists = bool(model) and Path(model).exists()
-    mmproj_exists = bool(mmproj) and Path(mmproj).exists()
+    model_exists = bool(model) and Path(model).is_file()
+    mmproj_exists = bool(mmproj) and Path(mmproj).is_file()
 
     if not model_exists and preset != VISION_MODEL_PRESET_CUSTOM:
         model, preset_mmproj, _alias = find_vision_preset_files(preset)
-        model_exists = bool(model) and Path(model).exists()
+        model_exists = bool(model) and Path(model).is_file()
         if not mmproj_exists:
             mmproj = preset_mmproj
-            mmproj_exists = bool(mmproj) and Path(mmproj).exists()
+            mmproj_exists = bool(mmproj) and Path(mmproj).is_file()
 
     if model_exists and need_mmproj and not mmproj_exists:
         mmproj = _find_related_mmproj(Path(model))
-        mmproj_exists = bool(mmproj) and Path(mmproj).exists()
+        mmproj_exists = bool(mmproj) and Path(mmproj).is_file()
 
     if model_exists and (mmproj_exists or not need_mmproj):
         return model, mmproj, vision_preset_alias(preset)
@@ -114,8 +116,8 @@ def ensure_local_gguf_pair(model_path: str, mmproj_path: str, need_mmproj: bool)
     mmproj = mmproj_path.strip().strip('"')
     if _is_remote_windows_path(model) or _is_remote_windows_path(mmproj):
         raise RuntimeError("拒绝远程或设备模型路径。")
-    model_exists = bool(model) and Path(model).exists()
-    mmproj_exists = bool(mmproj) and Path(mmproj).exists()
+    model_exists = bool(model) and Path(model).is_file()
+    mmproj_exists = bool(mmproj) and Path(mmproj).is_file()
     if model_exists and (mmproj_exists or not need_mmproj):
         return model, mmproj
 
@@ -139,11 +141,11 @@ def find_default_llama_server() -> str:
     if env_path and not _is_remote_windows_path(env_path) and Path(env_path).is_file():
         return env_path
     bundled = _llama_cpp_bin_dir() / "llama-server.exe"
-    if bundled.exists():
+    if bundled.is_file():
         return str(bundled)
     for candidate in DEFAULT_LLAMA_SERVER_CANDIDATES:
         path = Path(candidate)
-        if path.exists():
+        if path.is_file():
             return str(path)
     found = shutil.which("llama-server.exe") or shutil.which("llama-server")
     return found or ""
@@ -271,7 +273,19 @@ def _safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
     root = target_dir.resolve()
     with zipfile.ZipFile(zip_path) as zf:
         for member in zf.infolist():
-            destination = (target_dir / member.filename).resolve()
+            member_name = member.filename.replace("\\", "/")
+            windows_name = PureWindowsPath(member_name)
+            posix_name = PurePosixPath(member_name)
+            parts = [part for part in member_name.split("/") if part not in ("", ".")]
+            if (
+                windows_name.is_absolute()
+                or posix_name.is_absolute()
+                or windows_name.drive
+                or ".." in parts
+                or stat.S_ISLNK((member.external_attr >> 16) & 0o170000)
+            ):
+                raise RuntimeError(f"拒绝解压可疑路径: {member.filename}")
+            destination = (target_dir / Path(*parts)).resolve()
             if root not in destination.parents and destination != root:
                 raise RuntimeError(f"拒绝解压可疑路径: {member.filename}")
         zf.extractall(target_dir)
