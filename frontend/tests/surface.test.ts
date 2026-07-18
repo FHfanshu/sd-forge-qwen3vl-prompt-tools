@@ -181,6 +181,24 @@ describe("Svelte chat surface", () => {
     expect(screen.getByRole("button", { name: "Permission mode: direct edits" })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("keeps the touch composer focused and sendable while the virtual keyboard is open", async () => {
+    const user = userEvent.setup();
+    const sendMessage = vi.fn();
+    render(Surface, { initialOpen: true, actions: { sendMessage } });
+    const composer = screen.getByRole("textbox", { name: "Message Kohaku Loom" });
+    await user.type(composer, "Send above the keyboard");
+    expect(composer).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Resize chat window" })).not.toBeInTheDocument();
+
+    const send = screen.getByRole("button", { name: "Send message" });
+    expect(await fireEvent.pointerDown(send, { pointerId: 7, pointerType: "touch" })).toBe(false);
+    expect(composer).toHaveFocus();
+    await fireEvent.click(send);
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "Send above the keyboard" }));
+    expect(composer).toHaveFocus();
+  });
+
   it("clears the composer immediately while remote acceptance is pending", async () => {
     const user = userEvent.setup();
     let accept!: () => void;

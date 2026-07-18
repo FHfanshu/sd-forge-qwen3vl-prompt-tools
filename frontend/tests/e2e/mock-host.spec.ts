@@ -410,8 +410,11 @@ test.describe("tablet layout", () => {
     await page.goto("/?mount=1");
     await page.getByRole("button", { name: "Open Kohaku Loom" }).click();
     const chat = page.getByRole("dialog", { name: "Kohaku Loom chat" });
-    await chat.getByRole("textbox", { name: "Message Kohaku Loom" }).fill("Touch copy check");
-    await chat.getByRole("button", { name: "Send message" }).click();
+    const tabletComposer = chat.getByRole("textbox", { name: "Message Kohaku Loom" });
+    await tabletComposer.fill("Touch copy check");
+    await expect(chat.getByRole("button", { name: "Resize chat window" })).toHaveCount(0);
+    await chat.getByRole("button", { name: "Send message" }).tap();
+    await expect(tabletComposer).toBeFocused();
     await expect(chat.getByText("Mock assistant reply", { exact: true })).toBeVisible();
     await expect(chat.getByRole("button", { name: "Copy" }).first()).toBeVisible();
     await chat.getByRole("button", { name: "Permission mode: confirmations required" }).click();

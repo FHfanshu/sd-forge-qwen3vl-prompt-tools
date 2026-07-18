@@ -661,3 +661,45 @@ Goal: split oversized backend and browser files, keep files under 1000 lines, an
   Residual output was limited to the existing Starlette `httpx` deprecation,
   npm `store-dir`, and Git line-ending warnings. Updated prompt rules take
   effect for newly created sessions; existing sessions retain their snapshot.
+
+## 2026-07-18 Tool Context Budget and Keyboard Send Recovery
+
+- Visible symptoms: a short prompt-edit request displayed roughly 16k input
+  tokens after reading the active prompt, and the tablet Send control could not
+  be tapped while the virtual keyboard remained open.
+- Runtime evidence: the latest session recorded 15,692 cumulative input tokens
+  across three provider rounds, not one 16k `read_prompt` call. Its 9,755
+  character system snapshot included unrelated user/project skills; the raw
+  `read_prompt` result repeated the same positive prompt and hash under two
+  names, while a single Danbooru query repeated candidates under `items` and
+  `results`. On touch, tapping Send moved focus away from the textarea and
+  started keyboard viewport recovery; the coarse-pointer resize handle also
+  occupied the same lower-right interaction area.
+- Changed `kohaku_loom/sidecar/runtime.py` to keep only Loom's declared
+  `danbooru-prompting` skill enabled and refresh the generated system prompt.
+  Changed `kohaku_loom/forge_tools.py`, `kohaku_loom/danbooru.py`, the creature
+  prompt, and the legacy prompt contract to expose one canonical copy of each
+  model-facing prompt, hash, style, and search result while preserving browser
+  hash guards and full UI state. A representative fresh creature system prompt
+  measured 8,879 to 5,869 characters, and the captured `read_prompt` payload
+  measured 4,388 to 2,255 characters.
+- Changed `frontend/src/components/Surface.svelte` so touch Send/Queue pointer
+  down preserves textarea focus and the resize handle leaves the interaction
+  tree while the composer owns focus. This keeps the keyboard viewport stable
+  through submission and removes the overlapping corner target. Regenerated
+  `javascript/kohaku_loom_90_ui.js`.
+- Regression coverage: the installed KT contract verifies only Loom's declared
+  skill remains enabled and duplicate prompt/style fields do not reach the
+  model; resource tests cover non-duplicated single and batch Danbooru shapes;
+  Surface and touch-tablet Playwright tests submit while retaining composer
+  focus and verify that the resize target is absent during text entry.
+- Verification: `tools/test_runner.py --max-skips 20` passed 229 tests with 0
+  skips in the installed KT environment; system-Python branch coverage passed
+  at 72% with 20 expected KT skips; compileall passed. Under isolated Node
+  22.17.0 / pnpm 10.12.4, Svelte check reported 0 errors and 0 warnings,
+  Vitest passed 137 tests with 84.79% statements/lines, 72.41% branches, and
+  74.45% functions, Vite transformed 4,017 modules, Playwright passed all 6
+  desktop/mobile/tablet scenarios, and all browser scripts passed syntax
+  checks. The bundle measured 603,923 raw / 170,234 gzip bytes. Residual output
+  was limited to the existing Starlette `httpx` deprecation, npm `store-dir`,
+  and Git line-ending warnings.

@@ -11,6 +11,27 @@ from .kt_tools import DanbooruTool, PromptSkillTool
 from .tool_args import unwrap_object_content
 
 
+def compact_forge_tool_result(tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Return the smallest model-facing result that preserves the tool contract."""
+    if tool_name != "read_prompt" or result.get("ok") is False:
+        return result
+    prompt = result.get("prompt", result.get("positive_prompt", ""))
+    prompt_hash = result.get("prompt_hash", result.get("positive_prompt_hash", ""))
+    compact = {
+        "ok": result.get("ok", True),
+        "target": result.get("target", "active"),
+        "prompt": prompt,
+        "prompt_hash": prompt_hash,
+        "negative_prompt": result.get("negative_prompt", ""),
+        "negative_prompt_hash": result.get("negative_prompt_hash", ""),
+        "context_hash": result.get("context_hash", ""),
+        "forge_preset": result.get("forge_preset", ""),
+        "checkpoint": result.get("checkpoint", ""),
+        "style_template": result.get("style_template", ""),
+    }
+    return compact
+
+
 class ForgeBridgeTool(BaseTool):
     is_concurrency_safe = False
 
@@ -44,7 +65,7 @@ class ForgeBridgeTool(BaseTool):
             return ToolResult(output=str(error), error="forge_tool_timeout")
         except asyncio.CancelledError:
             raise
-        serialized = json.dumps(result, ensure_ascii=False)
+        serialized = json.dumps(compact_forge_tool_result(self.tool_name, result), ensure_ascii=False)
         if result.get("ok") is False:
             return ToolResult(
                 output=serialized,

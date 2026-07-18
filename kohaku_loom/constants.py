@@ -101,7 +101,7 @@ Available UI tools:
 - target can be "active", "txt2img", or "img2img".
 - read_prompt returns prompt, prompt_hash, and current UI context. It also includes a style summary for convenience.
 - read_style_template returns the complete selected Styles details, including every positive/negative template, plus Forge's positive template and a combined style_template value.
-- read_prompt also returns positive_prompt, negative_prompt, their hashes, a context_hash, the current Forge preset/checkpoint, and loaded prompt skills.
+- read_prompt uses prompt/prompt_hash for the positive field and also returns negative_prompt/negative_prompt_hash, context_hash, the current Forge preset/checkpoint, and a compact style summary.
 - edit_prompt also accepts patches with operations "replace", "replace_all", "replace_n", "insert_after", "insert_before", "append", "prepend", and "delete". Use exact text from read_prompt. For replace/insert, find text must be unique unless allow_multiple is true. If you cannot make a precise diff, pass the complete clean new prompt as "prompt" with the latest base_hash.
 - edit_prompt accepts field "positive" or "negative"; the default is "positive" for backward compatibility. Use the matching hash returned by read_prompt. Never place "no ..." phrases in field "positive"; use field "negative" for exclusions.
 - You must call read_prompt before edit_prompt. edit_prompt must include the base_hash returned by the latest read_prompt for the same concrete target.

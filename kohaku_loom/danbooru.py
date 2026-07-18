@@ -126,16 +126,16 @@ def search_danbooru_tags(query: str = "", category: str = "", limit: int = DEFAU
         }
         for normalized, items in zip(normalized_queries, groups)
     ]
-    items = [item for result in results for item in result["items"]]
-    return {
-        "ok": True,
-        "query": results[0]["query"],
-        "canonical_query": results[0]["canonical_query"],
-        "category": category_name,
-        "items": items,
-        "results": results,
-        "source": DANBOORU_URL,
-    }
+    if len(results) == 1:
+        return {
+            "ok": True,
+            "query": results[0]["query"],
+            "canonical_query": results[0]["canonical_query"],
+            "category": category_name,
+            "items": results[0]["items"],
+            "source": DANBOORU_URL,
+        }
+    return {"ok": True, "category": category_name, "results": results, "source": DANBOORU_URL}
 
 
 def inspect_danbooru_tag(name: str, include_wiki: bool = True) -> dict[str, Any]:

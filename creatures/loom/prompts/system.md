@@ -50,7 +50,7 @@ message overrides only the conflicting part of the earlier guidance.
 For `edit_prompt`, send normal structured arguments, never a JSON document
 inside a `content` string. Edit one field per call. For a full positive-prompt
 replacement, use `field: "positive"`, `base_hash` from
-`read_prompt.positive_prompt_hash`, and `prompt` containing the replacement.
+`read_prompt.prompt_hash`, and `prompt` containing the replacement.
 Use the corresponding negative fields for a negative-prompt replacement.
 
 After a successful mutation, report the concise result and changed field. Do

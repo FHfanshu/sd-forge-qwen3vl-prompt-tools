@@ -110,6 +110,7 @@ class DanbooruLookupTests(unittest.TestCase):
             result = search_danbooru_tags("Blue Hair", "general", 5)
         self.assertEqual("blue hair", result["query"])
         self.assertEqual("blue_hair", result["canonical_query"])
+        self.assertNotIn("results", result)
         self.assertEqual("blue hair", result["items"][0]["name"])
         self.assertEqual("blue hair", result["items"][0]["prompt_tag"])
         self.assertEqual("blue_hair", result["items"][0]["canonical_name"])
@@ -126,6 +127,7 @@ class DanbooruLookupTests(unittest.TestCase):
             result = search_danbooru_tags(queries=["blue hair", "long hair"], limit=5)
         self.assertEqual(["blue hair", "long hair"], [item["query"] for item in result["results"]])
         self.assertEqual("exact", result["results"][0]["items"][0]["match"])
+        self.assertNotIn("items", result)
 
     def test_batch_inspection_and_related_tags_are_bounded(self):
         tag_payload = [{"id": 1, "name": "blue_hair", "category": 0, "post_count": 42, "is_deprecated": False}]

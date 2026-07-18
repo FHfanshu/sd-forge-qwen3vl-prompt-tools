@@ -21,6 +21,24 @@ from kohaku_loom.sidecar.session_metadata import SessionMetadataQueue, metadata_
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _AGENT_MODES = {"normal", "yolo"}
 _YOLO_TOOL_NAMES = {"read_txt2img_state", "apply_txt2img_patch"}
+_LOOM_SKILL_NAMES = {"danbooru-prompting"}
+
+
+def restrict_agent_skills(agent: Any) -> bool:
+    """Keep unrelated project/user skills out of this Forge-only agent prompt."""
+    registry = getattr(agent, "skills", None)
+    if registry is None or not callable(getattr(registry, "list_enabled", None)):
+        return False
+    changed = False
+    for skill in registry.list_enabled():
+        if str(getattr(skill, "name", "")) not in _LOOM_SKILL_NAMES:
+            skill.enabled = False
+            changed = True
+    if changed:
+        refresh = getattr(agent, "refresh_system_prompt", None)
+        if callable(refresh):
+            refresh()
+    return changed
 
 
 @dataclass
@@ -481,6 +499,7 @@ class LoomSidecarRuntime:
                 await engine.shutdown()
                 raise
         await creature.wait_restoration_ready()
+        restrict_agent_skills(creature.agent)
         return engine, creature
 
     def _sync_agent_mode_tools(self, session: ActiveSession) -> None:

@@ -19,7 +19,7 @@ try:
     from kohaku_loom.forge_tools import ReadPromptTool, forge_tools, yolo_forge_tools
     from kohaku_loom.profile_store import LoomProfileStore
     from kohaku_loom.runtime_paths import LoomRuntimePaths
-    from kohaku_loom.sidecar.runtime import LoomSidecarRuntime
+    from kohaku_loom.sidecar.runtime import LoomSidecarRuntime, restrict_agent_skills
     from kohaku_loom.kt_providers import GeminiNativeProvider, LlamaOnceProvider, ProfileOpenAIProvider, _retryable_provider_error
     from kohaku_loom.provider_errors import provider_http_status
 
@@ -185,6 +185,8 @@ class KohakuTerrariumContractTests(unittest.IsolatedAsyncioTestCase):
                 skill = creature.agent.skills.get("danbooru-prompting")
                 self.assertTrue(skill.enabled)
                 self.assertIn("Danbooru", skill.body)
+                restrict_agent_skills(creature.agent)
+                self.assertEqual(["danbooru-prompting"], [item.name for item in creature.agent.skills.list_enabled()])
             finally:
                 await engine.shutdown()
 
@@ -220,7 +222,17 @@ output:
                 self.assertEqual({"target": "active"}, request["payload"]["arguments"])
                 status = await broker.reply(
                     request["payload"]["request_id"],
-                    {"ok": True, "positive_prompt": "subject", "prompt_hash": "fnv1a:1"},
+                    {
+                        "ok": True,
+                        "target": "txt2img",
+                        "prompt": "subject",
+                        "positive_prompt": "subject",
+                        "prompt_hash": "fnv1a:1",
+                        "positive_prompt_hash": "fnv1a:1",
+                        "negative_prompt": "noise",
+                        "selected_styles": [{"name": "duplicate style detail"}],
+                        "style_template": "Selected WebUI Styles: cinematic",
+                    },
                 )
                 self.assertEqual("accepted", status)
                 result = await asyncio.wait_for(turn, timeout=15)
@@ -230,7 +242,10 @@ output:
         self.assertEqual("ok", result.status)
         self.assertIn("subject", result.text)
         self.assertEqual(2, llm.call_count)
-        self.assertIn("positive_prompt", json.dumps(llm.call_log[1], ensure_ascii=False))
+        tool_result = json.loads(llm.call_log[1][-1]["content"])
+        self.assertEqual("subject", tool_result["prompt"])
+        self.assertNotIn("positive_prompt", tool_result)
+        self.assertNotIn("selected_styles", tool_result)
 
     async def test_late_reply_is_rejected(self):
         broker = ForgeToolBroker()
