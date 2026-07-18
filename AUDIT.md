@@ -624,3 +624,40 @@ Goal: split oversized backend and browser files, keep files under 1000 lines, an
   169,319 gzip bytes. The `.loom` venv does not include `coverage`, so coverage
   used the system test environment; residual output was limited to the existing
   Starlette `httpx` deprecation, npm `store-dir`, and Git line-ending warnings.
+
+## 2026-07-18 Forge-Aware YOLO Replies and Touch Code Copy
+
+- Visible symptoms: a real YOLO session still ended with a generic question
+  asking whether the user was currently in Forge and whether Loom should fill
+  the generated prompt; the same response described an ordinary prompt as
+  Danbooru-formatted without invoking the prompting skill. Markdown code blocks
+  offered neither a direct copy action nor reliable touch text selection.
+- Root causes: the active creature prompt described the Forge host and tool
+  authority but did not prohibit redundant host/next-action questions or state
+  the behavioral meaning of YOLO. Its Danbooru guidance was also advisory.
+  Sanitized Markdown was rendered as bare `pre/code` elements, so message-level
+  actions could not copy an individual block and embedded clipboard denial had
+  no fallback.
+- Changed `creatures/loom/prompts/system.md` and the legacy prompt in
+  `kohaku_loom/constants.py` to prohibit redundant Forge and generic apply
+  questions, define direct mutation for explicit edit requests in YOLO, and
+  require the Danbooru skill only for tag requests. Changed
+  `frontend/src/components/Markdown.svelte`, `frontend/src/styles.css`, and
+  `kohaku_loom/i18n.py` to add a localized per-block copy button, Clipboard API
+  recovery through the browser copy command, and explicit touch selection.
+  Regenerated `javascript/kohaku_loom_90_ui.js`.
+- Regression coverage: prompt tests assert both prompt paths carry the Forge and
+  YOLO contract. New Markdown tests verify exact block text copying, visible
+  completion feedback, touch-selection CSS, and fallback after Clipboard API
+  denial.
+- Verification: `tools/test_runner.py --max-skips 20` passed 229 tests with 0
+  skips in the installed KT environment; system-Python branch coverage passed
+  at 72% with 20 expected KT skips; compileall passed. Under isolated Node
+  22.17.0 / pnpm 10.12.4, Svelte check reported 0 errors and 0 warnings,
+  Vitest passed 136 tests with 84.78% statements/lines, 72.33% branches, and
+  74.40% functions, Vite transformed 4,017 modules, Playwright passed all 6
+  desktop/mobile/tablet scenarios, and all generated browser scripts passed
+  syntax checks. The bundle measured 603,654 raw / 170,106 gzip bytes.
+  Residual output was limited to the existing Starlette `httpx` deprecation,
+  npm `store-dir`, and Git line-ending warnings. Updated prompt rules take
+  effect for newly created sessions; existing sessions retain their snapshot.

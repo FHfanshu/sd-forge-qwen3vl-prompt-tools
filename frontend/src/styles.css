@@ -376,8 +376,9 @@
   .kl-markdown p, .kl-markdown ul, .kl-markdown ol, .kl-markdown pre, .kl-markdown blockquote { margin: .45em 0; }
   .kl-markdown ul, .kl-markdown ol { padding-left: 1.25em; }
   .kl-markdown code { padding: 1px 4px; border-radius: 4px; background: rgba(32,35,41,.08); font-size: .9em; }
-  .kl-markdown pre { max-width: 100%; overflow: auto; padding: 9px; border-radius: 9px; background: #25282d; color: #f4f1ea; }
+  .kl-markdown pre { max-width: 100%; overflow: auto; padding: 9px; border-radius: 9px; background: #25282d; color: #f4f1ea; -webkit-user-select: text; user-select: text; touch-action: pan-x pan-y; }
   .kl-markdown pre code { padding: 0; background: transparent; }
+  .kl-code-block { position: relative; margin: .45em 0; } .kl-code-block > pre { margin: 0; padding-top: 2.35rem; } .kl-code-copy { position: absolute; z-index: 1; top: .42rem; right: .42rem; min-height: 1.55rem; padding: .16rem .45rem; border: 1px solid rgb(255 255 255 / 18%); border-radius: 6px; color: #f4f1ea; background: rgb(0 0 0 / 28%); font-size: .68rem; touch-action: manipulation; } .kl-code-copy:hover, .kl-code-copy:focus-visible { background: rgb(0 0 0 / 48%); }
   .kl-message-actions { display: flex; flex-wrap: wrap; gap: 2px; opacity: 0; transition: opacity 120ms ease; }
   .kl-message-card:hover .kl-message-actions, .kl-message-card:focus-within .kl-message-actions { opacity: 1; }
   .kl-message-action { display: inline-flex; align-items: center; gap: 4px; padding: 3px 5px; border-radius: 6px; color: var(--kl-ink-soft); background: transparent; font-size: 10px; }
