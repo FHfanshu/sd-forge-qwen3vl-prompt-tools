@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 from kohaku_loom.assistant import _prompt_assistant_chat_once, ask_teacher, prompt_assistant_chat
@@ -10,6 +11,17 @@ from kohaku_loom.assistant_teacher import qwen_teacher_enabled
 
 
 class PromptToolsTests(unittest.TestCase):
+    def test_agent_prompts_identify_the_forge_host_and_bridge_boundary(self):
+        from kohaku_loom.constants import PROMPT_ASSISTANT_SYSTEM
+
+        creature_prompt = (
+            Path(__file__).resolve().parents[1] / "creatures" / "loom" / "prompts" / "system.md"
+        ).read_text(encoding="utf-8")
+        for prompt in (PROMPT_ASSISTANT_SYSTEM, creature_prompt):
+            self.assertIn("embedded inside the user's Forge Neo WebUI", prompt)
+            self.assertIn("only authority for reading or changing that UI", prompt)
+            self.assertIn("bridge", prompt.lower())
+
     def test_prompt_sanitizer_restores_tool_arguments(self):
         sanitizer = _PromptSanitizer(True)
         sanitized = sanitizer.sanitize_text("moqing, erection, precum")

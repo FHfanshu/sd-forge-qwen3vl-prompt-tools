@@ -150,6 +150,19 @@ class ProfileStoreTests(unittest.TestCase):
                 json.loads(paths.profile_secrets_file.read_text(encoding="utf-8")),
             )
 
+    def test_import_does_not_persist_phantom_api_key_flag_without_a_secret(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = LoomRuntimePaths.under(Path(directory))
+            state = profile_state("")
+            state["profiles"][0]["has_api_key"] = True
+
+            imported = LoomProfileStore(paths).import_state(state)
+            public = json.loads(paths.profiles_file.read_text(encoding="utf-8"))
+
+            self.assertFalse(imported["profiles"][0]["has_api_key"])
+            self.assertNotIn("has_api_key", public["profiles"][0])
+            self.assertEqual({}, json.loads(paths.profile_secrets_file.read_text(encoding="utf-8")))
+
 
 class SidecarManagerTests(unittest.TestCase):
     def test_stable_kohakuterrarium_is_kept_when_capability_probe_passes(self):

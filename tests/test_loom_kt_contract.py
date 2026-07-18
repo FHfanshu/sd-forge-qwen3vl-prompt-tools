@@ -20,7 +20,8 @@ try:
     from kohaku_loom.profile_store import LoomProfileStore
     from kohaku_loom.runtime_paths import LoomRuntimePaths
     from kohaku_loom.sidecar.runtime import LoomSidecarRuntime
-    from kohaku_loom.kt_providers import GeminiNativeProvider, LlamaOnceProvider, ProfileOpenAIProvider
+    from kohaku_loom.kt_providers import GeminiNativeProvider, LlamaOnceProvider, ProfileOpenAIProvider, _retryable_provider_error
+    from kohaku_loom.provider_errors import provider_http_status
 
     KT_AVAILABLE = True
 except (ImportError, ModuleNotFoundError):
@@ -505,6 +506,19 @@ output:
         self.assertEqual("read_prompt", body["tools"][0]["functionDeclarations"][0]["name"])
 
     async def test_gemini_retry_preserves_partial_native_tool_call(self):
+        class GoogleClientError(RuntimeError):
+            def __init__(self, status, message):
+                super().__init__(message)
+                self.code = status
+
+        for status in (401, 403):
+            error = GoogleClientError(status, f"{status} invalid credential")
+            self.assertEqual(status, provider_http_status(error))
+            self.assertFalse(_retryable_provider_error(error))
+        self.assertTrue(_retryable_provider_error(GoogleClientError(429, "rate limited")))
+        self.assertTrue(_retryable_provider_error(GoogleClientError(503, "unavailable")))
+        self.assertFalse(_retryable_provider_error(GoogleClientError(400, "bad request")))
+
         class Stream:
             def __init__(self, responses, error=None):
                 self.responses = responses

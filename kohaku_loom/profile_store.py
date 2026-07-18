@@ -56,6 +56,7 @@ class LoomProfileStore:
                 raise ValueError(f"duplicate profile id: {profile_id}")
             seen.add(profile_id)
             api_key = str(profile.pop("api_key", "") or "")
+            profile.pop("has_api_key", None)
             profile.pop("messages", None)
             profile.pop("_profile_payload", None)
             if api_key:

@@ -20,6 +20,7 @@ import {
   mapQueuedMessage,
   normalizeBranchMetadata,
   operationId,
+  providerRetryDetail,
   textFromContent,
   usageFrom,
 } from "./runtime-formatters";
@@ -564,6 +565,8 @@ export class LoomRuntimeController {
     if (type === "turn_started") {
       run.accepted = true;
       this.syncWorking(run);
+    } else if (type === "provider_retry") {
+      useRuntimeStore.getState().setWorking("retrying", providerRetryDetail(payload));
     } else if (type === "text_delta") {
       run.text += String(payload.text ?? "");
       this.updateStreamingMessage(run);
@@ -587,11 +590,14 @@ export class LoomRuntimeController {
       if (payload.usage) run.usage = payload.usage;
       const terminalStatus = String(payload.status).toLowerCase();
       const interrupted = run.cancelRequested || ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
+      const succeeded = ["ok", "completed"].includes(terminalStatus);
       if (run.assistantId) {
-        useChatStore.getState().updateMessage(run.assistantId, { content: finalText, reasoning: run.reasoning || undefined, usage: usageFrom(run.usage), status: interrupted ? "cancelled" : ["ok", "completed"].includes(terminalStatus) ? "complete" : "error" });
+        useChatStore.getState().updateMessage(run.assistantId, { content: finalText, reasoning: run.reasoning || undefined, usage: usageFrom(run.usage), status: interrupted ? "cancelled" : succeeded ? "complete" : "error" });
       } else if (finalText) {
         run.assistantId = `assistant-${run.requestId}`;
-        useChatStore.getState().appendMessage({ id: run.assistantId, role: "assistant", content: finalText, reasoning: run.reasoning || undefined, usage: usageFrom(run.usage), status: interrupted ? "cancelled" : ["ok", "completed"].includes(terminalStatus) ? "complete" : "error" });
+        useChatStore.getState().appendMessage({ id: run.assistantId, role: "assistant", content: finalText, reasoning: run.reasoning || undefined, usage: usageFrom(run.usage), status: interrupted ? "cancelled" : succeeded ? "complete" : "error" });
+      } else if (!interrupted && !succeeded) {
+        useChatStore.getState().appendMessage({ id: `error-${run.requestId}`, role: "error", content: errorText(payload.error ?? "Provider request failed without returning a response."), status: "error" });
       }
       this.finishRun(run, payload);
     }

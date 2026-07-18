@@ -117,6 +117,32 @@ describe("Svelte chat surface", () => {
     expect(newSession).not.toHaveBeenCalled();
   });
 
+  it("restores the floating window after a virtual keyboard viewport closes", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 768 });
+    const visualViewport = Object.assign(new EventTarget(), {
+      offsetLeft: 0,
+      offsetTop: 0,
+      width: 1024,
+      height: 768,
+    });
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: visualViewport });
+
+    render(Surface, { initialOpen: true, actions: {} });
+    const dialog = screen.getByRole("dialog", { name: "Kohaku Loom chat" });
+    const composer = screen.getByRole("textbox", { name: "Message Kohaku Loom" });
+    expect(dialog).toHaveStyle({ height: "680px" });
+
+    composer.focus();
+    visualViewport.height = 260;
+    visualViewport.dispatchEvent(new Event("resize"));
+    await waitFor(() => expect(dialog).toHaveStyle({ height: "244px" }));
+
+    composer.blur();
+    await waitFor(() => expect(dialog).toHaveStyle({ height: "680px" }));
+    expect(useUiStore.getState().layouts.desktop.height).toBe(680);
+  });
+
   it("waits for explicit session creation before sending", async () => {
     const user = userEvent.setup();
     let releaseSession!: () => void;
@@ -143,8 +169,25 @@ describe("Svelte chat surface", () => {
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "Refine this prompt", riskMode: "normal", reasoning: "low" }));
     expect(screen.getByRole("textbox", { name: "Message Kohaku Loom" })).toHaveValue("");
     await user.click(screen.getByRole("button", { name: "Permission mode: confirmations required" }));
+    expect(screen.getByText("Allow direct edits?").closest(".kl-dialog-card")?.closest(".kl-window")).not.toBeNull();
+    expect(document.querySelector(".kl-dialog-layer")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Allow direct edits" }));
     expect(screen.getByRole("button", { name: "Permission mode: direct edits" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("clears the composer immediately while remote acceptance is pending", async () => {
+    const user = userEvent.setup();
+    let accept!: () => void;
+    const sendMessage = vi.fn(() => new Promise<void>((resolve) => { accept = resolve; }));
+    render(Surface, { initialOpen: true, actions: { sendMessage } });
+    const composer = screen.getByRole("textbox", { name: "Message Kohaku Loom" });
+    await user.type(composer, "hello");
+
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(composer).toHaveValue("");
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "hello" }));
+    accept();
   });
 
   it("loads Edit into the composer and reruns only through the existing send button", async () => {
@@ -336,7 +379,7 @@ describe("Svelte chat surface", () => {
     await user.type(composer, " and next draft");
     accept();
 
-    await waitFor(() => expect(composer).toHaveValue("First request and next draft"));
+    await waitFor(() => expect(composer).toHaveValue(" and next draft"));
   });
 
   it("shows a recoverable status while the sidecar is starting", () => {

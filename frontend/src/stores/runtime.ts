@@ -1,7 +1,7 @@
 import { createStore } from "./store";
 import type { BranchMetadata, HistoryRow, PendingToolApproval, RuntimeSession } from "../contracts";
 
-export type WorkingPhase = "idle" | "submitting" | "thinking" | "generating" | "tool" | "cancelling";
+export type WorkingPhase = "idle" | "submitting" | "thinking" | "generating" | "retrying" | "tool" | "cancelling";
 export type RuntimeStartupState = "idle" | "starting" | "ready" | "error";
 
 export interface RuntimeStore {
@@ -14,6 +14,7 @@ export interface RuntimeStore {
   startup: RuntimeStartupState;
   workingPhase: WorkingPhase;
   workingTool: string | null;
+  workingDetail: string | null;
   error: string | null;
   pendingToolApproval: PendingToolApproval | null;
   legacySessionId: string | null;
@@ -23,7 +24,7 @@ export interface RuntimeStore {
   setQueuePaused(queuePaused: boolean): void;
   setLoading(loading: boolean): void;
   setStartup(startup: RuntimeStartupState): void;
-  setWorking(phase: WorkingPhase, tool?: string | null): void;
+  setWorking(phase: WorkingPhase, detail?: string | null): void;
   setError(error: string | null): void;
   setPendingToolApproval(approval: PendingToolApproval | null): void;
   setLegacySession(sessionId: string | null): void;
@@ -40,6 +41,7 @@ export const useRuntimeStore = createStore<RuntimeStore>((set) => ({
   startup: "idle",
   workingPhase: "idle",
   workingTool: null,
+  workingDetail: null,
   error: null,
   pendingToolApproval: null,
   legacySessionId: null,
@@ -61,8 +63,12 @@ export const useRuntimeStore = createStore<RuntimeStore>((set) => ({
   setStartup(startup) {
     set({ startup });
   },
-  setWorking(workingPhase, workingTool = null) {
-    set({ workingPhase, workingTool: workingPhase === "tool" ? workingTool : null });
+  setWorking(workingPhase, detail = null) {
+    set({
+      workingPhase,
+      workingTool: workingPhase === "tool" ? detail : null,
+      workingDetail: workingPhase === "retrying" ? detail : null,
+    });
   },
   setError(error) {
     set({ error });
@@ -84,6 +90,7 @@ export const useRuntimeStore = createStore<RuntimeStore>((set) => ({
       startup: "idle",
       workingPhase: "idle",
       workingTool: null,
+      workingDetail: null,
       error: null,
       pendingToolApproval: null,
       legacySessionId: null,

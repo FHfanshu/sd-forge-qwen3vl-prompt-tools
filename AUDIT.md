@@ -452,3 +452,135 @@ Goal: split oversized backend and browser files, keep files under 1000 lines, an
   a second production read, and restored the original value. The default
   `playwright.config.ts` explicitly ignores this spec, so GitHub Actions keeps
   running only the mock-host suite.
+
+## 2026-07-18 Late Forge UI Boot Recovery
+
+- Symptom: when `kohaku_loom_99_boot.js` loaded after Forge had already fired its
+  one-shot `onUiLoaded` callbacks, the Svelte UI never mounted and Retry could
+  not recover because the late callback was never replayed.
+- Root cause: the boot state machine trusted only its callback-owned
+  `forgeUiLoaded` flag and did not recognize an already-present Forge prompt UI.
+- Changed `javascript/kohaku_loom_99_boot.js` to detect the real
+  `#txt2img_prompt` through `gradioApp()` when available, fall back to `document`,
+  and attempt the initial mount before scheduling retries. Added the late-load
+  regression to `tests/test_host_bridge.py`; the existing pre-load ordering test
+  still verifies that mounting does not happen before Forge is ready.
+- Verification: `python -m unittest tests.test_host_bridge` passed 6 tests;
+  `python -m unittest discover -s tests` passed 226 tests with 20 expected skips;
+  `node --check javascript/kohaku_loom_99_boot.js` and `git diff --check` passed.
+
+## 2026-07-18 Immediate Send Feedback and Provider Auth Failure
+
+- Reproduction: a live `moyuu-gemini` turn returned no text or reasoning and
+  ended after about 117 seconds. Its runtime snapshot recorded five provider
+  retries followed by `401 Invalid token`; the composer stayed populated until
+  remote turn acceptance, retry events were ignored, and a zero-output terminal
+  failure produced no visible chat error.
+- Root cause: Google SDK client errors expose HTTP status through `code` (and
+  sometimes only their message), while the retry classifier inspected
+  `status_code` only. The Svelte submit path also cleared the draft after its
+  awaited send, and the runtime controller did not handle `provider_retry` or
+  render terminal errors without assistant output.
+- Changed `kohaku_loom/provider_errors.py`, `kohaku_loom/kt_providers.py`, and
+  `kohaku_loom/sidecar/app.py` to normalize provider statuses, fail 4xx requests
+  immediately except retryable 408/429, and sanitize 401/403 diagnostics.
+  Changed the Svelte surface, runtime controller/formatter/store, working
+  indicator, and generated `javascript/kohaku_loom_90_ui.js` so clicks clear the
+  composer synchronously, failed submissions restore unsent content, real
+  retries are visible, and zero-output failures append an actionable error card.
+  Added a generated-bundle whitespace attribute because an upstream dependency
+  contains a semantic multiline whitespace literal that otherwise produces a
+  false-positive trailing-whitespace diagnostic on the regenerated line.
+- Regression coverage: `tests/test_loom_kt_contract.py` covers Google-style
+  401/403 non-retry classification and retryable 429/503; profile connection
+  tests cover `.code` status extraction; frontend controller/surface tests cover
+  pending-send responsiveness, retry status, safe auth errors, and draft or
+  attachment recovery.
+- Verification: `python -m unittest discover -s tests` passed 228 tests with 21
+  expected skips; the required-KT contract runner passed 21 tests with 0 skips;
+  Svelte check passed with 0 errors and 0 warnings; Vitest passed 128 tests; Vite
+  transformed 4,017 modules and generated a 596,259-byte bundle (167,825 gzip
+  bytes); all `kohaku_loom*.js` browser syntax checks and `git diff --check`
+  passed. npm emitted only its existing future `store-dir` compatibility warning.
+
+## 2026-07-18 Explicit Profile Save Confirmation
+
+- Symptom: profile edits immediately displayed `Saved` even though the debounced
+  sidecar sync could fail silently. An API key then existed only in the current
+  browser memory and disappeared after refresh; a stale browser
+  `has_api_key=true` flag could also make the public profile look configured
+  while the DPAPI secret file was empty.
+- Root cause: the settings UI treated the local store mutation as durable, the
+  autosave path swallowed sidecar failures, and profile import persisted the
+  browser-provided `has_api_key` marker instead of deriving it exclusively from
+  encrypted secret storage.
+- Changed `frontend/src/components/ProfileSettings.svelte` and
+  `frontend/src/styles.css` to add a top-right Save button that awaits profile
+  sync, stays retryable on failure, and reports success only after the sidecar
+  confirms the selected profile and its required API key. Ordinary edits now
+  retain the honest autosave status instead of claiming durable success.
+  Changed `kohaku_loom/profile_store.py` to remove untrusted `has_api_key` from
+  public persistence, added localized save states in `kohaku_loom/i18n.py`, and
+  regenerated `javascript/kohaku_loom_90_ui.js`.
+- Regression coverage: `frontend/tests/profile-settings.test.ts` covers button
+  placement, failed-save retry, confirmed success, and rejection of a phantom
+  encrypted-key claim. A follow-up corrected the UI guard so every remote profile
+  requires sidecar-confirmed secret storage, including profiles whose frontend
+  state never claimed to have a key. `tests/test_loom_runtime.py` verifies that
+  profile import neither persists nor returns a positive API-key flag without a
+  real secret.
+- Follow-up input reproduction: the API-key field was a host-backed controlled
+  input, so each keystroke crossed the browser profile-store normalization and
+  reload boundary where credential scrubbing could replace the value. The field
+  now owns a per-profile Svelte draft, sends the complete key only on explicit
+  Save, preserves it after failed saves, and clears it only after sidecar
+  confirmation. Focused UI tests type a complete key, verify that no host update
+  or sync occurs before Save, and confirm that a failed save keeps the draft for
+  a successful retry.
+- Verification: focused profile settings passed 14 tests; focused profile store
+  passed 7 tests; `python -m unittest discover -s tests` passed 229 tests with 21
+  expected skips; Svelte check passed with 0 errors and 0 warnings; Vitest passed
+  131 tests; Vite transformed 4,017 modules and generated a 598,963-byte bundle
+  (168,569 gzip bytes); bundle-size passed; the required-KT contract runner
+  passed 21 tests with 0 skips; all `kohaku_loom*.js` browser syntax checks and
+  `git diff --check` passed. npm emitted only its existing future `store-dir`
+  compatibility warning and Git emitted only line-ending conversion notices.
+
+## 2026-07-18 Forge Context and Tablet Interaction Recovery
+
+- Symptoms: the Loom agent described itself like a detached prompt assistant
+  instead of recognizing the surrounding Forge Neo UI; a tablet virtual
+  keyboard could leave the chat window clamped to its transient visual viewport;
+  touch users could not reveal hover-only message Copy/Edit actions; and the
+  direct-edit confirmation shaded the entire Forge page instead of the chat
+  window that owned the control.
+- Root causes: the KT creature prompt mentioned Forge only as an optional tool
+  source, the Svelte surface used `visualViewport` for every viewport refresh,
+  message actions became static only below phone-sized media queries, and the
+  direct-edit `AlertDialog` was portalled to a fixed page-level overlay.
+- Changed `creatures/loom/prompts/system.md` and
+  `kohaku_loom/constants.py` to state the Forge Neo host and bridge authority
+  explicitly. Changed `frontend/src/window-interactions.ts` and
+  `frontend/src/components/Surface.svelte` so visual-viewport keyboard clamping
+  is temporary while a text control owns focus and blur restores the stable
+  layout viewport without persisting the reduced height. Changed
+  `frontend/src/styles.css` and `Surface.svelte` to keep message actions visible
+  for coarse/no-hover pointers and render the direct-edit confirmation inside
+  `.kl-window`. Regenerated `javascript/kohaku_loom_90_ui.js`.
+- Regression coverage: `tests/test_prompts.py` checks both agent prompt paths;
+  frontend window/surface tests cover keyboard shrink-and-restore, persisted
+  height, touch-action CSS, and chat-window dialog ownership; the tablet
+  Playwright test sends a message, verifies Copy is visible, and verifies the
+  direct-edit overlay is contained by the chat window. The provider retry
+  assertions were folded into an existing KT contract so the standard suite
+  remains within its hard 20-skip budget.
+- Verification: `python -m compileall -q kohaku_loom scripts install.py tools`
+  passed; `python tools/test_runner.py --max-skips 20` passed 229 tests with 20
+  expected skips; coverage passed at 72%; the required-KT runner passed 20 tests
+  with 0 skips. Under Node 22.17.0 and pnpm 10.12.4, Svelte check reported 0
+  errors and 0 warnings, Vitest passed 133 tests with 84.39% statements/lines,
+  72.01% branches, and 73.66% functions, Vite transformed 4,017 modules, and the
+  regenerated bundle measured 599,929 raw / 168,878 gzip bytes. Playwright
+  passed 6 tests; all `kohaku_loom*.js` syntax checks and `git diff --check`
+  passed. Residual output was limited to npm's existing future `store-dir`
+  warning and Git's LF-to-CRLF notices.

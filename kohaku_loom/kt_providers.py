@@ -32,6 +32,7 @@ from .assistant_profiles import GEMINI_NATIVE, LLAMA_ONCE
 from .constants import DEFAULT_LOCAL_CONTEXT_TOKENS, DEFAULT_LOCAL_TEXT_PRESET
 from .llama_runtime import _free_port, _wait_server
 from .model_paths import resolve_llama_server, resolve_vision_model_pair
+from .provider_errors import provider_http_status
 from .response_text import reasoning_text
 
 
@@ -42,6 +43,9 @@ _LOCAL_RETRY_DELAYS = [1.0, 2.0, 4.0, 8.0, 16.0]
 def _retryable_provider_error(error: BaseException) -> bool:
     if isinstance(error, (TypeError, ValueError, json.JSONDecodeError)):
         return False
+    status = provider_http_status(error)
+    if status is not None:
+        return status == 408 or status == 429 or status >= 500
     return classify_openai_error(error) in {
         ErrorClass.RATE_LIMIT,
         ErrorClass.SERVER,
@@ -324,9 +328,7 @@ class GeminiNativeProvider(StreamObserverMixin, BaseLLMProvider):
                         }
                     return
                 last_error = error
-                error_class = classify_openai_error(error)
-                retryable = error_class in {ErrorClass.RATE_LIMIT, ErrorClass.SERVER, ErrorClass.TRANSIENT}
-                if not retryable or attempt >= 5:
+                if not _retryable_provider_error(error) or attempt >= 5:
                     raise
                 await self._retry_delay(attempt + 1, error, _CLOUD_RETRY_DELAYS)
             finally:

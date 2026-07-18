@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProfileSettings from "../src/components/ProfileSettings.svelte";
-import { BRIDGE_API_VERSION, BRIDGE_CAPABILITIES, BRIDGE_NAME, HOST_API_NAME } from "../src/bridge";
+import { BRIDGE_API_VERSION, BRIDGE_CAPABILITIES, BRIDGE_NAME, getHostApi, HOST_API_NAME } from "../src/bridge";
 import { useI18nStore } from "../src/stores/i18n";
 import { useProfileStore } from "../src/stores/profiles";
 import { useUiStore } from "../src/stores/ui";
@@ -47,6 +47,7 @@ describe("Svelte profile settings", () => {
   it("shows the flat model summary and direct settings tabs", () => {
     render(ProfileSettings, { open: true, onclose: () => undefined });
     expect(screen.getByRole("dialog", { name: "Model profiles" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Test" })).toBeInTheDocument();
     ["Model", "Connection", "Generation", "Routes"].forEach((name) => expect(screen.getByRole("tab", { name })).toBeInTheDocument());
     expect(screen.queryByRole("tab", { name: "Local" })).not.toBeInTheDocument();
@@ -127,6 +128,66 @@ describe("Svelte profile settings", () => {
 
     await vi.advanceTimersByTimeAsync(250);
     expect(syncProfiles).toHaveBeenCalledOnce();
+  });
+
+  it("keeps manual save retryable until the sidecar confirms persistence", async () => {
+    const user = userEvent.setup();
+    const syncProfiles = installHost(async () => ({ text: "OK" }));
+    const profileId = useProfileStore.getState().selectedProfileId;
+    syncProfiles
+      .mockRejectedValueOnce(new Error("sidecar unavailable"))
+      .mockResolvedValueOnce({ profiles: [{ profile_id: profileId, has_api_key: true }] });
+    render(ProfileSettings, { open: true, onclose: () => undefined });
+    await user.click(screen.getByRole("tab", { name: "Connection" }));
+    const input = screen.getByLabelText("API key");
+    await user.type(input, "retry-secret");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Save failed"));
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(input).toHaveValue("retry-secret");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Saved securely"));
+    expect(syncProfiles).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not claim success when a remote profile never had an API key", async () => {
+    const profileId = useProfileStore.getState().selectedProfileId;
+    const syncProfiles = installHost(async () => ({ text: "OK" }));
+    syncProfiles.mockResolvedValue({ profiles: [{ profile_id: profileId, has_api_key: false }] });
+    render(ProfileSettings, { open: true, onclose: () => undefined });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("API key was not written to secure storage"));
+    expect(screen.getByRole("status")).not.toHaveTextContent("Saved securely");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("keeps a complete API key draft out of host state until explicit save", async () => {
+    const user = userEvent.setup();
+    const profileId = useProfileStore.getState().selectedProfileId;
+    const syncProfiles = installHost(async () => ({ text: "OK" }));
+    const updateProfile = getHostApi(window.kohakuLoom)!.profileStore.update as ReturnType<typeof vi.fn>;
+    syncProfiles.mockResolvedValue({ profiles: [{ profile_id: profileId, has_api_key: true }] });
+    render(ProfileSettings, { open: true, onclose: () => undefined });
+    await user.click(screen.getByRole("tab", { name: "Connection" }));
+    const input = screen.getByLabelText("API key");
+
+    await user.type(input, "secret-typed-once");
+
+    expect(input).toHaveValue("secret-typed-once");
+    expect(updateProfile).not.toHaveBeenCalled();
+    expect(syncProfiles).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Saved securely"));
+    expect(updateProfile).toHaveBeenCalledWith(profileId, expect.objectContaining({
+      api_key: "secret-typed-once",
+      has_api_key: true,
+    }));
   });
 
   it("switches language from the shadcn dropdown", async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { clampWindowLayout, minimumForViewport, readViewportRect, viewportKind } from "../src/window-interactions";
+import { readFileSync } from "node:fs";
+import { clampWindowLayout, minimumForViewport, readLayoutViewportRect, readViewportRect, viewportKind } from "../src/window-interactions";
 
 describe("window viewport boundaries", () => {
   it.each([
@@ -50,5 +51,12 @@ describe("window viewport boundaries", () => {
     });
 
     expect(readViewportRect()).toEqual({ left: 14, top: 22, width: 300, height: 420 });
+    expect(readViewportRect(false)).toEqual(readLayoutViewportRect());
+    expect(readLayoutViewportRect()).toEqual({ left: 0, top: 0, width: window.innerWidth, height: window.innerHeight });
+  });
+
+  it("keeps message copy actions visible on coarse touch pointers", () => {
+    const css = readFileSync("src/styles.css", "utf-8");
+    expect(css).toMatch(/@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.kl-message-heading, \.kl-message-footer \{ position: static; opacity: 1; pointer-events: auto; \}/);
   });
 });

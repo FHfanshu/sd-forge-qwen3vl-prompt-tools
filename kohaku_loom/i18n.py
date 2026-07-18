@@ -232,6 +232,10 @@ _PROFILE_TRANSLATIONS = {
     "zh-CN": {
         "profiles.title": "模型配置档案", "profiles.list": "模型配置档案", "profiles.close": "关闭",
         "profiles.status.autosave": "修改会自动保存", "profiles.status.saved": "已保存", "profiles.status.invalid": "请检查该配置项。",
+        "profiles.save": "保存", "profiles.save.saving": "正在保存…", "profiles.save.success": "已安全保存",
+        "profiles.save.error": "保存失败，可再次点击重试。", "profiles.save.host_unavailable": "Sidecar 尚未就绪。",
+        "profiles.save.not_confirmed": "Sidecar 未确认配置已保存。", "profiles.save.key_missing": "API Key 未写入安全存储，请重新粘贴后保存。",
+        "profiles.save.key_pending": "API Key 已输入，请点击保存写入安全存储。",
         "profiles.section.basic": "基本信息", "profiles.section.connection": "连接配置", "profiles.section.capabilities": "能力配置", "profiles.section.generation": "生成参数", "profiles.section.local": "本地运行",
         "profiles.id": "配置 ID", "profiles.display_name": "显示名称", "profiles.model_id": "模型 ID", "profiles.enabled": "已启用", "profiles.disabled": "已禁用", "profiles.active": "当前主模型",
         "profiles.protocol": "API 协议", "profiles.protocol.gemini": "Gemini Native", "profiles.protocol.openai": "OpenAI Chat Completions", "profiles.protocol.abbr.gemini": "GEM", "profiles.protocol.abbr.openai": "OAI",
@@ -248,6 +252,10 @@ _PROFILE_TRANSLATIONS = {
     "en": {
         "profiles.title": "Model profiles", "profiles.list": "Model profiles", "profiles.close": "Close",
         "profiles.status.autosave": "Changes save automatically", "profiles.status.saved": "Saved", "profiles.status.invalid": "Check this value and try again.",
+        "profiles.save": "Save", "profiles.save.saving": "Saving…", "profiles.save.success": "Saved securely",
+        "profiles.save.error": "Save failed. You can try again.", "profiles.save.host_unavailable": "The sidecar is not available.",
+        "profiles.save.not_confirmed": "The sidecar did not confirm the saved profile.", "profiles.save.key_missing": "The API key was not written to secure storage. Paste it again and save.",
+        "profiles.save.key_pending": "API key ready. Click Save to store it securely.",
         "profiles.section.basic": "Basic information", "profiles.section.connection": "Connection", "profiles.section.capabilities": "Capabilities", "profiles.section.generation": "Generation parameters", "profiles.section.local": "Local runtime",
         "profiles.id": "Profile ID", "profiles.display_name": "Display name", "profiles.model_id": "Model ID", "profiles.enabled": "Enabled", "profiles.disabled": "Disabled", "profiles.active": "Active model",
         "profiles.protocol": "API protocol", "profiles.protocol.gemini": "Gemini native", "profiles.protocol.openai": "OpenAI chat completions", "profiles.protocol.abbr.gemini": "GEM", "profiles.protocol.abbr.openai": "OAI",

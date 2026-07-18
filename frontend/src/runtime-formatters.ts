@@ -222,7 +222,20 @@ export function operationId(prefix: string): string {
 }
 
 export function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  const authStatus = message.match(/(?<!\d)(401|403)(?!\d)/)?.[1];
+  if (authStatus) {
+    return `Provider rejected the configured credentials (HTTP ${authStatus}). Update the API key in Model profiles and try again.`;
+  }
+  return message;
+}
+
+export function providerRetryDetail(value: unknown): string {
+  const payload = asRecord(value);
+  const attempt = Math.max(1, Number(payload.attempt) || 1);
+  const maximum = Math.max(attempt, Number(payload.max_retries ?? payload.max_attempts) || attempt);
+  const delay = Math.max(0, Number(payload.delay) || 0);
+  return `Attempt ${attempt} of ${maximum}${delay ? ` in ${delay}s` : ""}`;
 }
 
 export function adaptTool(toolValue: unknown): RawRecord {

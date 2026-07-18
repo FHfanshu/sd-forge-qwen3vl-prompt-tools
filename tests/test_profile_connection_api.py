@@ -9,6 +9,7 @@ from unittest import mock
 from fastapi.testclient import TestClient
 
 from kohaku_loom.profile_store import LoomProfileStore
+from kohaku_loom.provider_errors import provider_http_status
 from kohaku_loom.runtime_paths import LoomRuntimePaths
 from kohaku_loom.sidecar.app import create_app
 
@@ -38,6 +39,12 @@ def profile_state() -> dict:
 
 
 class ProfileConnectionApiTests(unittest.TestCase):
+    def test_extracts_google_style_auth_status_without_status_code(self):
+        class GoogleClientError(RuntimeError):
+            code = 403
+
+        self.assertEqual(403, provider_http_status(GoogleClientError("403 invalid credential")))
+
     def _app(self, runtime):
         directory = tempfile.TemporaryDirectory()
         paths = LoomRuntimePaths.under(Path(directory.name)).ensure()
@@ -50,7 +57,7 @@ class ProfileConnectionApiTests(unittest.TestCase):
             async def profile_chat(self, profile_id, messages):
                 del profile_id, messages
                 error = RuntimeError("upstream rejected secret-token")
-                error.status_code = 401
+                error.code = 401
                 raise error
 
             async def close(self):

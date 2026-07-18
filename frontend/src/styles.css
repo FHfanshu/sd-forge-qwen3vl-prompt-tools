@@ -187,6 +187,9 @@
   }
   .kl-profile-window-header:active { cursor: grabbing; }
   .kl-profile-window-actions { display: flex; align-items: center; gap: 3px; }
+  .kl-profile-save-button { display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 9px; border: 1px solid var(--button-primary-border-color, var(--primary-600)); border-radius: var(--button-radius, 6px); color: var(--button-primary-text-color, white); background: var(--button-primary-background-fill, var(--primary-500)); font-size: 11px; font-weight: 650; }
+  .kl-profile-save-button:hover:not(:disabled), .kl-profile-save-button:focus-visible { background: var(--button-primary-background-fill-hover, var(--primary-600)); }
+  .kl-profile-save-button:disabled { cursor: wait; opacity: .58; }
   .kl-profile-language-trigger { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 10px; color: var(--kl-ink-soft); background: transparent; }
   .kl-profile-language-trigger:hover { color: var(--kl-ink); background: rgba(32,35,41,.07); }
   .kl-profile-window-body { display: grid; min-height: 0; flex: 1 1 auto; grid-template-columns: 218px minmax(0, 1fr); }
@@ -293,6 +296,8 @@
   .kl-dropdown-item[data-disabled] { cursor: not-allowed; opacity: .45; }
    .kl-dialog-layer { position: fixed; inset: 0; z-index: 1500; pointer-events: auto; background: rgb(0 0 0 / 22%); }
    .kl-dialog-card { position: fixed; top: 50%; left: 50%; z-index: 1501; width: min(370px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; transform: translate(-50%, -50%); border: 1px solid var(--kl-line); border-radius: var(--button-radius, 6px); background: var(--body-background-fill); box-shadow: var(--kl-shadow); pointer-events: auto; }
+  .kl-window-dialog-layer { position: absolute; inset: 0; z-index: 40; pointer-events: auto; background: rgb(0 0 0 / 22%); }
+  .kl-window-dialog-card { position: absolute; top: 50%; left: 50%; z-index: 41; width: min(370px, calc(100% - 32px)); max-height: calc(100% - 32px); }
   .kl-dialog-card header { display: flex; align-items: center; justify-content: space-between; padding: 14px 15px 10px; border-bottom: 1px solid var(--kl-line); }
    .kl-dialog-card header strong { font-family: inherit; font-size: 15px; font-weight: 700; }
   .kl-dialog-close { width: 25px; height: 25px; border-radius: 7px; color: var(--kl-ink-soft); background: transparent; font-size: 18px; }
@@ -619,6 +624,11 @@
   .kl-message-card:hover :is(.kl-message-heading, .kl-message-footer), .kl-message-card:focus-within :is(.kl-message-heading, .kl-message-footer) { opacity: 1; }
   .kl-message-card:hover .kl-message-footer, .kl-message-card:focus-within .kl-message-footer { pointer-events: auto; }
   .kl-message-actions { opacity: 1; }
+  @media (hover: none), (pointer: coarse) {
+    .kl-message-heading, .kl-message-footer { position: static; opacity: 1; pointer-events: auto; }
+    .kl-message-heading { margin-bottom: 6px; }
+    .kl-message-footer { margin-top: 7px; }
+  }
   .kl-markdown { color: var(--body-text-color); font-size: .9rem; line-height: 1.65; }
   .kl-message-user .kl-markdown { color: inherit; }
   .kl-message-user .kl-markdown code { color: inherit; background: color-mix(in srgb, currentColor 14%, transparent); }

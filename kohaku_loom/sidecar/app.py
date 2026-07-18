@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from kohaku_loom.forge_bridge import ForgeToolBroker, encode_sse
 from kohaku_loom.profile_store import LoomProfileStore
+from kohaku_loom.provider_errors import safe_provider_error
 from kohaku_loom.runtime_paths import LoomRuntimePaths
 from kohaku_loom.sidecar.runtime import LoomSidecarRuntime
 from kohaku_loom.utils import http_transport_summary
@@ -21,23 +22,7 @@ _PROFILE_TEST_TIMEOUT_SECONDS = 60.0
 
 
 def _profile_connection_error(error: BaseException) -> str:
-    status = getattr(error, "status_code", None)
-    if isinstance(status, int):
-        if status in {401, 403}:
-            return f"Provider rejected the configured credentials (HTTP {status})."
-        if status == 407:
-            return "The configured proxy requires authentication (HTTP 407)."
-        return f"Provider request failed (HTTP {status})."
-    name = type(error).__name__.lower()
-    if "proxy" in name:
-        return "The configured proxy connection failed."
-    if "timeout" in name:
-        return "The provider request timed out."
-    if "ssl" in name or "tls" in name or "certificate" in name:
-        return "TLS certificate validation failed."
-    if "connect" in name or "network" in name:
-        return "The provider could not be reached. Check DNS, the proxy, and the endpoint."
-    return f"Provider request failed ({type(error).__name__})."
+    return safe_provider_error(error)
 
 
 @dataclass

@@ -19,14 +19,20 @@ export interface FloatingPosition {
 
 export const WINDOW_MINIMUM: WindowMinimum = { width: 320, height: 360 };
 
-export function readViewportRect(): ViewportRect {
+export function readLayoutViewportRect(): ViewportRect {
+  if (typeof window === "undefined") return { left: 0, top: 0, width: 1280, height: 800 };
+  return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+}
+
+export function readViewportRect(preferVisualViewport = true): ViewportRect {
   if (typeof window === "undefined") return { left: 0, top: 0, width: 1280, height: 800 };
   const viewport = window.visualViewport;
+  if (!preferVisualViewport || !viewport) return readLayoutViewportRect();
   return {
-    left: viewport?.offsetLeft ?? 0,
-    top: viewport?.offsetTop ?? 0,
-    width: viewport?.width ?? window.innerWidth,
-    height: viewport?.height ?? window.innerHeight,
+    left: viewport.offsetLeft,
+    top: viewport.offsetTop,
+    width: viewport.width,
+    height: viewport.height,
   };
 }
 

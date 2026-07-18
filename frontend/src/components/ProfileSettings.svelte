@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Activity, Brain, Check, Copy, ExternalLink, Grip, KeyRound, Languages, MoreHorizontal, Plus, RefreshCw, RotateCcw, ServerCog, Trash2, X } from "lucide-svelte";
+  import { Activity, Brain, Check, Copy, ExternalLink, Grip, KeyRound, Languages, MoreHorizontal, Plus, RefreshCw, RotateCcw, Save, ServerCog, Trash2, X } from "lucide-svelte";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
   import { NativeSelect } from "$lib/components/ui/native-select";
@@ -10,6 +10,7 @@
   import { Tabs } from "$lib/components/ui/tabs";
   import type { ProfilePatch, ProfileProtocol, ProfileRuntime } from "../contracts";
   import { getHostApi } from "../bridge";
+  import { toHostProfilePatch } from "../profile-adapter";
   import { syncProfileFromModelsDev } from "../profile-model-catalog";
   import { useI18nStore } from "../stores/i18n";
   import { useProfileStore } from "../stores/profiles";
@@ -23,8 +24,9 @@
   let { open, onclose }: { open: boolean; onclose(): void } = $props();
   let tab = $state("model");
   let showKey = $state(false);
+  let apiKeyDrafts = $state<Record<string, string>>({});
   let status = $state("");
-  let busy = $state<"test" | "sync" | null>(null);
+  let busy = $state<"save" | "test" | "sync" | null>(null);
   let confirm = $state<"delete" | "restore" | null>(null);
   let interacting = $state(false);
   let windowElement = $state<HTMLDivElement>();
@@ -35,6 +37,7 @@
     ? { width: 340, height: 420 }
     : { width: 320, height: kind === "mobileLandscape" ? 240 : 360 });
   const selected = $derived($useProfileStore.profiles.find((profile) => profile.id === $useProfileStore.selectedProfileId) ?? $useProfileStore.profiles[0]);
+  const apiKeyValue = $derived(apiKeyDrafts[selected.id] ?? selected.apiKey);
   const layout = $derived(kind === "desktop"
     ? clampWindowLayout($useUiStore.profileLayouts[kind], viewport, minimum)
     : { left: viewport.left, top: viewport.top, width: viewport.width, height: viewport.height });
@@ -67,8 +70,12 @@
   function refresh(): void { kind = viewportKind(); viewport = readViewportRect(); }
   function updateLayout(next: typeof layout): void { $useUiStore.setProfileLayout(kind, next); if (kind !== "desktop") $useUiStore.markMobileResizeHintSeen(); }
   function update(patch: ProfilePatch): void {
-    try { $useProfileStore.updateProfile(selected.id, patch); status = t("profiles.status.saved", "Saved"); }
+    try { $useProfileStore.updateProfile(selected.id, patch); status = t("profiles.status.autosave", "Changes save automatically"); }
     catch { status = t("profiles.status.invalid", "Check this value and try again."); }
+  }
+  function updateApiKey(value: string): void {
+    apiKeyDrafts[selected.id] = value;
+    status = t("profiles.save.key_pending", "API key ready. Click Save to store it securely.");
   }
   function numberValue(value: string, fallback: number): number { const result = Number(value); return Number.isFinite(result) ? result : fallback; }
   function reasoningLabel(value: string): string {
@@ -82,7 +89,7 @@
   function add(): void { $useProfileStore.addProfile({ displayName: t("profiles.new_name", "New model profile"), modelId: "model-id" }); tab = "model"; }
   function duplicate(id = selected.id): void { $useProfileStore.duplicateProfile(id); }
   function requestDelete(id: string): void { $useProfileStore.selectProfile(id); confirm = "delete"; }
-  function activate(id: string): void { $useProfileStore.activateProfile(id); status = t("profiles.status.saved", "Saved"); }
+  function activate(id: string): void { $useProfileStore.activateProfile(id); status = t("profiles.status.autosave", "Changes save automatically"); }
   function connectionError(error: unknown): string {
     const detail = error instanceof Error ? error.message : String(error || "");
     return detail.replace(/\s+/g, " ").trim().slice(0, 320);
@@ -90,6 +97,46 @@
   function connectionTransport(result: unknown): string {
     if (!result || typeof result !== "object") return "";
     return String((result as { transport?: unknown }).transport || "").replace(/\s+/g, " ").trim().slice(0, 160);
+  }
+  function storedApiKey(result: unknown, profileId: string): boolean | null {
+    if (!result || typeof result !== "object") return null;
+    const profiles = (result as { profiles?: unknown }).profiles;
+    if (!Array.isArray(profiles)) return null;
+    const profile = profiles.find((item) => item && typeof item === "object"
+      && String((item as { profile_id?: unknown; id?: unknown }).profile_id || (item as { id?: unknown }).id || "") === profileId);
+    if (!profile || typeof profile !== "object") return null;
+    const value = (profile as { has_api_key?: unknown; hasApiKey?: unknown }).has_api_key
+      ?? (profile as { hasApiKey?: unknown }).hasApiKey;
+    return typeof value === "boolean" ? value : null;
+  }
+  async function saveProfiles(): Promise<void> {
+    if (busy) return;
+    const profileId = selected.id;
+    const requiresApiKey = selected.runtime === "remote-http";
+    const apiKeyDraft = apiKeyDrafts[profileId];
+    busy = "save";
+    status = t("profiles.save.saving", "Saving…");
+    try {
+      const host = getHostApi(window.kohakuLoom);
+      if (!host) throw new Error(t("profiles.save.host_unavailable", "The sidecar is not available."));
+      if (apiKeyDraft !== undefined) {
+        host.profileStore.update(profileId, toHostProfilePatch({ apiKey: apiKeyDraft, hasApiKey: Boolean(apiKeyDraft) }));
+      }
+      const imported = await host.syncProfiles();
+      const hasStoredApiKey = storedApiKey(imported, profileId);
+      if (hasStoredApiKey === null) throw new Error(t("profiles.save.not_confirmed", "The sidecar did not confirm the saved profile."));
+      if (requiresApiKey && !hasStoredApiKey) {
+        throw new Error(t("profiles.save.key_missing", "The API key was not written to secure storage. Paste it again and save."));
+      }
+      delete apiKeyDrafts[profileId];
+      $useProfileStore.reload();
+      status = t("profiles.save.success", "Saved securely");
+    } catch (error) {
+      const detail = connectionError(error);
+      status = `${t("profiles.save.error", "Save failed. You can try again.")}${detail ? ` ${detail}` : ""}`;
+    } finally {
+      busy = null;
+    }
   }
   async function testConnection(): Promise<void> {
     connectionController?.abort();
@@ -156,6 +203,9 @@
     <header class="kl-profile-window-header" use:pointerWindow={{ mode: "drag", layout: () => layout, update: updateLayout, minimum, disabled: kind !== "desktop", interacting: (active) => interacting = active }}>
       <div class="kl-brand-lockup"><div><strong>{t("profiles.title", "Model profiles")}</strong></div></div>
       <div class="kl-profile-window-actions">
+        <button type="button" class="kl-profile-save-button" onclick={() => void saveProfiles()} disabled={busy !== null}>
+          {#if busy === "save"}<RefreshCw size={14} class="kl-spin" />{t("profiles.save.saving", "Saving…")}{:else}<Save size={14} />{t("profiles.save", "Save")}{/if}
+        </button>
         <DropdownMenu.Root>
           <DropdownMenu.Trigger aria-label={t("profiles.more", "More settings actions")} class="kl-header-icon"><MoreHorizontal size={16} /></DropdownMenu.Trigger>
           <DropdownMenu.Portal><DropdownMenu.Content class="kl-dropdown-content"><DropdownMenu.Item class="kl-dropdown-item" onclick={() => $useUiStore.resetWindowLayouts()}><RotateCcw size={13} />{t("profiles.interface.reset", "Reset window layouts")}</DropdownMenu.Item><DropdownMenu.Item class="kl-dropdown-item" onclick={() => window.open("https://github.com/Kohaku-Lab/KohakuTerrarium", "_blank", "noopener,noreferrer")}><ExternalLink size={13} />{t("profiles.powered_by", "Powered by KohakuTerrarium")}</DropdownMenu.Item><DropdownMenu.Item class="kl-dropdown-item kl-profile-danger-text" onclick={() => confirm = "restore"}><RotateCcw size={13} />{t("profiles.restore", "Restore defaults")}</DropdownMenu.Item></DropdownMenu.Content></DropdownMenu.Portal>
@@ -195,7 +245,7 @@
 
         <Tabs.Root bind:value={tab} class="kl-profile-tabs"><Tabs.List class="kl-profile-tabs-list" aria-label={t("profiles.advanced_tabs", "Profile settings")}>{#each profileTabs as item}<Tabs.Trigger value={item[0]} class="kl-profile-tab">{t(`profiles.tab.${item[0]}`, item[1])}</Tabs.Trigger>{/each}</Tabs.List>
             <Tabs.Content value="model"><div class="kl-profile-tab-content"><Heading title={t("profiles.section.basic", "Basic information")} hint={t("profiles.section.basic.hint", "Set this model's identity, protocol, runtime, and availability.")} /><div class="kl-profile-grid"><Field label={t("profiles.display_name", "Display name")}><Input value={selected.displayName} oninput={(event) => update({ displayName: event.currentTarget.value })} /></Field><Field label={t("profiles.model_id", "Model ID")}><Input value={selected.modelId} oninput={(event) => update({ modelId: event.currentTarget.value })} /></Field><Field label={t("profiles.protocol", "API protocol")}><NativeSelect value={selected.protocol} onchange={(event) => update({ protocol: event.currentTarget.value as ProfileProtocol })}><option value="gemini-native">{t("profiles.protocol.gemini", "Gemini native")}</option><option value="openai-chat-completions">{t("profiles.protocol.openai", "OpenAI chat completions")}</option></NativeSelect></Field><Field label={t("profiles.runtime", "Runtime")}><NativeSelect value={selected.runtime} onchange={(event) => update({ runtime: event.currentTarget.value as ProfileRuntime })}><option value="remote-http">{t("profiles.runtime.remote", "Remote HTTP")}</option><option value="llama-endpoint">{t("profiles.runtime.endpoint", "llama.cpp endpoint")}</option><option value="llama-once">{t("profiles.runtime.once", "llama.cpp one-shot")}</option></NativeSelect></Field></div><div class="kl-profile-toggle-grid"><Toggle label={t("profiles.capability.tools", "Tool calling")} checked={selected.capabilities.tools} onchange={(value: boolean) => update({ capabilities: { tools: value } })} /><Toggle label={t("profiles.capability.vision", "Vision input")} checked={selected.capabilities.vision} onchange={(value: boolean) => update({ capabilities: { vision: value } })} /><Toggle label={t("profiles.capability.streaming", "Streaming")} checked={selected.capabilities.streaming} onchange={(value: boolean) => update({ capabilities: { streaming: value } })} /></div></div></Tabs.Content>
-            <Tabs.Content value="connection"><div class="kl-profile-tab-content"><Heading title={t("profiles.section.connection", "Connection")} hint={t("profiles.section.connection.hint", "Configure endpoints and credentials.")} /><div class="kl-profile-grid">{#if selected.runtime === "remote-http"}<Field wide label={t("profiles.api_key", "API key")}><div class="kl-profile-key-row"><KeyRound size={14} /><input name="api-key" autocomplete="off" spellcheck="false" aria-label={t("profiles.api_key", "API key")} type={showKey ? "text" : "password"} value={selected.apiKey} placeholder={selected.hasApiKey && !selected.apiKey ? t("profiles.api_key.stored", "Stored securely") : t("profiles.api_key.placeholder", "Paste an API key…")} oninput={(event) => update({ apiKey: event.currentTarget.value, hasApiKey: Boolean(event.currentTarget.value) || selected.hasApiKey })} /><button type="button" onclick={() => showKey = !showKey}>{showKey ? t("profiles.api_key.hide", "Hide") : t("profiles.api_key.show", "Show")}</button></div></Field>{/if}<Field wide label={t("profiles.endpoint", "Endpoint")}><Input value={selected.endpoint} disabled={selected.runtime === "llama-once"} oninput={(event) => update({ endpoint: event.currentTarget.value })} /></Field><Field wide label={t("profiles.fallback_endpoints", "Fallback endpoints (one per line)")}><Textarea value={selected.fallbackEndpoints.join("\n")} oninput={(event) => update({ fallbackEndpoints: event.currentTarget.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean) })} /></Field></div></div></Tabs.Content>
+            <Tabs.Content value="connection"><div class="kl-profile-tab-content"><Heading title={t("profiles.section.connection", "Connection")} hint={t("profiles.section.connection.hint", "Configure endpoints and credentials.")} /><div class="kl-profile-grid">{#if selected.runtime === "remote-http"}<Field wide label={t("profiles.api_key", "API key")}><div class="kl-profile-key-row"><KeyRound size={14} /><input name="api-key" autocomplete="off" spellcheck="false" aria-label={t("profiles.api_key", "API key")} type={showKey ? "text" : "password"} value={apiKeyValue} placeholder={selected.hasApiKey && !apiKeyValue ? t("profiles.api_key.stored", "Stored securely") : t("profiles.api_key.placeholder", "Paste an API key…")} oninput={(event) => updateApiKey(event.currentTarget.value)} /><button type="button" onclick={() => showKey = !showKey}>{showKey ? t("profiles.api_key.hide", "Hide") : t("profiles.api_key.show", "Show")}</button></div></Field>{/if}<Field wide label={t("profiles.endpoint", "Endpoint")}><Input value={selected.endpoint} disabled={selected.runtime === "llama-once"} oninput={(event) => update({ endpoint: event.currentTarget.value })} /></Field><Field wide label={t("profiles.fallback_endpoints", "Fallback endpoints (one per line)")}><Textarea value={selected.fallbackEndpoints.join("\n")} oninput={(event) => update({ fallbackEndpoints: event.currentTarget.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean) })} /></Field></div></div></Tabs.Content>
             <Tabs.Content value="generation"><div class="kl-profile-tab-content"><Heading title={t("profiles.section.generation", "Generation parameters")} hint={t("profiles.section.generation.hint", "Set sampling, reasoning, and privacy behavior.")} /><div class="kl-profile-grid"><Field label={`${t("profiles.temperature", "Temperature")} · ${selected.parameters.temperature.toFixed(2)}`}><input class="kl-profile-slider" type="range" min="0" max="2" step="0.05" value={selected.parameters.temperature} oninput={(event) => update({ parameters: { temperature: numberValue(event.currentTarget.value, selected.parameters.temperature) } })} /></Field><Field label={`${t("profiles.top_p", "Top P")} · ${selected.parameters.topP.toFixed(2)}`}><input class="kl-profile-slider" type="range" min="0" max="1" step="0.05" value={selected.parameters.topP} oninput={(event) => update({ parameters: { topP: numberValue(event.currentTarget.value, selected.parameters.topP) } })} /></Field><Field label={t("profiles.max_tokens", "Max tokens")}><Input type="number" value={selected.parameters.maxTokens} oninput={(event) => update({ parameters: { maxTokens: Math.round(numberValue(event.currentTarget.value, selected.parameters.maxTokens)) } })} /></Field><Field label={`${t("profiles.reasoning_effort", "Reasoning effort")} · ${reasoningLabel(selected.parameters.reasoningEffort)}`}><div class="kl-profile-reasoning-slider"><Brain size={15} /><input class="kl-profile-slider" type="range" min="0" max={Math.max(0, reasoningScale.length - 1)} step="1" value={reasoningIndex} disabled={!selected.capabilities.reasoning} aria-label={t("profiles.reasoning_effort", "Reasoning effort")} oninput={(event) => setReasoning(Number(event.currentTarget.value))} /></div></Field></div></div></Tabs.Content>
             <Tabs.Content value="local"><div class="kl-profile-tab-content"><Heading title={t("profiles.section.local", "Local runtime")} hint={t("profiles.section.local.hint", "Configure llama.cpp paths and hardware allocation.")} /><div class="kl-profile-grid"><Field wide label={t("profiles.model_path", "GGUF path")}><Input value={selected.modelPath} oninput={(event) => update({ modelPath: event.currentTarget.value })} /></Field><Field wide label={t("profiles.mmproj_path", "mmproj path")}><Input value={selected.mmprojPath} oninput={(event) => update({ mmprojPath: event.currentTarget.value })} /></Field><Field wide label={t("profiles.llama_server_path", "llama-server path")}><Input value={selected.llamaServerPath} oninput={(event) => update({ llamaServerPath: event.currentTarget.value })} /></Field><Field label={t("profiles.n_ctx", "Context size")}><Input type="number" value={selected.nCtx} oninput={(event) => update({ nCtx: Math.round(numberValue(event.currentTarget.value, selected.nCtx)) })} /></Field><Field label={t("profiles.n_gpu_layers", "GPU layers")}><Input type="number" value={selected.nGpuLayers} oninput={(event) => update({ nGpuLayers: Math.round(numberValue(event.currentTarget.value, selected.nGpuLayers)) })} /></Field></div><Toggle label={t("profiles.thinking", "Thinking")} checked={selected.thinking} onchange={(thinking: boolean) => update({ thinking })} /></div></Tabs.Content>
             <Tabs.Content value="routes"><div class="kl-profile-tab-content"><Heading title={t("profiles.routes.title", "Routing")} hint={t("profiles.routes.hint", "Choose which enabled profile handles each assistant role.")} /><div class="kl-profile-route-grid"><Route label={t("profiles.active_profile", "Active profile")} value={$useProfileStore.activeProfileId} profiles={enabledProfiles} onchange={(id: string) => $useProfileStore.activateProfile(id)} /><Route label={t("profiles.teacher_profile", "Teacher profile")} value={$useProfileStore.teacherProfileId} profiles={enabledProfiles} onchange={(id: string) => $useProfileStore.setTeacherProfile(id)} /><Route label={t("profiles.session_profile", "Session model")} value={$useProfileStore.sessionProfileId} profiles={localProfiles} onchange={(id: string) => $useProfileStore.setSessionProfile(id)} /><Route label={t("profiles.naming_profile", "Naming model")} value={$useProfileStore.namingProfileId} profiles={namingProfiles} onchange={(id: string) => $useProfileStore.setNamingProfile(id)} /></div></div></Tabs.Content>

@@ -3,7 +3,7 @@
   import type { WorkingPhase } from "../stores/runtime";
   import { useI18nStore } from "../stores/i18n";
 
-  let { phase, tool = null, reasoning = "" }: { phase: Exclude<WorkingPhase, "idle">; tool?: string | null; reasoning?: string } = $props();
+  let { phase, tool = null, statusDetail = null, reasoning = "" }: { phase: Exclude<WorkingPhase, "idle">; tool?: string | null; statusDetail?: string | null; reasoning?: string } = $props();
 
   function t(key: string, fallback: string): string {
     const value = $useI18nStore.t(key);
@@ -14,6 +14,8 @@
     ? t("assistant.working.submitting", "Sending request…")
     : phase === "cancelling"
       ? t("assistant.working.cancelling", "Stopping response…")
+      : phase === "retrying"
+        ? t("assistant.working.retrying", "Retrying provider…")
       : phase === "tool"
         ? t("assistant.working.tool", "Running tool…")
         : phase === "generating"
@@ -23,7 +25,9 @@
     const text = reasoning.replace(/\s+/g, " ").trim();
     return text.length > 180 ? `…${text.slice(-180)}` : text;
   });
-  const detail = $derived(phase === "tool" && tool
+  const detail = $derived(phase === "retrying" && statusDetail
+    ? statusDetail
+    : phase === "tool" && tool
     ? `${t("assistant.working.tool_name", "Tool")}: ${tool}`
     : reasoningExcerpt
       ? `${t("assistant.working.reasoning", "Reasoning")}: ${reasoningExcerpt}`

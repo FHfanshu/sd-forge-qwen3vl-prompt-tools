@@ -410,6 +410,16 @@ test.describe("tablet layout", () => {
     await page.goto("/?mount=1");
     await page.getByRole("button", { name: "Open Kohaku Loom" }).click();
     const chat = page.getByRole("dialog", { name: "Kohaku Loom chat" });
+    await chat.getByRole("textbox", { name: "Message Kohaku Loom" }).fill("Touch copy check");
+    await chat.getByRole("button", { name: "Send message" }).click();
+    await expect(chat.getByText("Mock assistant reply", { exact: true })).toBeVisible();
+    await expect(chat.getByRole("button", { name: "Copy" }).first()).toBeVisible();
+    await chat.getByRole("button", { name: "Permission mode: confirmations required" }).click();
+    const directEditCard = chat.locator(".kl-window-dialog-card");
+    await expect(directEditCard).toContainText("Allow direct edits?");
+    await expect(chat.locator(".kl-window-dialog-layer")).toBeVisible();
+    expect(await page.locator("body > .kl-dialog-layer").count()).toBe(0);
+    await directEditCard.getByRole("button", { name: "Keep confirmations" }).click();
     await page.getByRole("button", { name: "Open settings" }).click();
     const settings = page.getByRole("dialog", { name: "Model profiles" });
 

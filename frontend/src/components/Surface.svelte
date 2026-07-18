@@ -26,13 +26,14 @@
   import { noopActions } from "../mock-data";
   import type { LoomRuntimeController } from "../runtime-controller";
   import { connectRuntimeController } from "../runtime-connection";
+  import { errorText } from "../runtime-formatters";
   import { AlertDialog } from "$lib/components/ui/alert-dialog";
   import { useChatStore } from "../stores/chat";
   import { useI18nStore } from "../stores/i18n";
   import { useProfileStore } from "../stores/profiles";
   import { useRuntimeStore } from "../stores/runtime";
   import { useUiStore } from "../stores/ui";
-  import { clampWindowLayout, minimumForViewport, pointerPosition, pointerWindow, readViewportRect, viewportKind, type FloatingPosition, type LayoutViewport } from "../window-interactions";
+  import { clampWindowLayout, minimumForViewport, pointerPosition, pointerWindow, readLayoutViewportRect, readViewportRect, viewportKind, type FloatingPosition, type LayoutViewport } from "../window-interactions";
   import Markdown from "./Markdown.svelte";
   import ModelPicker from "./ModelPicker.svelte";
   import ProfileSettings from "./ProfileSettings.svelte";
@@ -67,7 +68,7 @@
   let launcherDragged = $state(false);
   let mobileHintDismissed = $state(false);
   let kind = $state<LayoutViewport>(viewportKind());
-  let viewport = $state(readViewportRect());
+  let viewport = $state(readLayoutViewportRect());
   let fileInput = $state<HTMLInputElement>();
   let composerInput = $state<HTMLTextAreaElement>();
   let replacementInput = $state<HTMLInputElement>();
@@ -161,9 +162,17 @@
     requestAnimationFrame(() => composerInput?.focus());
   }
 
+  function isTextEntryFocused(): boolean {
+    const active = document.activeElement;
+    return active instanceof HTMLTextAreaElement
+      || active instanceof HTMLSelectElement
+      || (active instanceof HTMLInputElement && !["button", "checkbox", "radio", "range", "submit"].includes(active.type));
+  }
+
   function refreshViewport(): void {
-    kind = viewportKind();
-    viewport = readViewportRect();
+    const keyboardMayBeOpen = isTextEntryFocused();
+    if (!keyboardMayBeOpen) kind = viewportKind();
+    viewport = keyboardMayBeOpen ? readViewportRect() : readLayoutViewportRect();
   }
 
   async function ensureControllerReady(): Promise<LoomRuntimeController | null> {
@@ -230,10 +239,13 @@
     notice = null;
     const submittedDraft = draft;
     const submittedAttachments = [...attachments];
+    draft = "";
+    attachments = [];
+    requestAnimationFrame(() => resizeComposer());
     try {
       await sessionTransition;
       const input = {
-        text: draft.trim(),
+        text: submittedDraft.trim(),
         attachments: await materializeImageAttachments(submittedAttachments),
         displayAttachments: submittedAttachments.map(displayImageAttachment),
         riskMode: $useUiStore.riskMode,
@@ -241,11 +253,7 @@
         editOf: editingMessageId ?? undefined,
       };
       const submission = await send(input);
-      if (draft === submittedDraft) draft = "";
-      if (attachments.length === submittedAttachments.length && attachments.every((item, index) => item.id === submittedAttachments[index]?.id)) {
-        attachments = [];
-        releaseImageAttachments(submittedAttachments);
-      }
+      releaseImageAttachments(submittedAttachments);
       if (editingMessageId === input.editOf) {
         releaseImageAttachments(preEditDraft?.attachments ?? []);
         editingMessageId = null;
@@ -253,8 +261,11 @@
       }
       requestAnimationFrame(() => resizeComposer());
     } catch (error) {
+      if (!draft) draft = submittedDraft;
+      if (!attachments.length) attachments = submittedAttachments;
+      requestAnimationFrame(() => resizeComposer());
       if (error instanceof DOMException && error.name === "AbortError") return;
-      notice = error instanceof Error ? error.message : t("assistant.error.send", "Message could not be sent. Check the active model and try again.");
+      notice = errorText(error) || t("assistant.error.send", "Message could not be sent. Check the active model and try again.");
     }
   }
 
@@ -465,6 +476,11 @@
   }
 
   onMount(() => {
+    let focusRecoveryTimer: number | undefined;
+    const recoverAfterFocus = () => {
+      window.clearTimeout(focusRecoveryTimer);
+      focusRecoveryTimer = window.setTimeout(refreshViewport, 80);
+    };
     attachments = [...initialAttachments];
     syncReasoningFromProfile();
     if (initialOpen) $useUiStore.setShellOpen(true);
@@ -472,10 +488,15 @@
     window.addEventListener("resize", refreshViewport);
     window.visualViewport?.addEventListener("resize", refreshViewport);
     window.visualViewport?.addEventListener("scroll", refreshViewport);
+    document.addEventListener("focusin", refreshViewport);
+    document.addEventListener("focusout", recoverAfterFocus);
     return () => {
+      window.clearTimeout(focusRecoveryTimer);
       window.removeEventListener("resize", refreshViewport);
       window.visualViewport?.removeEventListener("resize", refreshViewport);
       window.visualViewport?.removeEventListener("scroll", refreshViewport);
+      document.removeEventListener("focusin", refreshViewport);
+      document.removeEventListener("focusout", recoverAfterFocus);
       controllerAbort?.abort();
       controllerAbort = null;
       controller?.destroy();
@@ -612,7 +633,7 @@
           {:else}
             <div class="kl-empty-state"><Sparkles size={20} aria-hidden="true" /><strong>{t("assistant.empty.title", "Start with the current prompt")}</strong><p>{t("assistant.empty.hint", "Ask Loom to review composition, rewrite a prompt, inspect installed resources, or attach reference images.")}</p><div><button type="button" onclick={() => useSuggestion(t("assistant.quick.review_prompt", "Read the current prompt and suggest the highest-impact improvement."))}>{t("assistant.quick.review", "Review current prompt")}</button><button type="button" onclick={() => fileInput?.click()}>{t("assistant.quick.reference", "Analyze reference images")}</button></div></div>
           {/if}
-          {#if $useChatStore.activeRequestId && workingPhase !== "idle"}<WorkingIndicator phase={workingPhase} tool={$useRuntimeStore.workingTool} reasoning={workingReasoning} />{/if}
+          {#if $useChatStore.activeRequestId && workingPhase !== "idle"}<WorkingIndicator phase={workingPhase} tool={$useRuntimeStore.workingTool} statusDetail={$useRuntimeStore.workingDetail} reasoning={workingReasoning} />{/if}
         </div>
 
         {#if $useChatStore.queue.length}<div class="kl-queue-strip" aria-label={t("queue.messages", "Queued messages")}>{#if $useRuntimeStore.queuePaused}<div class="kl-queue-status" role="status">{t("queue.paused", "Queue is paused. Retry a failed message to resume.")}</div>{/if}<span class="kl-queue-label"><span class="kl-queue-dot"></span> {t("queue.label", "Queue")} {$useChatStore.queue.length}</span><div class="kl-queue-items">{#each $useChatStore.queue as item (item.id)}<div class="kl-queue-item"><span>{item.text || tf("queue.image_count", "{count} images", { count: Math.max(item.attachmentCount, item.attachments.length) })}</span>{#if item.state === "failed"}<button type="button" onclick={() => { if (actionOverrides.retryQueuedMessage) void actionOverrides.retryQueuedMessage(item.id); else if (controller) void controller.actions.retryQueuedMessage?.(item.id); }} aria-label={tf("queue.retry", "Retry queued message {id}", { id: item.id })}>{t("common.retry", "Retry")}</button>{/if}<button type="button" onclick={() => { if (actionOverrides.removeQueuedMessage) actionOverrides.removeQueuedMessage(item.id); else if (controller) void controller.actions.removeQueuedMessage(item.id); else $useChatStore.removeQueuedMessage(item.id); }} aria-label={tf("queue.remove", "Remove queued message {id}", { id: item.id })}><XCircle size={13} /></button></div>{/each}</div></div>{/if}
@@ -629,14 +650,13 @@
           <input bind:this={replacementInput} type="file" accept="image/*" hidden onchange={(event) => { const file = event.currentTarget.files?.[0]; if (file) void replaceAttachment(file); event.currentTarget.value = ""; }} />
         </form>
       </div>
+      <AlertDialog.Root open={confirm === "yolo"} onOpenChange={(value) => { if (!value) confirm = null; }}><AlertDialog.Overlay class="kl-window-dialog-layer" /><AlertDialog.Content class="kl-window-dialog-card kl-dialog-card"><header><AlertDialog.Title>{t("dialog.yolo.title", "Allow direct edits?")}</AlertDialog.Title></header><AlertDialog.Description class="kl-dialog-description">{t("dialog.yolo.description", "Loom may change the active prompt and run supported tools without asking for confirmation each time. Hash checks still protect prompts changed elsewhere.")}</AlertDialog.Description><div class="kl-dialog-actions"><AlertDialog.Cancel class="kl-dialog-cancel">{t("dialog.yolo.cancel", "Keep confirmations")}</AlertDialog.Cancel><AlertDialog.Action class="kl-dialog-confirm" onclick={enableYolo}>{t("dialog.yolo.confirm", "Allow direct edits")}</AlertDialog.Action></div></AlertDialog.Content></AlertDialog.Root>
       <button type="button" class="kl-resize-handle" data-loom-interaction-handle="true" use:pointerWindow={{ mode: "resize", layout: () => currentLayout, update: updateLayout, minimum: windowMinimum, interacting: (active) => interacting = active }} onkeydown={resizeKey} aria-label={t("assistant.resize", "Resize chat window")}><Grip size={15} /></button>
     {#if kind !== "desktop" && !$useUiStore.hasSeenMobileResizeHint && !mobileHintDismissed}<div class="kl-mobile-resize-hint" role="status"><Grip size={14} /> {t("assistant.resize_hint", "Drag the corner to resize")}<button type="button" onclick={() => { mobileHintDismissed = true; $useUiStore.markMobileResizeHintSeen(); }}>{t("common.dismiss", "Dismiss")}</button></div>{/if}
     </div>
   {/if}
 
   <ProfileSettings open={$useUiStore.profileSettingsOpen} onclose={closeSettings} />
-
-  <AlertDialog.Root open={confirm === "yolo"} onOpenChange={(value) => { if (!value) confirm = null; }}><AlertDialog.Portal><AlertDialog.Overlay class="kl-dialog-layer" /><AlertDialog.Content class="kl-dialog-card"><header><AlertDialog.Title>{t("dialog.yolo.title", "Allow direct edits?")}</AlertDialog.Title></header><AlertDialog.Description class="kl-dialog-description">{t("dialog.yolo.description", "Loom may change the active prompt and run supported tools without asking for confirmation each time. Hash checks still protect prompts changed elsewhere.")}</AlertDialog.Description><div class="kl-dialog-actions"><AlertDialog.Cancel class="kl-dialog-cancel">{t("dialog.yolo.cancel", "Keep confirmations")}</AlertDialog.Cancel><AlertDialog.Action class="kl-dialog-confirm" onclick={enableYolo}>{t("dialog.yolo.confirm", "Allow direct edits")}</AlertDialog.Action></div></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>
 
   <AlertDialog.Root open={Boolean(pendingToolApproval)} onOpenChange={(value) => { if (!value && pendingToolApproval) action("rejectTool")?.(pendingToolApproval.requestId); }}><AlertDialog.Portal><AlertDialog.Overlay class="kl-dialog-layer" /><AlertDialog.Content class="kl-dialog-card"><header><AlertDialog.Title>{t("dialog.tool.title", "Approve tool action?")}</AlertDialog.Title></header>{#if pendingToolApproval}<AlertDialog.Description class="kl-dialog-description"><strong>{pendingToolApproval.name}</strong><pre>{JSON.stringify(pendingToolApproval.arguments, null, 2)}</pre></AlertDialog.Description><div class="kl-dialog-actions"><AlertDialog.Cancel class="kl-dialog-cancel" onclick={() => action("rejectTool")?.(pendingToolApproval.requestId)}>{t("dialog.tool.reject", "Reject")}</AlertDialog.Cancel><AlertDialog.Action class="kl-dialog-confirm" onclick={() => action("approveTool")?.(pendingToolApproval.requestId)}>{t("dialog.tool.approve", "Approve")}</AlertDialog.Action></div>{/if}</AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>
 

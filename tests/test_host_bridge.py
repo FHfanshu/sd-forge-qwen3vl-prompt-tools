@@ -51,6 +51,40 @@ process.stdout.write("ok");
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertEqual("ok", completed.stdout)
 
+    def test_boot_mounts_when_loaded_after_the_forge_ui_event(self):
+        root = Path(__file__).resolve().parents[1]
+        source = root / "javascript" / "kohaku_loom_99_boot.js"
+        script = r'''
+const fs = require("fs");
+const vm = require("vm");
+let mounted = 0;
+let registered = 0;
+global.document = {
+  body: { appendChild: () => {} },
+  querySelector: (selector) => selector === "#txt2img_prompt" ? { id: "txt2img_prompt" } : null,
+  createElement: () => ({ style: {}, append: () => {}, remove: () => {}, querySelector: () => ({}) }),
+  getElementById: () => null,
+};
+global.window = {
+  addEventListener: () => {},
+  onUiLoaded: () => { registered += 1; },
+  setTimeout: () => { throw new Error("late boot should mount without polling"); },
+  KohakuLoomSvelteUi: { UI_READY: true, mountSvelteUi: () => { mounted += 1; } },
+};
+vm.runInThisContext(fs.readFileSync(process.argv.at(-1), "utf8"));
+if (registered !== 1) throw new Error(`expected lifecycle registration, got ${registered}`);
+if (mounted !== 1) throw new Error(`expected one late mount, got ${mounted}`);
+process.stdout.write("ok");
+'''
+        completed = subprocess.run(
+            [shutil.which("node"), "-", str(source)],
+            input=script,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual("ok", completed.stdout)
+
     def test_legacy_i18n_does_not_preload_unused_bundles(self):
         root = Path(__file__).resolve().parents[1]
         source = root / "javascript" / "kohaku_loom_01_i18n.js"

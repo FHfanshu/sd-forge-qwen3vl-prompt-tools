@@ -791,6 +791,42 @@ describe("runtime session history", () => {
     await vi.waitFor(() => expect(useChatStore.getState().activeRequestId).toBeNull());
   });
 
+  it("shows provider retries and a sanitized zero-output authentication failure", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    let endTurn!: () => void;
+    const terminalGate = new Promise<void>((resolve) => { endTurn = resolve; });
+    const host = {
+      claimToolBridge: vi.fn(() => Promise.resolve({ owned: true, bridge_id: "bridge" })),
+      assistantConfig: vi.fn(() => ({ timeout: 120 })),
+      captureForgeState: vi.fn(() => ({})),
+    } as never;
+    const client = {
+      request: vi.fn((path: string) => {
+        if (path === "/runtime") return Promise.resolve({ turn_event_sequence: 0, tool_event_sequence: 0 });
+        if (path === "/turns") return Promise.resolve({ turn_id: "turn-auth" });
+        throw new Error(`unexpected path: ${path}`);
+      }),
+      stream: vi.fn(async function* (path: string) {
+        if (path === "/tools/events") return;
+        yield { sequence: 1, data: { type: "provider_retry", payload: { turn_id: "turn-auth", attempt: 1, max_retries: 5, delay: 2 } } };
+        await terminalGate;
+        yield { sequence: 2, data: { type: "turn_ended", payload: { turn_id: "turn-auth", status: "error", text: "", error: "401 Invalid token: secret-token" } } };
+      }),
+    } as never;
+    const controller = new LoomRuntimeController(host, client);
+    useRuntimeStore.getState().setSession({ session_id: "kt-1" });
+
+    await controller.sendMessage({ text: "hello", attachments: [], riskMode: "normal", reasoning: "low" });
+    await vi.waitFor(() => expect(useRuntimeStore.getState()).toMatchObject({ workingPhase: "retrying", workingDetail: "Attempt 1 of 5 in 2s" }));
+    endTurn();
+
+    await vi.waitFor(() => expect(useChatStore.getState().activeRequestId).toBeNull());
+    const error = useChatStore.getState().messages.find((message) => message.role === "error");
+    expect(error?.content).toBe("Provider rejected the configured credentials (HTTP 401). Update the API key in Model profiles and try again.");
+    expect(error?.content).not.toContain("secret-token");
+  });
+
   it("creates a session before activating the first submitted turn", async () => {
     useChatStore.getState().reset();
     useRuntimeStore.getState().reset();

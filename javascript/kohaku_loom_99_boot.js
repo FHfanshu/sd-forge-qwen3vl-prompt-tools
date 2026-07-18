@@ -6,6 +6,15 @@
     var attempts = 0;
     var MAX_ATTEMPTS = 200;
 
+    function forgeUiIsPresent() {
+        try {
+            var root = typeof window.gradioApp === "function" ? window.gradioApp() : document;
+            return Boolean(root && typeof root.querySelector === "function" && root.querySelector("#txt2img_prompt"));
+        } catch (_) {
+            return false;
+        }
+    }
+
     function showFatalError(message) {
         var existing = document.getElementById("kohaku-loom-boot-error");
         if (existing) {
@@ -36,6 +45,7 @@
 
     function mountUi() {
         if (mounted) return true;
+        if (!forgeUiLoaded && forgeUiIsPresent()) forgeUiLoaded = true;
         if (!forgeUiLoaded) return false;
         var ui = window.KohakuLoomSvelteUi;
         if (!ui || ui.UI_READY !== true || typeof ui.mountSvelteUi !== "function") return false;
@@ -81,5 +91,5 @@
         if (!mountUi()) schedule();
     });
     registerUiLoaded();
-    schedule();
+    if (!mountUi()) schedule();
 })();
