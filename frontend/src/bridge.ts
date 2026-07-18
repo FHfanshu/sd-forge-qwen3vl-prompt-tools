@@ -17,6 +17,7 @@ const bridgeCapabilities = [
   "locale-hints",
 ] as const;
 export type BridgeCapability = (typeof bridgeCapabilities)[number];
+const coreCapabilities = ["profile-store", "tool-bridge-lease", "assistant-config", "session-runtime"] as const;
 
 export const bridgeHandshakeRequestSchema = z.object({
   client: z.string().min(1),
@@ -65,7 +66,7 @@ export interface KohakuLoomHostApi {
   claimAssistantToolBridge(): Promise<unknown>;
   releaseAssistantToolBridge(): Promise<unknown>;
   syncProfiles(): Promise<unknown>;
-  profileChat(profileId: string, messages: unknown[], signal?: AbortSignal): Promise<unknown>;
+  profileChat(profileId: string, messages: unknown[], signal?: AbortSignal, timeout?: number): Promise<unknown>;
   listLegacySessions(limit?: number): Promise<unknown>;
   getLegacySession(sessionId: string, limit?: number): Promise<unknown>;
   readonly ktBaseUrl?: string;
@@ -120,31 +121,20 @@ export function validateHostApi(value: unknown): KohakuLoomHostApi {
     throw new Error("Kohaku Loom host API version is unsupported");
   }
   const hostCapabilities = value.capabilities;
-  if (!Array.isArray(hostCapabilities) || !capabilities.every((item) => hostCapabilities.includes(item))) {
-    throw new Error("Kohaku Loom host API capabilities are incomplete");
+  if (!Array.isArray(hostCapabilities) || !coreCapabilities.every((item) => hostCapabilities.includes(item))) {
+    throw new Error("Kohaku Loom host API core capabilities are incomplete");
   }
   const profileStore = value.profileStore;
   [
     "handshake",
-    "isForgeAvailable",
-    "activePromptTarget",
-    "readPrompt",
     "captureForgeState",
     "restoreForgeState",
-    "executeTool",
     "executeAssistantTool",
     "assistantConfig",
     "claimToolBridge",
     "releaseToolBridge",
-    "claimAssistantToolBridge",
-    "releaseAssistantToolBridge",
     "syncProfiles",
-    "profileChat",
-    "listLegacySessions",
-    "getLegacySession",
     "openSettings",
-    "getLocaleHints",
-    "subscribeLocaleHints",
   ].forEach((name) => assertFunction(value[name], name));
   if (!isObject(profileStore)) throw new Error("Kohaku Loom host API profile store is unavailable");
   [
@@ -169,8 +159,27 @@ export function validateHostApi(value: unknown): KohakuLoomHostApi {
 function createBridgeFacade(host: KohakuLoomHostApi): KohakuLoomHostApi {
   const cached = facadeCache.get(host);
   if (cached) return cached;
+  const value = host as unknown as Record<string, unknown>;
+  const bind = <T extends (...args: any[]) => any>(name: string, fallback: T): T => (
+    typeof value[name] === "function" ? (value[name] as T).bind(host) as T : fallback
+  );
+  const executeAssistantTool = bind("executeAssistantTool", async () => {
+    throw new Error("Forge tool execution is unavailable");
+  });
   const facade: KohakuLoomHostApi = {
     ...host,
+    isForgeAvailable: bind("isForgeAvailable", () => true),
+    activePromptTarget: bind("activePromptTarget", () => "active"),
+    readPrompt: bind("readPrompt", async () => { throw new Error("Forge prompt reading is unavailable"); }),
+    executeAssistantTool,
+    executeTool: bind("executeTool", executeAssistantTool),
+    claimAssistantToolBridge: bind("claimAssistantToolBridge", host.claimToolBridge.bind(host)),
+    releaseAssistantToolBridge: bind("releaseAssistantToolBridge", host.releaseToolBridge.bind(host)),
+    profileChat: bind("profileChat", async () => { throw new Error("Profile connection testing is unavailable"); }),
+    listLegacySessions: bind("listLegacySessions", async () => ({ sessions: [] })),
+    getLegacySession: bind("getLegacySession", async () => { throw new Error("Legacy session archive is unavailable"); }),
+    getLocaleHints: bind("getLocaleHints", () => ({ locale: typeof navigator === "undefined" ? "en" : navigator.language || "en" })),
+    subscribeLocaleHints: bind("subscribeLocaleHints", () => () => undefined),
     handshake(request) {
       const parsed = bridgeHandshakeRequestSchema.safeParse(request);
       if (!parsed.success || parsed.data.client !== BRIDGE_NAME) {
@@ -202,6 +211,51 @@ export function getHostApi(namespace: KohakuLoomNamespace | undefined): KohakuLo
   } catch (_error) {
     return null;
   }
+}
+
+export interface WaitForHostOptions {
+  timeoutMs?: number;
+  intervalMs?: number;
+  signal?: AbortSignal;
+}
+
+function wait(delay: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const onAbort = () => {
+      globalThis.clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    const timer = globalThis.setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delay);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+export async function waitForHostApi(
+  namespace: () => KohakuLoomNamespace | undefined,
+  options: WaitForHostOptions = {},
+): Promise<KohakuLoomHostApi> {
+  const timeoutMs = options.timeoutMs ?? 15_000;
+  const intervalMs = options.intervalMs ?? 100;
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    try {
+      return createBridgeFacade(validateHostApi(namespace()?.hostApi));
+    } catch (error) {
+      lastError = error;
+    }
+    await wait(intervalMs, options.signal);
+  }
+  const detail = lastError instanceof Error ? `: ${lastError.message}` : "";
+  throw new Error(`Kohaku Loom host API did not become ready${detail}`);
 }
 
 // Kept as a compatibility name; it validates the host and never installs a bridge.

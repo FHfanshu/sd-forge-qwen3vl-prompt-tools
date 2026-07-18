@@ -41,23 +41,45 @@
         return String(tools.KT_ASSISTANT_BASE || KT_BASE);
     }
 
+    const PROFILE_IMPORT_RETRY_DELAYS = [150, 300];
+
+    function sleep(delay) {
+        return new Promise(function (resolve) { setTimeout(resolve, delay); });
+    }
+
+    function isStartupRetryable(error) {
+        return Number(error?.status) === 503 || error instanceof TypeError;
+    }
+
     async function ktJson(path, options) {
         const response = await fetch(ktBaseUrl() + path, options);
         if (!response.ok) {
             let detail = await response.text();
             try { detail = JSON.parse(detail).detail || detail; } catch (_error) { }
-            throw new Error(String(detail || `HTTP ${response.status}`));
+            const error = new Error(String(detail || `HTTP ${response.status}`));
+            error.status = response.status;
+            throw error;
         }
         return response.status === 204 ? null : response.json();
     }
 
-    async function syncProfiles() {
+    async function syncProfiles(signal) {
         if (!tools.profileStore) throw new Error("Model Profile store is unavailable");
-        const imported = await ktJson("/profiles/import", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(tools.profileStore.load())
-        });
+        let imported;
+        for (let attempt = 0; ; attempt += 1) {
+            try {
+                imported = await ktJson("/profiles/import", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    signal: signal,
+                    body: JSON.stringify(tools.profileStore.load())
+                });
+                break;
+            } catch (error) {
+                if (!isStartupRetryable(error) || attempt >= PROFILE_IMPORT_RETRY_DELAYS.length) throw error;
+                await sleep(PROFILE_IMPORT_RETRY_DELAYS[attempt]);
+            }
+        }
         if (tools.LEGACY_PROFILE_STORAGE_KEY) localStorage.removeItem(tools.LEGACY_PROFILE_STORAGE_KEY);
         (tools.LEGACY_ASSISTANT_PROFILE_KEYS || []).filter(function (key) {
             return String(key).startsWith("q3vl_assistant_");
@@ -66,13 +88,13 @@
         return imported;
     }
 
-    async function profileChat(profileId, messages, signal) {
-        await syncProfiles();
+    async function profileChat(profileId, messages, signal, timeout) {
+        await syncProfiles(signal);
         return ktJson(`/profiles/${encodeURIComponent(profileId)}/chat`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             signal: signal,
-            body: JSON.stringify({ messages: messages })
+            body: JSON.stringify({ messages: messages, timeout: timeout })
         });
     }
 

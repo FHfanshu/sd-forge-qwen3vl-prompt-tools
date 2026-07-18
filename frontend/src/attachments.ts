@@ -1,4 +1,4 @@
-import type { ChatAttachment } from "./contracts";
+import type { ChatAttachment, WireAttachment } from "./contracts";
 
 export const MAX_ATTACHMENTS = 8;
 export const MAX_SOURCE_IMAGE_BYTES = 24 * 1024 * 1024;
@@ -6,6 +6,24 @@ export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 export const MAX_TOTAL_ATTACHMENT_BYTES = 16 * 1024 * 1024;
 export const MAX_IMAGE_EDGE = 1536;
 const REENCODE_THRESHOLD_BYTES = 2 * 1024 * 1024;
+const materializedAttachments = new WeakMap<object, Promise<WireAttachment>>();
+const previewReferences = new Map<string, number>();
+const releasedPreviews = new Set<string>();
+
+export interface LocalImageAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  blob: Blob;
+  previewUrl: string;
+}
+
+export type PreparedImageAttachment = LocalImageAttachment | ChatAttachment;
+
+export function isLocalImageAttachment(attachment: PreparedImageAttachment): attachment is LocalImageAttachment {
+  return "blob" in attachment;
+}
 
 function readBlobAsDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -66,31 +84,110 @@ async function optimizedBlob(file: File): Promise<Blob> {
   }
 }
 
-export function attachmentByteSize(attachment: ChatAttachment): number {
+export function attachmentByteSize(attachment: PreparedImageAttachment): number {
   if (Number.isFinite(attachment.size)) return Number(attachment.size);
-  const encoded = attachment.dataUrl.split(",", 2)[1] ?? "";
+  const encoded = ("dataUrl" in attachment ? attachment.dataUrl : "")?.split(",", 2)[1] ?? "";
   return Math.max(0, Math.floor(encoded.length * 0.75));
 }
 
-export function totalAttachmentBytes(attachments: ChatAttachment[]): number {
+export function totalAttachmentBytes(attachments: PreparedImageAttachment[]): number {
   return attachments.reduce((total, attachment) => total + attachmentByteSize(attachment), 0);
 }
 
-export async function createImageAttachment(file: File, attachmentId: string): Promise<ChatAttachment> {
+export async function createImageAttachment(file: File, attachmentId: string): Promise<PreparedImageAttachment> {
   if (!file.type.startsWith("image/")) throw new Error("Only image files can be attached.");
   if (file.size > MAX_SOURCE_IMAGE_BYTES) throw new Error(`${file.name} is larger than 24 MB.`);
   const blob = await optimizedBlob(file);
   if (blob.size > MAX_ATTACHMENT_BYTES) throw new Error(`${file.name} is still larger than 8 MB after optimization.`);
-  return {
+  const common = {
     id: attachmentId,
     name: file.name,
-    dataUrl: await readBlobAsDataUrl(blob),
     mimeType: blob.type || file.type,
     size: blob.size,
   };
+  if (typeof URL?.createObjectURL === "function") {
+    const previewUrl = URL.createObjectURL(blob);
+    previewReferences.set(previewUrl, 1);
+    releasedPreviews.delete(previewUrl);
+    return { ...common, blob, previewUrl };
+  }
+  return {
+    ...common,
+    dataUrl: await readBlobAsDataUrl(blob),
+  };
 }
 
-export function assertAttachmentTotal(attachments: ChatAttachment[]): void {
+export function attachmentPreviewUrl(attachment: PreparedImageAttachment): string {
+  return attachment.previewUrl || ("dataUrl" in attachment ? attachment.dataUrl : "") || "";
+}
+
+export function displayImageAttachment(attachment: PreparedImageAttachment): ChatAttachment {
+  if ("dataUrl" in attachment && attachment.dataUrl) return attachment;
+  return {
+    id: attachment.id,
+    name: attachment.name,
+    previewUrl: attachmentPreviewUrl(attachment),
+    mimeType: attachment.mimeType,
+    size: attachment.size,
+  };
+}
+
+export function materializeImageAttachment(attachment: PreparedImageAttachment): Promise<WireAttachment> {
+  const existing = materializedAttachments.get(attachment);
+  if (existing) return existing;
+  const pending = (async () => {
+    const dataUrl = "dataUrl" in attachment && attachment.dataUrl
+      ? attachment.dataUrl
+      : isLocalImageAttachment(attachment)
+        ? await readBlobAsDataUrl(attachment.blob)
+        : "";
+    if (!dataUrl) throw new Error(`Image data is unavailable for ${attachment.name}.`);
+    return {
+      id: attachment.id,
+      name: attachment.name,
+      dataUrl,
+      mimeType: attachment.mimeType,
+      size: attachment.size,
+    };
+  })();
+  materializedAttachments.set(attachment, pending);
+  void pending.catch(() => materializedAttachments.delete(attachment));
+  return pending;
+}
+
+export async function materializeImageAttachments(attachments: PreparedImageAttachment[]): Promise<WireAttachment[]> {
+  const materialized: WireAttachment[] = [];
+  for (const attachment of attachments) materialized.push(await materializeImageAttachment(attachment));
+  return materialized;
+}
+
+export function retainImageAttachment(attachment: { previewUrl?: string }): void {
+  if (!attachment.previewUrl || !previewReferences.has(attachment.previewUrl) || releasedPreviews.has(attachment.previewUrl)) return;
+  previewReferences.set(attachment.previewUrl, (previewReferences.get(attachment.previewUrl) ?? 0) + 1);
+}
+
+export function retainImageAttachments(attachments: Array<{ previewUrl?: string }>): void {
+  attachments.forEach(retainImageAttachment);
+}
+
+export function releaseImageAttachment(attachment: { previewUrl?: string }): void {
+  const previewUrl = attachment.previewUrl;
+  if (!previewUrl || releasedPreviews.has(previewUrl)) return;
+  const references = previewReferences.get(previewUrl) ?? 1;
+  if (references > 1) {
+    previewReferences.set(previewUrl, references - 1);
+    return;
+  }
+  previewReferences.delete(previewUrl);
+  releasedPreviews.add(previewUrl);
+  if (typeof URL?.revokeObjectURL === "function") URL.revokeObjectURL(previewUrl);
+}
+
+export function releaseImageAttachments(attachments: Array<{ previewUrl?: string }>): void {
+  attachments.forEach(releaseImageAttachment);
+}
+
+export function assertAttachmentTotal(attachments: PreparedImageAttachment[]): void {
   if (totalAttachmentBytes(attachments) > MAX_TOTAL_ATTACHMENT_BYTES) {
     throw new Error("Attached images exceed the 16 MB total limit.");
   }

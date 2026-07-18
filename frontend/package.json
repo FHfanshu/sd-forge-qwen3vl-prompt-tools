@@ -15,6 +15,7 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:forge": "playwright test --config playwright.real-forge.config.ts",
     "bundle:size": "node scripts/bundle-size.mjs"
   },
   "dependencies": {

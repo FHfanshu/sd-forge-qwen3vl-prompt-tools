@@ -6,6 +6,7 @@ from kohaku_loom.assistant import _assistant_api_key, ask_teacher, prompt_assist
 from kohaku_loom.assistant_gemini import _gemini_base_url, _gemini_client, _gemini_request_body, _gemini_response_parts, _gemini_url
 from kohaku_loom.assistant_openai import _openai_chat_url, _openai_result
 from kohaku_loom.assistant_profiles import normalize_assistant_payload, normalize_model_profile
+from kohaku_loom.utils import http_transport_summary
 
 
 def remote_profile(**overrides):
@@ -53,6 +54,20 @@ def gemini_sdk_client(result=None, stream=None, error=None):
 
 
 class AssistantProfileTests(unittest.TestCase):
+    def test_http_transport_summary_reports_proxy_without_credentials(self):
+        with patch("kohaku_loom.utils.proxy_bypass", return_value=False), patch(
+            "kohaku_loom.utils.getproxies",
+            return_value={"https": "http://user:secret@127.0.0.1:7890"},
+        ):
+            result = http_transport_summary("https://api.example.com/v1")
+
+        self.assertEqual("system/environment proxy http://127.0.0.1:7890", result)
+        self.assertNotIn("secret", result)
+
+    def test_http_transport_summary_keeps_loopback_direct(self):
+        with patch("kohaku_loom.utils.getproxies", return_value={"http": "http://127.0.0.1:7890"}):
+            self.assertEqual("direct (local endpoint)", http_transport_summary("http://127.0.0.1:8080/v1"))
+
     def test_profile_validation_names_invalid_fields(self):
         with self.assertRaisesRegex(RuntimeError, "protocol"):
             normalize_model_profile(remote_profile(protocol="automatic"))

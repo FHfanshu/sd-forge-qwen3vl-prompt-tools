@@ -183,7 +183,7 @@ export function minimumForViewport(kind: LayoutViewport): WindowMinimum {
 
 export function viewportKind(): LayoutViewport {
   if (typeof window === "undefined") return "desktop";
-  const mobilePointer = window.matchMedia?.("(pointer: coarse)").matches ?? false;
-  if (!mobilePointer && window.innerWidth >= 768) return "desktop";
+  const coarsePointer = window.matchMedia?.("(pointer: coarse)").matches ?? false;
+  if (window.innerWidth >= 768 && (!coarsePointer || Math.min(window.innerWidth, window.innerHeight) >= 600)) return "desktop";
   return window.innerWidth > window.innerHeight ? "mobileLandscape" : "mobilePortrait";
 }

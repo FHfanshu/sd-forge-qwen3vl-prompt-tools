@@ -224,5 +224,4 @@
         window.addEventListener("forge-locale-changed", function () { probeLocaleMetadata(); });
     }
     applyLocale("bootstrap");
-    loadI18nBundle();
 })();

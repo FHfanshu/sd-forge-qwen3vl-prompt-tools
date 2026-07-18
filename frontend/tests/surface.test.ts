@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Surface from "../src/components/Surface.svelte";
 import { mockMessages } from "../src/mock-data";
 import { useChatStore } from "../src/stores/chat";
@@ -8,11 +8,32 @@ import { useProfileStore } from "../src/stores/profiles";
 import { useRuntimeStore } from "../src/stores/runtime";
 import { useUiStore } from "../src/stores/ui";
 
+function installObjectUrlMocks(): { create: ReturnType<typeof vi.fn>; revoke: ReturnType<typeof vi.fn> } {
+  let index = 0;
+  const create = vi.fn(() => `blob:surface-${++index}`);
+  const revoke = vi.fn();
+  const MockUrl = class extends URL {};
+  Object.defineProperties(MockUrl, {
+    createObjectURL: { value: create },
+    revokeObjectURL: { value: revoke },
+  });
+  vi.stubGlobal("URL", MockUrl);
+  vi.stubGlobal("createImageBitmap", vi.fn(() => Promise.reject(new Error("decode unavailable"))));
+  return { create, revoke };
+}
+
 beforeEach(() => {
   useChatStore.getState().reset();
   useProfileStore.getState().reset();
   useRuntimeStore.getState().reset();
   useUiStore.getState().reset();
+});
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("Svelte chat surface", () => {
@@ -81,19 +102,22 @@ describe("Svelte chat surface", () => {
     expect(useUiStore.getState().shellOpen).toBe(false);
   });
 
-  it("starts a fresh chat every time the launcher opens", async () => {
+  it("reopens the launcher without replacing the current draft or session", async () => {
     const user = userEvent.setup();
     const newSession = vi.fn();
     render(Surface, { actions: { newSession } });
 
     await user.click(screen.getByRole("button", { name: "Open Kohaku Loom" }));
-    expect(newSession).toHaveBeenCalledTimes(1);
+    const composer = screen.getByRole("textbox", { name: "Message Kohaku Loom" });
+    await user.type(composer, "Preserve this draft");
+    expect(newSession).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Close Kohaku Loom" }));
     await user.click(screen.getByRole("button", { name: "Open Kohaku Loom" }));
-    expect(newSession).toHaveBeenCalledTimes(2);
+    expect(composer).toHaveValue("Preserve this draft");
+    expect(newSession).not.toHaveBeenCalled();
   });
 
-  it("waits for launcher session creation before sending", async () => {
+  it("waits for explicit session creation before sending", async () => {
     const user = userEvent.setup();
     let releaseSession!: () => void;
     const newSession = vi.fn(() => new Promise<void>((resolve) => { releaseSession = resolve; }));
@@ -101,6 +125,7 @@ describe("Svelte chat surface", () => {
     render(Surface, { actions: { newSession, sendMessage } });
 
     await user.click(screen.getByRole("button", { name: "Open Kohaku Loom" }));
+    await user.click(screen.getByRole("button", { name: "Start a new chat" }));
     await user.type(screen.getByRole("textbox", { name: "Message Kohaku Loom" }), "No duplicate session");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
@@ -116,6 +141,7 @@ describe("Svelte chat surface", () => {
     await user.type(screen.getByRole("textbox", { name: "Message Kohaku Loom" }), "Refine this prompt");
     await user.click(screen.getByRole("button", { name: "Send message" }));
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "Refine this prompt", riskMode: "normal", reasoning: "low" }));
+    expect(screen.getByRole("textbox", { name: "Message Kohaku Loom" })).toHaveValue("");
     await user.click(screen.getByRole("button", { name: "Permission mode: confirmations required" }));
     await user.click(screen.getByRole("button", { name: "Allow direct edits" }));
     expect(screen.getByRole("button", { name: "Permission mode: direct edits" })).toHaveAttribute("aria-pressed", "true");
@@ -139,6 +165,120 @@ describe("Svelte chat surface", () => {
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "Edited request", editOf: mockMessages[0].id }));
   });
 
+  it("materializes attached images only when sending and releases accepted previews", async () => {
+    const user = userEvent.setup();
+    const { revoke } = installObjectUrlMocks();
+    const read = vi.spyOn(FileReader.prototype, "readAsDataURL");
+    const sendMessage = vi.fn();
+    const { container } = render(Surface, { initialOpen: true, actions: { sendMessage } });
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"][multiple]')!;
+
+    await user.upload(fileInput, new File([new Uint8Array([1, 2, 3])], "reference.png", { type: "image/png" }));
+    const preview = await screen.findByRole("button", { name: "Preview reference.png" });
+    expect(preview.querySelector("img")).toHaveAttribute("src", "blob:surface-1");
+    expect(read).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledOnce());
+    expect(sendMessage.mock.calls[0]?.[0].attachments).toEqual([
+      expect.objectContaining({ name: "reference.png", dataUrl: expect.stringMatching(/^data:image\/png;base64,/) }),
+    ]);
+    expect(read).toHaveBeenCalledOnce();
+    expect(revoke).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "Preview reference.png" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the blob preview owned by an accepted message until unmount", async () => {
+    const user = userEvent.setup();
+    const { revoke } = installObjectUrlMocks();
+    const sendMessage = vi.fn((input) => {
+      useChatStore.getState().appendMessage({ id: "accepted-user", role: "user", content: input.text, attachments: input.displayAttachments ?? [], status: "complete" });
+    });
+    const { container, unmount } = render(Surface, { initialOpen: true, actions: { sendMessage } });
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"][multiple]')!;
+
+    await user.upload(fileInput, new File([new Uint8Array([1, 2, 3])], "message.png", { type: "image/png" }));
+    await user.type(screen.getByRole("textbox", { name: "Message Kohaku Loom" }), "Keep the preview");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(screen.getByText("Keep the preview", { exact: true })).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Preview message.png" }).querySelector("img")).toHaveAttribute("src", "blob:surface-1");
+    expect(revoke).not.toHaveBeenCalled();
+
+    unmount();
+    expect(revoke).not.toHaveBeenCalled();
+    useChatStore.getState().reset();
+    expect(revoke).toHaveBeenCalledOnce();
+    expect(revoke).toHaveBeenCalledWith("blob:surface-1");
+  });
+
+  it("keeps attachment blobs available after a rejected send", async () => {
+    const user = userEvent.setup();
+    const { revoke } = installObjectUrlMocks();
+    const sendMessage = vi.fn(() => Promise.reject(new Error("provider unavailable")));
+    const { container } = render(Surface, { initialOpen: true, actions: { sendMessage } });
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"][multiple]')!;
+
+    await user.upload(fileInput, new File([new Uint8Array([1, 2, 3])], "retry.png", { type: "image/png" }));
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("provider unavailable");
+    expect(screen.getByRole("button", { name: "Preview retry.png" }).querySelector("img")).toHaveAttribute("src", "blob:surface-1");
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  it("keeps unsent attachments when creating a new session fails", async () => {
+    const user = userEvent.setup();
+    const { revoke } = installObjectUrlMocks();
+    const newSession = vi.fn(() => Promise.reject(new Error("session unavailable")));
+    const { container } = render(Surface, { initialOpen: true, actions: { newSession } });
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"][multiple]')!;
+
+    await user.upload(fileInput, new File([new Uint8Array([1, 2, 3])], "draft.png", { type: "image/png" }));
+    await user.type(screen.getByRole("textbox", { name: "Message Kohaku Loom" }), "Keep this draft");
+    await user.click(screen.getByRole("button", { name: "Start a new chat" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("session unavailable");
+    expect(screen.getByRole("textbox", { name: "Message Kohaku Loom" })).toHaveValue("Keep this draft");
+    expect(screen.getByRole("button", { name: "Preview draft.png" })).toBeInTheDocument();
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  it("releases previews after removal, replacement, and unmount", async () => {
+    const user = userEvent.setup();
+    const { revoke } = installObjectUrlMocks();
+    const { container, unmount } = render(Surface, { initialOpen: true, actions: {} });
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"][multiple]')!;
+    const replacementInput = container.querySelector<HTMLInputElement>('input[type="file"]:not([multiple])')!;
+
+    await user.upload(fileInput, new File([new Uint8Array([1])], "remove.png", { type: "image/png" }));
+    await user.click(screen.getByRole("button", { name: "Remove remove.png" }));
+    expect(revoke).toHaveBeenNthCalledWith(1, "blob:surface-1");
+
+    await user.upload(fileInput, new File([new Uint8Array([2])], "replace.png", { type: "image/png" }));
+    await user.click(screen.getByRole("button", { name: "Edit replace.png" }));
+    await user.click(screen.getByRole("menuitem", { name: "Replace" }));
+    await user.upload(replacementInput, new File([new Uint8Array([3])], "replacement.png", { type: "image/png" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Preview replacement.png" })).toBeInTheDocument());
+    expect(revoke).toHaveBeenNthCalledWith(2, "blob:surface-2");
+
+    unmount();
+    expect(revoke).toHaveBeenNthCalledWith(3, "blob:surface-3");
+  });
+
+  it("renders persisted data URL attachments without object URL ownership", () => {
+    const { revoke } = installObjectUrlMocks();
+    const dataUrl = "data:image/png;base64,AQID";
+    render(Surface, {
+      initialOpen: true,
+      initialAttachments: [{ id: "persisted", name: "persisted.png", dataUrl }],
+      actions: {},
+    });
+
+    expect(screen.getByRole("button", { name: "Preview persisted.png" }).querySelector("img")).toHaveAttribute("src", dataUrl);
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
   it("starts a new chat from the dedicated header action", async () => {
     const user = userEvent.setup();
     const newSession = vi.fn();
@@ -148,20 +288,30 @@ describe("Svelte chat surface", () => {
     expect(newSession).toHaveBeenCalledOnce();
   });
 
-  it("queues locally while a mocked request is active", async () => {
+  it("uses separate stop and queue actions while a request is active", async () => {
     const user = userEvent.setup();
     useChatStore.getState().beginRequest("active");
-    render(Surface, { initialOpen: true, actions: { sendMessage: vi.fn() } });
+    useRuntimeStore.getState().setWorking("thinking");
+    const sendMessage = vi.fn();
+    const stopRequest = vi.fn();
+    render(Surface, { initialOpen: true, actions: { sendMessage, stopRequest } });
+    expect(screen.getByRole("button", { name: "Stop response" })).toBeInTheDocument();
     await fireEvent.input(screen.getByRole("textbox", { name: "Message Kohaku Loom" }), { target: { value: "Follow up" } });
     await user.click(screen.getByRole("button", { name: "Queue message" }));
-    expect(screen.getByText("Queue 1")).toBeInTheDocument();
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "Follow up" }));
+    await user.click(screen.getByRole("button", { name: "Stop response" }));
+    expect(stopRequest).toHaveBeenCalledOnce();
   });
 
   it("shows the current assistant working phase", async () => {
     useChatStore.getState().beginRequest("active");
+    useRuntimeStore.getState().setWorking("submitting");
     render(Surface, { initialOpen: true, actions: {} });
 
-    expect(screen.getByText("Thinking…")).toBeInTheDocument();
+    expect(screen.getByText("Sending request…")).toBeInTheDocument();
+    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+    useRuntimeStore.getState().setWorking("thinking");
+    expect(await screen.findByText("Thinking…")).toBeInTheDocument();
     useChatStore.getState().appendMessage({ id: "assistant-active", role: "assistant", content: "", reasoning: "draft rationale", status: "streaming" });
     useRuntimeStore.getState().setWorking("generating");
     expect(await screen.findByText("Generating response…")).toBeInTheDocument();
@@ -172,6 +322,59 @@ describe("Svelte chat surface", () => {
 
     useChatStore.getState().cancelRequest();
     await waitFor(() => expect(screen.queryByText("Running tool…")).not.toBeInTheDocument());
+  });
+
+  it("preserves text typed after an accepted submission", async () => {
+    const user = userEvent.setup();
+    let accept!: () => void;
+    const sendMessage = vi.fn(() => new Promise<void>((resolve) => { accept = resolve; }));
+    render(Surface, { initialOpen: true, actions: { sendMessage } });
+    const composer = screen.getByRole("textbox", { name: "Message Kohaku Loom" });
+
+    await user.type(composer, "First request");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await user.type(composer, " and next draft");
+    accept();
+
+    await waitFor(() => expect(composer).toHaveValue("First request and next draft"));
+  });
+
+  it("shows a recoverable status while the sidecar is starting", () => {
+    useRuntimeStore.getState().setStartup("starting");
+    render(Surface, { initialOpen: true, actions: { sendMessage: vi.fn() } });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Loom runtime is starting or unavailable");
+  });
+
+  it("shows connection progress instead of mock history while the host bridge is unavailable", async () => {
+    render(Surface, { initialOpen: true });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Connecting to Forge runtime");
+    await fireEvent.click(screen.getByRole("button", { name: "Open chat history" }));
+    expect(screen.getByRole("dialog", { name: "Chat history" })).toHaveTextContent("Loading chat history");
+    expect(screen.queryByText("Mock archived chat")).not.toBeInTheDocument();
+  });
+
+  it("offers retry after the host connection deadline", async () => {
+    vi.useFakeTimers();
+    render(Surface, { initialOpen: true });
+
+    await vi.advanceTimersByTimeAsync(15_100);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("host API did not become ready");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("offers retry for failed queued messages and exposes paused state", async () => {
+    const user = userEvent.setup();
+    const retryQueuedMessage = vi.fn();
+    useRuntimeStore.getState().setQueuePaused(true);
+    useChatStore.getState().upsertQueue({ id: "failed-1", text: "Try again", attachments: [], state: "failed", createdAt: 1 });
+    render(Surface, { initialOpen: true, actions: { retryQueuedMessage } });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Queue is paused");
+    await user.click(screen.getByRole("button", { name: "Retry queued message failed-1" }));
+    expect(retryQueuedMessage).toHaveBeenCalledWith("failed-1");
   });
 
   it("keeps the composer input and actions inside one rounded shell", () => {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BRIDGE_API_VERSION,
   BRIDGE_CAPABILITIES,
@@ -7,6 +7,7 @@ import {
   handshakeWithLoom,
   installBridge,
   validateHostApi,
+  waitForHostApi,
 } from "../src/bridge";
 
 function hostApi() {
@@ -51,6 +52,7 @@ function hostApi() {
 }
 
 describe("Kohaku Loom bridge handshake", () => {
+  afterEach(() => vi.useRealTimers());
   it("accepts the host-owned API without replacing legacy keys", () => {
     const legacy = vi.fn();
     const host = hostApi();
@@ -84,5 +86,33 @@ describe("Kohaku Loom bridge handshake", () => {
       ok: false,
       reason: "unsupported-api-version",
     });
+  });
+
+  it("waits for a host API that registers after the Svelte bundle", async () => {
+    vi.useFakeTimers();
+    const namespace: { hostApi?: unknown } = {};
+    const waiting = waitForHostApi(() => namespace, { timeoutMs: 1_000, intervalMs: 100 });
+
+    await vi.advanceTimersByTimeAsync(500);
+    namespace.hostApi = hostApi();
+    await vi.advanceTimersByTimeAsync(100);
+
+    await expect(waiting).resolves.toMatchObject({ name: HOST_API_NAME });
+  });
+
+  it("degrades legacy history and locale hints without disabling the core host", async () => {
+    const host = hostApi();
+    host.capabilities = host.capabilities.filter((item) => !["legacy-sessions", "locale-hints"].includes(item));
+    delete (host as Partial<typeof host>).listLegacySessions;
+    delete (host as Partial<typeof host>).getLegacySession;
+    delete (host as Partial<typeof host>).getLocaleHints;
+    delete (host as Partial<typeof host>).subscribeLocaleHints;
+
+    const bridge = installBridge({ hostApi: host });
+
+    await expect(bridge.listLegacySessions()).resolves.toEqual({ sessions: [] });
+    await expect(bridge.getLegacySession("missing")).rejects.toThrow("unavailable");
+    expect(bridge.getLocaleHints()).toMatchObject({ locale: expect.any(String) });
+    expect(bridge.subscribeLocaleHints(() => undefined)()).toBeUndefined();
   });
 });

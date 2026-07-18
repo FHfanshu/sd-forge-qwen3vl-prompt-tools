@@ -103,6 +103,8 @@ class KohakuTerrariumProxyTests(unittest.TestCase):
         self.assertEqual("Bearer internal-secret", requests[0].headers["authorization"])
         self.assertEqual("12", requests[0].headers["last-event-id"])
         self.assertEqual(b'{"content":"hello"}', requests[0].content)
+        self.assertIsNone(clients[0].kwargs["timeout"])
+        self.assertFalse(clients[0].kwargs["trust_env"])
         self.assertTrue(clients[0].closed)
         self.assertNotIn("internal-secret", response.text)
         self.assertNotIn("43123", response.text)
@@ -206,6 +208,27 @@ class KohakuTerrariumProxyTests(unittest.TestCase):
         self.assertEqual(503, response.status_code)
         self.assertEqual(1, manager.start_calls)
         self.assertEqual(1, len(requests))
+
+    def test_profile_import_retries_sidecar_startup_503(self):
+        warming = httpx.Response(
+            503,
+            headers={"content-type": "application/json"},
+            content=b'{"detail":"sidecar is still starting"}',
+        )
+        recovered = httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=b'{"ok":true}',
+        )
+        manager = FakeManager()
+        app, requests, _ = proxy_app(manager, [warming, recovered])
+
+        with TestClient(app) as client:
+            response = client.post("/kohaku-loom/kt/profiles/import", json={"profiles": []})
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(2, len(requests))
+        self.assertEqual(2, manager.start_calls)
 
     def test_startup_error_is_sanitized(self):
         manager = FakeManager(error=RuntimeError("token=secret port=43123"))

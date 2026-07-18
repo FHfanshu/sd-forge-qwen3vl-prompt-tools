@@ -81,4 +81,22 @@ npm run build
 npm run test:e2e
 ```
 
+The real-Forge Playwright check is local-only and is intentionally excluded
+from the GitHub Actions browser job. It requires an already-running Forge Neo
+instance with Kohaku Loom loaded. It verifies the production prompt bridge,
+tablet floating settings, the selected profile's real connection test, and a
+real composer/tool turn that changes and then restores the `txt2img` prompt:
+
+```powershell
+npx --yes --package node@22.17.0 --package pnpm@10.12.4 pnpm --dir frontend run test:e2e:forge
+```
+
+Use `FORGE_BASE_URL` to target a NATFRP or other Forge URL. Set
+`FORGE_HTTP_USERNAME` and `FORGE_HTTP_PASSWORD` when the origin uses HTTP basic
+authentication, and set `FORGE_MODEL_PROFILE_ID` to select the profile that must
+pass the real model/composer check. The test does not start the mock Vite host or
+a second Forge process. Provider failures are expected to fail this suite; the
+UI must still return the Test control to a usable state within its bounded
+deadline and report the redacted direct/system-proxy route.
+
 For local runtime tests, the expected model and backend can be configured with Model Profiles or `LLAMA_SERVER_EXE`. Downloaded models, llama.cpp binaries, logs, caches, and sidecar state are excluded from Git.

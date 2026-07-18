@@ -1,5 +1,228 @@
 # Audit Log
 
+## 2026-07-18 Recoverable Svelte Host Bootstrap and Server-Authoritative Sessions
+
+- Visible problem: the generated Svelte bundle synchronously required a complete
+  Forge host API while it was evaluating, and the final boot script had only one
+  chance to observe both the bundle and `onUiLoaded`. A harmless script-order
+  delay could therefore leave no UI. The Surface also treated a missing host as
+  a permanent disconnected state and previously allowed no-op/local fallback
+  behavior instead of waiting for the real controller.
+- Bootstrap fix: `frontend/src/bootstrap.ts` always installs
+  `window.KohakuLoomSvelteUi`, exposes the host through a dynamic getter, and
+  emits `kohaku-loom:svelte-ready` without validating host readiness. The
+  generated bundle can mount before host registration and reuses one mount
+  target. `javascript/kohaku_loom_99_boot.js` is now a bounded retry state
+  machine with a small non-Svelte fatal panel and Retry action. It still requires
+  Forge's `onUiLoaded` callback before mounting, so delayed ordering does not
+  bypass the host lifecycle gate.
+- Connection fix: `waitForHostApi()` provides cancellable 15-second polling.
+  `frontend/src/runtime-connection.ts` owns async controller creation, while
+  `Surface.svelte` renders connecting/failed/retry states, aborts pending work on
+  teardown, and preserves drafts and attachments on connection failure. Opening
+  the launcher only opens and focuses the UI; the first send lazily adopts or
+  creates a session. Production send no longer silently falls through to a no-op
+  or locally fabricated user message.
+- Bridge degradation: validation now requires only the core profile, lease,
+  assistant-config, and session-runtime capabilities/functions. Missing legacy
+  history and locale integrations degrade to an empty archive or browser locale;
+  unavailable optional prompt/profile utilities fail only when invoked. No
+  second renderer or controller was added.
+- Session fix: `openSessionInternal()` reads `/runtime` first, directly resumes a
+  matching active session, closes a different active session before opening the
+  target, and applies conversation state only after an epoch check. Destroy and
+  explicit new-session transitions invalidate late responses. The focused
+  `runtime-session.ts` helper handles `/sessions/open` HTTP 409 by rereading the
+  server runtime, adopting the matching session or closing the conflicting
+  session and retrying once. KT endpoints, payloads, provider code, sidecar
+  persistence, and durable session formats are unchanged.
+- Regression coverage: bootstrap tests install the Svelte contract before the
+  host exists; bridge tests cover 500 ms late registration and optional
+  capability degradation; runtime tests cover active-session adoption, matching
+  history resume, different-session close/open ordering, destroy versus late
+  responses, first-send ordering, and 409 recovery. A Node script test verifies
+  boot retries without mounting before `onUiLoaded`. Mock Chromium delays host
+  registration by 2.5 seconds and observes connecting to ready while all existing
+  desktop, attachment, queue, phone, and tablet scenarios remain green.
+- Verification with Node `22.17.0` and pnpm `10.12.4`: Vitest coverage passed 126
+  tests at 83.92% lines/statements, 71.96% branches, and 72.55% functions;
+  `svelte-check` reported 0 errors and 0 warnings; Python passed 225 tests with
+  20 expected skips; Vite built 4,017 modules; all eight browser scripts passed
+  syntax checks; six mock Chromium E2E tests and the bundle-size check passed.
+  The generated bundle is 595,422 raw bytes and 167,459 gzip bytes. Source limits
+  remain valid: `runtime-controller.ts` is 994 lines and the new connection and
+  session helpers are 15 and 31 lines.
+
+## 2026-07-18 Frontend Review Recovery and First-Send Session Ordering
+
+- Review root causes: reopening the launcher implicitly replaced the current
+  session and draft; disconnected UI exposed mock history; failed or paused
+  queue state had no recovery affordance; an initial tool-bridge claim rejection
+  could escape its async task; Forge snapshots grew without a bound; profile
+  field edits synchronized on every event; legacy i18n boot duplicated the
+  Svelte locale requests; and `replace` accepted an ambiguous
+  `allow_multiple` flag.
+- Fix: `frontend/src/components/Surface.svelte` now restores the existing chat
+  when the launcher opens, exposes disconnected state, and offers retry for
+  failed queue entries while preserving the existing explicit new-chat action.
+  `frontend/src/runtime-controller.ts` recovers bridge-claim failures, supports
+  synchronous or asynchronous lease release, caps Forge snapshots at 32, and
+  keeps queue recovery on the existing KT retry endpoint. Profile updates are
+  coalesced for 250 ms, legacy i18n no longer preloads unused bundles, and
+  ambiguous prompt replacement now directs callers to `replace_all` or
+  `replace_n`. KT endpoints, provider code, sidecar persistence, and request
+  protocols were not changed.
+- Browser regression found during verification: a first send without an
+  in-memory session set `activeRun` before lazy session creation. The session
+  switch guard then rejected that same unsubmitted run with `Cannot switch
+  sessions while a turn is active`, leaving the composer populated. Session
+  creation now completes before the run becomes active; the active-run check is
+  repeated afterward so a concurrent accepted turn still routes the message to
+  the existing queue path.
+- Regression coverage: Surface tests cover launcher draft/session preservation,
+  disconnected state, failed queue retry, and explicit new-session ordering.
+  Runtime tests cover initial bridge rejection, snapshot bounds, profile sync
+  coalescing, and first-send session creation before `/turns`. Node-backed host
+  tests assert legacy i18n performs no load-time fetch and ambiguous replace is
+  rejected. Mock Chromium verifies first send, attachment wire payloads, active
+  turn queueing, cancellation, and phone/tablet layouts.
+- Verification with Node `22.17.0` and pnpm `10.12.4`: Vitest coverage passed 117
+  tests at 83.49% lines/statements, 71.45% branches, and 72.19% functions;
+  `svelte-check` reported 0 errors and 0 warnings; Python passed 224 tests with
+  20 expected skips; Vite production build, all eight browser syntax checks,
+  bundle-size checks, and all five mock Chromium E2E tests passed. The generated
+  bundle is 592,607 raw bytes and 166,636 gzip bytes. Source limits remain valid
+  at 996 lines for `runtime-controller.ts` and 989 lines for `styles.css`.
+
+## 2026-07-18 Frontend-Only Attachment Refactor and Edit-Rerun Recovery
+
+- Attachment root cause: selecting an image immediately converted the optimized
+  file to a Base64 data URL, then copied that expanded string through reactive
+  composer state, request JSON, queue payloads, and durable message state. Queue
+  create/edit requests also repeated the same image in both `content` and a
+  top-level `attachments` field.
+- Scope: this refactor changes only frontend source, tests, and generated UI
+  output. KT endpoints, sidecar code, provider code, session persistence, and the
+  existing structured `content` request format are unchanged.
+- Fix: new browser attachments use an explicit local `Blob`/object-URL type while
+  persisted attachments retain the existing `data:` representation. Base64
+  materialization is deferred until send, queue, or edit-rerun crosses the
+  existing KT request boundary and is cached per attachment. The chat store owns
+  message previews through reference counts, so accepted messages keep a `blob:`
+  preview without retaining a Base64 copy in reactive UI state. Object URLs are
+  released when their final composer/message/edit owner is removed. Rejected
+  sends and failed session creation preserve the draft and attachment preview.
+  Browser queue state and `localStorage` retain only attachment counts, never
+  Base64 image bodies; KT remains the authoritative durable queue source. Queue
+  create and edit requests carry the image once in the unchanged `content` field.
+- Regression coverage: attachment tests verify blob preview, deferred and
+  one-time Base64 encoding, idempotent revocation, and old `data:` compatibility.
+  Surface tests cover accepted and rejected sends, remove, replace, teardown, and
+  persisted previews, shared message ownership, failed session creation, and
+  Base64-free queue storage. Runtime tests assert exactly one image copy in queue
+  POST and PATCH bodies. Mock Chromium verifies a real file input produces and
+  retains a `blob:` message preview while sending one wire image.
+- Same-page Chromium measurement: for an 8 MiB Blob over 12 warm samples,
+  immediate `FileReader.readAsDataURL()` measured 13.9-30.9 ms with a 15.2 ms
+  median and produced 11,184,812 Base64 characters; object-URL preview creation
+  measured 0.2-0.3 ms with a 0.3 ms median. This isolates preview preparation and
+  does not claim end-to-end image decode or resize time.
+- Real Forge acceptance: opened the latest non-empty KT session after the
+  launcher-created empty session, edited its persisted user message through the
+  existing Send button, and observed HTTP 200 from
+  `/sessions/{id}/edit-rerun`. The selected branch persisted the edited text and
+  existing image, the UI showed message version 2/2, and switching to 1/2 and
+  back confirmed the original branch remained intact. The local provider marked
+  the new branch failed, but no active turn or queue item remained and the
+  composer recovered; full generated-answer acceptance remains blocked by the
+  configured local provider failure rather than edit/session integrity.
+- Verification: pinned Node `22.17.0` / pnpm `10.12.4` `pnpm test` passed 111
+  tests; `pnpm check` reported 0 errors and 0 warnings; `python -m unittest
+  discover -s tests` passed 222 tests with 20 expected skips; production build,
+  browser-script syntax checks, all five mock Chromium E2E tests, and bundle-size
+  checks passed. The generated bundle is 591,245 raw bytes and 166,304 gzip bytes.
+
+## 2026-07-18 Proxy Diagnostics, Connection Recovery, and Tablet Windows
+
+- Real reproduction: a touch tablet was classified as mobile solely because it
+  exposed a coarse pointer, so Model Profiles was forced to the full visual
+  viewport. The production profile connection test had no browser or server
+  deadline and could leave the Test action busy indefinitely.
+- Proxy diagnosis: Windows WinINET and WinHTTP both resolve to
+  `127.0.0.1:7890`; the managed sidecar's Python/HTTPX environment resolved the
+  same HTTP/HTTPS proxy plus loopback bypass, the proxy port accepted TCP, and a
+  sidecar-interpreter HTTPS request to the configured remote host returned HTTP
+  200. The Forge-to-sidecar loopback HTTPX client now sets `trust_env=False`,
+  while provider SDK clients retain system/environment proxy discovery.
+- Connection fix: the frontend sends a bounded test timeout and an abort signal;
+  the sidecar enforces the deadline, cleans up cancelled providers, and reports a
+  credential-safe error plus a redacted direct/system-proxy route. Live checks
+  now report the configured `grok` profile as HTTP 401 through
+  `system/environment proxy http://127.0.0.1:7890`, while `moyuu-gemini` reaches
+  the explicit timeout on the same route. Controls recover after both failures.
+- Tablet fix: coarse-pointer devices with a short edge of at least 600px reuse
+  the existing floating desktop layouts; narrow portrait phones and short-edge
+  landscape phones remain mobile/full-screen. No persisted layout schema was
+  added. Model Profiles now also tracks visual-viewport resize/scroll events.
+- Local-only Playwright now accepts NATFRP/basic-auth origin variables, verifies
+  tablet floating settings, runs the selected profile's real connection test,
+  and attempts a real composer/tool prompt edit with `finally` restoration. The
+  direct production prompt-bridge case passes; the full model case currently
+  fails because no configured remote profile returns a usable response, rather
+  than because of the proxy or UI lifecycle.
+- Verification: `python -m unittest discover -s tests` passed 222 tests with 20
+  expected skips; Vitest passed 102 tests; `svelte-check` reported 0 errors and
+  0 warnings; all five mock Chromium E2E cases passed, including phone and
+  tablet layouts. Vite produced a 588,170-byte bundle at 165,385 gzip bytes and
+  browser syntax checks passed. The real-Forge prompt mutation/restoration case
+  passed; the intentionally strict model acceptance remains blocked by the live
+  profile responses described above.
+
+## 2026-07-18 Forge Startup and Composer State Recovery
+
+- Startup symptom: Forge bound `127.0.0.1:7860`, but Gradio failed while
+  generating its API schema and then reported localhost as inaccessible.
+  Root cause was a polluted Forge venv: Pydantic had been upgraded to `2.12.5`
+  while Forge pins `2.10.6`; Gradio `4.40.0` cannot parse the newer boolean JSON
+  Schema shape. Restored Pydantic `2.10.6` and pydantic-core `2.27.2`; a real
+  `webui-user.bat` launch returned HTTP 200 with the Loom bundle present and no
+  stderr output.
+- Composer root cause: one `activeRequestId` represented submission, acceptance,
+  generation, tools, and cancellation. The UI therefore showed Thinking before
+  `/turns` was accepted, retained the submitted draft until the whole turn ended,
+  and exposed queue submission as the primary send action while active.
+- Refactored the frontend lifecycle to distinguish submitting, thinking,
+  generating, tool, and cancelling. `/turns` is no longer blocked by the Forge
+  tool-bridge lease; the draft clears only after the turn or queue API accepts it,
+  without deleting text typed while acceptance was pending. The active primary
+  action is Stop, with a separate explicit Queue action.
+- Queue cancellation now removes the item optimistically, reconciles failed or
+  ambiguous cancellation against the authoritative session, and rolls back only
+  when state cannot be recovered. Queue responses and SSE events share one
+  ID/sequence-aware reducer so duplicate or stale updates cannot recreate items.
+- Changed frontend state/controller/components, added `frontend/src/runtime-state.ts`,
+  updated English/Chinese working labels, regenerated
+  `javascript/kohaku_loom_90_ui.js`, and expanded focused unit/E2E coverage.
+- Verification: 217 Python tests passed with 0 skips; Svelte check reported 0
+  errors/warnings; 92 frontend unit tests passed; frontend coverage passed at
+  80.35% lines/statements, 69.58% branches, and 67.72% functions before the
+  no-behavior helper extraction; production build and 165,071-byte gzip bundle
+  budget passed; all 4 Chromium E2E tests passed; browser bundle syntax passed.
+
+## 2026-07-17 Project-Local Node and pnpm Environment
+
+- Dependency inspection confirmed that `frontend/package.json` requires Node 22
+  and pnpm 10, with pnpm `10.12.4` already pinned, while the host exposed Node
+  `25.5.0` and no global pnpm, Corepack, or Volta.
+- Added `frontend/.node-version` to pin Node `22.17.0` and `frontend/.npmrc` to
+  enforce package engines and keep the pnpm store under `frontend/.pnpm-store/`.
+- Updated `frontend/.gitignore` and `AGENTS.md` so agents use the project-local
+  versions and can invoke them through an isolated npm `npx` toolchain without
+  installing or changing global Node/pnpm state.
+- Verification: isolated `node --version` returned `v22.17.0`; isolated
+  `pnpm --version` returned `10.12.4`; dependency installation and frontend
+  checks were run with these pinned versions.
+
 ## 2026-07-16 Svelte UI Cutover
 
 - Svelte 5 is now the only assistant and Model Profiles renderer.
@@ -159,3 +382,73 @@ Goal: split oversized backend and browser files, keep files under 1000 lines, an
   reported 163,843 gzip bytes; all 4 Chromium E2E tests passed; browser-script
   syntax checks passed; and `git diff --check` reported only the known generated
   bundle line-2 whitespace warning.
+
+## 2026-07-17 Model Picker Border Normalization
+
+- Symptom: model picker controls rendered inconsistent square black outlines when
+  opened inside Forge.
+- Root cause: the picker popover is positioned under `body`, outside the surface
+  button reset, so Forge's native button border remained on the picker controls.
+- Changed `frontend/src/selector-styles.css` to explicitly remove borders from
+  the trigger, add-provider button, model row buttons, and favorite button while
+  retaining rounded row corners and focus-visible styling. Added a Chromium E2E
+  assertion in `frontend/tests/e2e/mock-host.spec.ts` for the computed borders.
+- Verification: Node `22.17.0` / pnpm `10.12.4` `pnpm install --frozen-lockfile`,
+  `pnpm test` passed 86 tests, `pnpm check` passed with 0 errors and warnings,
+  `pnpm build` passed, `pnpm bundle:size` reported 163,977 gzip bytes, all 4
+  Chromium E2E tests passed, and browser-script syntax checks passed.
+
+## 2026-07-17 Sidecar Startup Recovery and CI Contract Setup
+
+- User-visible symptom: the first profile import could receive HTTP 503 while the
+  sidecar was starting, and the composer could show a terminal-looking runtime
+  error even though a later request would succeed.
+- Root cause: profile import is a non-idempotent POST and was excluded from the
+  proxy's transport retry path; the proxy also returned an upstream 503 without
+  a short readiness retry. The frontend had only a generic loading flag, so it
+  could not distinguish sidecar startup from a terminal mount error.
+- Fix: `kohaku_loom/kt_proxy.py` retries only `POST /profiles/import` for one
+  bounded readiness retry; `javascript/kohaku_loom_07_host.js` adds two short
+  retries for 503/network bootstrap failures; and the runtime store/controller
+  expose `idle`, `starting`, `ready`, and `error` startup states. The Svelte
+  surface shows the existing localized runtime-retry message while startup is
+  in progress. No turn or mutation POST was made retryable.
+- CI root cause: the isolated contract workflow installed KohakuTerrarium but did
+  not install this repository as the `kohaku-loom` Terrarium package, so the
+  package contract failed with `PackageNotInstalledError` while the other 19
+  contract tests passed. `.github/workflows/test.yml` now installs the workspace
+  package in editable mode before the contract suite.
+- Regression coverage: `tests/test_kt_proxy.py` covers recovery from an upstream
+  profile-import 503; `tests/test_host_bridge.py` covers browser bootstrap retry;
+  `frontend/tests/runtime-controller.test.ts` covers startup-to-ready state;
+  `frontend/tests/surface.test.ts` covers the visible startup status and
+  recoverable startup messaging.
+- Verification: `python -m unittest discover -s tests` passed 217 tests with 20
+  expected skips; `.loom/venv/Scripts/python.exe tools/test_runner.py --pattern
+  test_loom_kt_contract.py --require-kt` passed 20 tests with 0 skips;
+  `svelte-check` passed with 0 errors and 0 warnings; Vitest coverage passed 86
+  tests with 81.15% lines, 70.22% branches, and 67.67% functions; the Vite build
+  transformed 4,014 modules and produced a 583,705-byte bundle; bundle-size
+  reported 164,079 gzip bytes; and browser-script syntax checks passed.
+
+## 2026-07-18 Local Real-Forge Playwright Coverage
+
+- Real Forge reproduction: the production `edit_prompt` path wrote the prompt
+  through the Forge DOM but then raised `ReferenceError: truncateAssistantText is
+  not defined` while compacting the successful tool result. The real test also
+  confirmed the sidecar and profile import were healthy; the separate local-model
+  chat attempt failed earlier with a provider native-tool stream error.
+- Fix: added the small missing `truncateAssistantText` helper in
+  `javascript/kohaku_loom.js`.
+- Added `frontend/playwright.real-forge.config.ts` and
+  `frontend/tests/e2e/real-forge.spec.ts`. This suite is opt-in through
+  `pnpm run test:e2e:forge`, targets an already-running local Forge at
+  `FORGE_BASE_URL` or `http://127.0.0.1:7860`, uses the production
+  `read_prompt -> edit_prompt` host bridge against the real `txt2img` DOM, and
+  restores the original prompt in a `finally` path. It is not referenced by the
+  GitHub Actions workflow and does not start the mock Vite server.
+- Verification: browser syntax checks and the local real-Forge Playwright test
+  passed; the test changed the live `txt2img` prompt, verified the marker through
+  a second production read, and restored the original value. The default
+  `playwright.config.ts` explicitly ignores this spec, so GitHub Actions keeps
+  running only the mock-host suite.

@@ -187,6 +187,12 @@
         return String(node && node.textContent ? node.textContent : "").replace(/\s+/g, " ").trim();
     }
 
+    function truncateAssistantText(value, limit) {
+        const text = String(value || "");
+        const max = Math.max(1, Number(limit) || 500);
+        return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+    }
+
     function styleSelectorValue(target) {
         const app = loomApp();
         const resolved = target === "img2img" ? "img2img" : "txt2img";
@@ -500,6 +506,7 @@
         }
         if (operation === "replace") {
             if (!find) return { ok: false, error: "replace requires find text", text: text };
+            if (patch.allow_multiple) return { ok: false, error: "replace always changes one match; use replace_all or replace_n for multiple matches", text: text };
             const first = text.indexOf(find);
             if (first < 0) {
                 const flexible = flexiblePromptTextRange(text, find);

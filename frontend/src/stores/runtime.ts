@@ -1,7 +1,8 @@
 import { createStore } from "./store";
 import type { BranchMetadata, HistoryRow, PendingToolApproval, RuntimeSession } from "../contracts";
 
-export type WorkingPhase = "idle" | "thinking" | "generating" | "tool";
+export type WorkingPhase = "idle" | "submitting" | "thinking" | "generating" | "tool" | "cancelling";
+export type RuntimeStartupState = "idle" | "starting" | "ready" | "error";
 
 export interface RuntimeStore {
   sessionId: string | null;
@@ -10,6 +11,7 @@ export interface RuntimeStore {
   branches: BranchMetadata | null;
   queuePaused: boolean;
   loading: boolean;
+  startup: RuntimeStartupState;
   workingPhase: WorkingPhase;
   workingTool: string | null;
   error: string | null;
@@ -20,6 +22,7 @@ export interface RuntimeStore {
   setBranches(branches: BranchMetadata | null): void;
   setQueuePaused(queuePaused: boolean): void;
   setLoading(loading: boolean): void;
+  setStartup(startup: RuntimeStartupState): void;
   setWorking(phase: WorkingPhase, tool?: string | null): void;
   setError(error: string | null): void;
   setPendingToolApproval(approval: PendingToolApproval | null): void;
@@ -34,6 +37,7 @@ export const useRuntimeStore = createStore<RuntimeStore>((set) => ({
   branches: null,
   queuePaused: false,
   loading: false,
+  startup: "idle",
   workingPhase: "idle",
   workingTool: null,
   error: null,
@@ -53,6 +57,9 @@ export const useRuntimeStore = createStore<RuntimeStore>((set) => ({
   },
   setLoading(loading) {
     set({ loading });
+  },
+  setStartup(startup) {
+    set({ startup });
   },
   setWorking(workingPhase, workingTool = null) {
     set({ workingPhase, workingTool: workingPhase === "tool" ? workingTool : null });
@@ -74,6 +81,7 @@ export const useRuntimeStore = createStore<RuntimeStore>((set) => ({
       branches: null,
       queuePaused: false,
       loading: false,
+      startup: "idle",
       workingPhase: "idle",
       workingTool: null,
       error: null,

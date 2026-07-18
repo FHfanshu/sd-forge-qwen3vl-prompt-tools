@@ -277,6 +277,24 @@ class SidecarRuntimeUnitTests(unittest.IsolatedAsyncioTestCase):
         provider.begin_turn.assert_awaited_once()
         provider.end_turn.assert_awaited_once()
         provider.close.assert_awaited_once()
+
+    async def test_profile_chat_cancellation_closes_provider(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = LoomRuntimePaths.under(Path(directory)).ensure()
+            runtime = LoomSidecarRuntime(paths, LoomProfileStore(paths), mock.Mock())
+            provider = mock.Mock()
+            provider.config.model = "test-model"
+            provider.begin_turn = mock.AsyncMock()
+            provider.end_turn = mock.AsyncMock()
+            provider.close = mock.AsyncMock()
+            provider.chat_complete = mock.AsyncMock(side_effect=asyncio.CancelledError())
+            runtime._build_provider = mock.Mock(return_value=provider)
+
+            with self.assertRaises(asyncio.CancelledError):
+                await runtime.profile_chat("profile", [{"role": "user", "content": "ping"}])
+
+        provider.end_turn.assert_awaited_once()
+        provider.close.assert_awaited_once()
     async def test_active_session_conversation_is_serializable(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = LoomRuntimePaths.under(Path(directory)).ensure()
@@ -918,6 +936,7 @@ class SidecarApiTests(unittest.TestCase):
         self.assertEqual(30.0, response.json()["timeout"])
         self.assertEqual("session-1", history.json()["session"]["session_id"])
         self.assertEqual("ping", profile_chat.json()["text"])
+        self.assertEqual(60.0, profile_chat.json()["timeout"])
         self.assertEqual("message-1", queued.json()["message"]["message_id"])
         self.assertEqual("edited", edited.json()["message"]["content"])
         self.assertEqual("cancelled", cancelled.json()["message"]["state"])

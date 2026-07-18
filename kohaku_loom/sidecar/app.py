@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import time
 from contextlib import asynccontextmanager
@@ -13,6 +14,30 @@ from kohaku_loom.forge_bridge import ForgeToolBroker, encode_sse
 from kohaku_loom.profile_store import LoomProfileStore
 from kohaku_loom.runtime_paths import LoomRuntimePaths
 from kohaku_loom.sidecar.runtime import LoomSidecarRuntime
+from kohaku_loom.utils import http_transport_summary
+
+
+_PROFILE_TEST_TIMEOUT_SECONDS = 60.0
+
+
+def _profile_connection_error(error: BaseException) -> str:
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int):
+        if status in {401, 403}:
+            return f"Provider rejected the configured credentials (HTTP {status})."
+        if status == 407:
+            return "The configured proxy requires authentication (HTTP 407)."
+        return f"Provider request failed (HTTP {status})."
+    name = type(error).__name__.lower()
+    if "proxy" in name:
+        return "The configured proxy connection failed."
+    if "timeout" in name:
+        return "The provider request timed out."
+    if "ssl" in name or "tls" in name or "certificate" in name:
+        return "TLS certificate validation failed."
+    if "connect" in name or "network" in name:
+        return "The provider could not be reached. Check DNS, the proxy, and the endpoint."
+    return f"Provider request failed ({type(error).__name__})."
 
 
 @dataclass
@@ -100,11 +125,35 @@ def create_app(
     ) -> dict[str, Any]:
         authorize(authorization)
         try:
-            return await loom_runtime.profile_chat(profile_id, payload.get("messages"))
+            requested_timeout = float(payload.get("timeout", _PROFILE_TEST_TIMEOUT_SECONDS))
+        except (TypeError, ValueError) as error:
+            raise HTTPException(status_code=400, detail="timeout must be a number") from error
+        if requested_timeout <= 0:
+            raise HTTPException(status_code=400, detail="timeout must be positive")
+        timeout = min(requested_timeout, _PROFILE_TEST_TIMEOUT_SECONDS)
+        try:
+            profile = profiles.resolve(profile_id)
+            transport = http_transport_summary(str(profile.get("endpoint") or ""))
+        except KeyError:
+            transport = "direct"
+        try:
+            result = await asyncio.wait_for(
+                loom_runtime.profile_chat(profile_id, payload.get("messages")),
+                timeout=timeout,
+            )
+            return {**result, "transport": transport, "timeout": timeout}
+        except TimeoutError as error:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Model connection test timed out after {timeout:g} seconds. Route: {transport}.",
+            ) from error
         except KeyError as error:
             raise HTTPException(status_code=404, detail=f"unknown profile: {error.args[0]}") from error
-        except (RuntimeError, TypeError, ValueError) as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
+        except Exception as error:
+            raise HTTPException(
+                status_code=502,
+                detail=f"{_profile_connection_error(error)} Route: {transport}.",
+            ) from error
 
     @app.get("/tools/events")
     async def tool_events(

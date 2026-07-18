@@ -5,8 +5,8 @@ async function capture(page: Page, name: string): Promise<void> {
   if (directory) await page.screenshot({ path: `${directory}/${name}.png` });
 }
 
-async function installMockHost(page: Page): Promise<void> {
-  await page.addInitScript(() => {
+async function installMockHost(page: Page, hostDelayMs = 0): Promise<void> {
+  await page.addInitScript((delay) => {
     const capabilities = [
       "forge-availability", "prompt-target", "forge-state", "tool-execution",
       "profile-store", "tool-bridge-lease", "assistant-config", "session-runtime",
@@ -75,14 +75,30 @@ async function installMockHost(page: Page): Promise<void> {
       headers: { "Content-Type": "application/json" },
     });
     const empty = () => new Response(null, { status: 204 });
+    const browserState = window as Window & { __mockRequestBodies?: unknown[]; __revokedObjectUrls?: string[] };
+    browserState.__mockRequestBodies = [];
+    browserState.__revokedObjectUrls = [];
+    const nativeRevokeObjectUrl = URL.revokeObjectURL.bind(URL);
+    URL.revokeObjectURL = (value: string) => {
+      browserState.__revokedObjectUrls?.push(value);
+      nativeRevokeObjectUrl(value);
+    };
     let queued = false;
-  const queuedMessage = () => ({ message_id: "queued-1", display_content: "Queued follow-up", content: "Queued follow-up", attachments: [], state: "pending", created_at: Date.now() / 1000 });
+    let cancelTurn = () => undefined;
+    const queuedMessage = () => ({ message_id: "queued-1", display_content: "Queued follow-up", content: "Queued follow-up", attachments: [], state: "pending", created_at: Date.now() / 1000 });
     const sse = (slow: boolean, signal?: AbortSignal | null) => {
       const encoder = new TextEncoder();
       let closed = false;
       const timers: number[] = [];
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
+          cancelTurn = () => {
+            if (closed) return;
+            closed = true;
+            timers.forEach(window.clearTimeout);
+            controller.enqueue(encoder.encode(`id: 3\nevent: message\ndata: ${JSON.stringify({ type: "turn_ended", payload: { turn_id: "turn-1", status: "interrupted", text: "Mock assistant " } })}\n\n`));
+            controller.close();
+          };
           const emit = (delay: number, frame: string, close = false) => {
             timers.push(window.setTimeout(() => {
               if (closed) return;
@@ -91,7 +107,7 @@ async function installMockHost(page: Page): Promise<void> {
             }, delay));
           };
           emit(60, `id: 1\nevent: message\ndata: ${JSON.stringify({ type: "text_delta", payload: { turn_id: "turn-1", text: "Mock assistant " } })}\n\n`);
-          emit(slow ? 1600 : 160, `id: 2\nevent: message\ndata: ${JSON.stringify({ type: "turn_ended", payload: { turn_id: "turn-1", status: "completed", text: "Mock assistant reply", usage: { input_tokens: 12, output_tokens: 4, latency_ms: 160 } } })}\n\n`, true);
+          emit(slow ? 10_000 : 160, `id: 2\nevent: message\ndata: ${JSON.stringify({ type: "turn_ended", payload: { turn_id: "turn-1", status: "completed", text: "Mock assistant reply", usage: { input_tokens: 12, output_tokens: 4, latency_ms: 160 } } })}\n\n`, true);
           signal?.addEventListener("abort", () => {
             if (closed) return;
             closed = true;
@@ -125,7 +141,10 @@ async function installMockHost(page: Page): Promise<void> {
       if (url.pathname === "/kohaku-loom/kt/sessions/mock-session" && method === "GET") return json({ messages: [], queue: [], branches: null });
       if (url.pathname === "/kohaku-loom/kt/turns/events") return sse(Boolean((window as Window & { __mockSlowTurn?: boolean }).__mockSlowTurn), signal);
       if (url.pathname === "/kohaku-loom/kt/tools/events") return new Response(": ready\n\n", { headers: { "Content-Type": "text/event-stream" } });
-      if (url.pathname === "/kohaku-loom/kt/turns" && method === "POST") return json({ turn_id: "turn-1" });
+      if (url.pathname === "/kohaku-loom/kt/turns" && method === "POST") {
+        browserState.__mockRequestBodies?.push(JSON.parse(String(init?.body ?? request?.body ?? "{}")));
+        return json({ turn_id: "turn-1" });
+      }
       if (url.pathname === "/kohaku-loom/kt/sessions/mock-session/messages" && method === "POST") {
         queued = true;
         return json({ message: queuedMessage() });
@@ -134,13 +153,16 @@ async function installMockHost(page: Page): Promise<void> {
         queued = false;
         return json({ message: { ...queuedMessage(), state: "cancelled" } });
       }
-      if (url.pathname === "/kohaku-loom/kt/turns/turn-1/cancel" && method === "POST") return json({ status: "interrupted" });
+       if (url.pathname === "/kohaku-loom/kt/turns/turn-1/cancel" && method === "POST") {
+         cancelTurn();
+         return json({ status: "accepted" });
+       }
       return nativeFetch(input, init);
     };
     const bridgeResponse = (request: { client?: string; apiVersion?: number }) => request.client === "kohaku-loom-svelte-ui" && request.apiVersion === 1
       ? { ok: true, bridge: "kohaku-loom-svelte-ui", apiVersion: 1, version: "1.0.0", capabilities }
       : { ok: false, bridge: "kohaku-loom-svelte-ui", apiVersion: 1, reason: "client-mismatch" };
-    window.kohakuLoom = {
+    const namespace = {
       hostApi: {
         name: "kohaku-loom-host", version: "1.0.0", apiVersion: 1, capabilities,
         handshake: bridgeResponse,
@@ -157,7 +179,7 @@ async function installMockHost(page: Page): Promise<void> {
          releaseToolBridge: async () => ({ released: true }),
          claimAssistantToolBridge: async () => ({ owned: true, bridge_id: "mock-bridge", pending_requests: [] }),
          releaseAssistantToolBridge: async () => ({ released: true }),
-        syncProfiles: async () => ({}),
+         syncProfiles: async () => ({}),
         profileChat: async () => ({ text: "OK" }),
         listLegacySessions: async () => ({ sessions: [{ id: "legacy-1", title: "Legacy prompt session", preview: "Imported history", message_count: 1, modified_at: 1_690_000_000 }] }),
         getLegacySession: async () => ({ events: [{ event_type: "user_message", message: { content: "Legacy message" } }] }),
@@ -167,7 +189,9 @@ async function installMockHost(page: Page): Promise<void> {
         openSettings: () => undefined,
       },
     };
-  });
+    if (delay > 0) window.setTimeout(() => { window.kohakuLoom = namespace; }, delay);
+    else window.kohakuLoom = namespace;
+  }, hostDelayMs);
 }
 
 test("module loading alone does not bypass the Forge boot callback", async ({ page }) => {
@@ -175,6 +199,17 @@ test("module loading alone does not bypass the Forge boot callback", async ({ pa
   await expect(page.locator("#tabs")).toHaveAttribute("data-legacy-owned", "true");
   await expect(page.locator("#txt2img_prompt")).toHaveAttribute("data-legacy-owned", "true");
   await expect(page.locator("#kohaku-loom-svelte-mount")).toHaveCount(0);
+});
+
+test("connects when the Svelte bundle loads before the Forge host", async ({ page }) => {
+  await installMockHost(page, 2_500);
+  await page.goto("/?mount=1");
+  await expect(page.getByRole("button", { name: "Open Kohaku Loom" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Kohaku Loom" }).click();
+  await expect(page.getByRole("dialog", { name: "Kohaku Loom chat" })).toBeVisible();
+  await expect(page.getByText("Connecting to Forge runtime…", { exact: true })).toBeVisible();
+  await expect(page.getByText("Connecting to Forge runtime…", { exact: true })).toBeHidden({ timeout: 5_000 });
+  await expect(page.getByRole("button", { name: "Active model" })).toHaveText("Mock Qwen");
 });
 
 test("mounted desktop UI exercises chat, history, profiles, and attachments", async ({ page }) => {
@@ -199,6 +234,21 @@ test("mounted desktop UI exercises chat, history, profiles, and attachments", as
   const modelPicker = page.getByRole("dialog", { name: "Select model" });
   await expect(modelPicker).toBeVisible();
   expect((await modelPicker.boundingBox())!.width).toBeLessThanOrEqual(442);
+  const pickerButtonBorders = await modelPicker.locator("button").evaluateAll((buttons) => buttons.map((button) => {
+    const style = getComputedStyle(button);
+    return {
+      className: button.className,
+      top: style.borderTopWidth,
+      right: style.borderRightWidth,
+      bottom: style.borderBottomWidth,
+      left: style.borderLeftWidth,
+    };
+  }));
+  expect(pickerButtonBorders).toEqual(expect.arrayContaining([
+    expect.objectContaining({ className: "kl-model-picker-add", top: "0px", right: "0px", bottom: "0px", left: "0px" }),
+    expect.objectContaining({ className: "kl-model-picker-row-main", top: "0px", right: "0px", bottom: "0px", left: "0px" }),
+    expect.objectContaining({ className: "kl-model-picker-star is-favorite", top: "0px", right: "0px", bottom: "0px", left: "0px" }),
+  ]));
   await page.keyboard.press("Escape");
 
   await page.getByRole("button", { name: "Change reasoning effort" }).click();
@@ -222,7 +272,9 @@ test("mounted desktop UI exercises chat, history, profiles, and attachments", as
 
   const fileInput = page.locator('input[type="file"][multiple]');
   await fileInput.setInputFiles({ name: "reference.png", mimeType: "image/png", buffer: Buffer.from("mock-image") });
-  await expect(page.getByRole("button", { name: "Preview reference.png" })).toBeVisible();
+  const attachmentPreview = page.getByRole("button", { name: "Preview reference.png" });
+  await expect(attachmentPreview).toBeVisible();
+  await expect(attachmentPreview.locator("img")).toHaveAttribute("src", /^blob:/);
   await page.getByRole("button", { name: "Preview reference.png" }).click();
   await expect(page.getByRole("dialog", { name: "Image preview" })).toBeVisible();
   await page.getByRole("button", { name: "Close preview" }).click();
@@ -231,9 +283,19 @@ test("mounted desktop UI exercises chat, history, profiles, and attachments", as
   await page.getByRole("button", { name: "Send message" }).click();
   await expect(page.getByText("Review this composition", { exact: true })).toBeVisible();
   await expect(page.getByText("Mock assistant reply", { exact: true })).toBeVisible();
+  const attachmentWireState = await page.evaluate(() => {
+    const state = window as Window & { __mockRequestBodies?: unknown[]; __revokedObjectUrls?: string[] };
+    return { bodies: state.__mockRequestBodies ?? [], revoked: state.__revokedObjectUrls ?? [] };
+  });
+  expect(attachmentWireState.bodies).toHaveLength(1);
+  expect(attachmentWireState.bodies[0]).not.toHaveProperty("attachments");
+  const wireJson = JSON.stringify(attachmentWireState.bodies[0]);
+  expect(wireJson.match(/data:image\/png;base64,/g)).toHaveLength(1);
+  expect(attachmentWireState.revoked).toHaveLength(0);
   await expect(page.getByText("12 in · 4 out · 0.2s", { exact: true })).toBeVisible();
   const userMessage = page.locator(".kl-message-user").filter({ hasText: "Review this composition" });
   await expect(userMessage).toBeVisible();
+  await expect(userMessage.getByRole("button", { name: "Preview reference.png" }).locator("img")).toHaveAttribute("src", /^blob:/);
   const userMessageStyle = await userMessage.evaluate((element) => {
     const style = getComputedStyle(element);
     return { alignSelf: style.alignSelf, backgroundColor: style.backgroundColor };
@@ -270,6 +332,7 @@ test("active turns queue follow-ups and cancel locally", async ({ page }) => {
   const input = page.getByRole("textbox", { name: "Message Kohaku Loom" });
   await input.fill("Start a slow response");
   await page.getByRole("button", { name: "Send message" }).click();
+  await expect(input).toHaveValue("");
   await expect(page.getByRole("button", { name: "Stop response" })).toBeVisible();
   await expect(page.getByText("Mock assistant", { exact: true })).toBeVisible();
   await expect(page.getByText("Generating response…", { exact: true })).toBeVisible();
@@ -336,5 +399,34 @@ test.describe("mobile layout", () => {
     await capture(page, "settings-mobile");
     await settings.getByRole("button", { name: "Close" }).click();
     await expect(page.getByRole("dialog", { name: "Kohaku Loom chat" })).toBeVisible();
+  });
+});
+
+test.describe("tablet layout", () => {
+  test.use({ viewport: { width: 820, height: 1180 }, isMobile: true, hasTouch: true });
+
+  test("keeps chat and settings as bounded floating windows", async ({ page }) => {
+    await installMockHost(page);
+    await page.goto("/?mount=1");
+    await page.getByRole("button", { name: "Open Kohaku Loom" }).click();
+    const chat = page.getByRole("dialog", { name: "Kohaku Loom chat" });
+    await page.getByRole("button", { name: "Open settings" }).click();
+    const settings = page.getByRole("dialog", { name: "Model profiles" });
+
+    await expect(chat).toBeVisible();
+    await expect(settings).toBeVisible();
+    await expect(settings.getByRole("button", { name: "Resize profile window" })).toBeVisible();
+    const portrait = await settings.boundingBox();
+    expect(portrait).not.toBeNull();
+    expect(portrait!.x).toBeGreaterThan(0);
+    expect(portrait!.y).toBeGreaterThan(0);
+    expect(portrait!.width).toBeLessThan(820);
+    expect(portrait!.height).toBeLessThan(1180);
+
+    await page.setViewportSize({ width: 1180, height: 820 });
+    const landscape = await settings.boundingBox();
+    expect(landscape).not.toBeNull();
+    expect(landscape!.x + landscape!.width).toBeLessThanOrEqual(1180);
+    expect(landscape!.y + landscape!.height).toBeLessThanOrEqual(820);
   });
 });

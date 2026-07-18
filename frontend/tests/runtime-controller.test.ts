@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { LoomRuntimeController } from "../src/runtime-controller";
 import { useChatStore } from "../src/stores/chat";
 import { useRuntimeStore } from "../src/stores/runtime";
+import { KTHttpError } from "../src/kt/retry";
 
 function controllerWith(
   kt: Promise<unknown>,
@@ -13,6 +14,59 @@ function controllerWith(
 }
 
 describe("runtime session history", () => {
+  it("reports startup state while syncing profiles and becomes ready after history loads", async () => {
+    useRuntimeStore.getState().reset();
+    const abort = new AbortController();
+    const host = {
+      profileStore: { load: vi.fn(() => ({ profiles: [] })) },
+      syncProfiles: vi.fn(() => Promise.resolve({})),
+      listLegacySessions: vi.fn(() => Promise.resolve({ sessions: [] })),
+    } as never;
+    const client = {
+      request: vi.fn(() => Promise.resolve({ sessions: [] })),
+      stream: vi.fn(async function* (_path: string, options: { signal?: AbortSignal }) {
+        await new Promise<void>((resolve) => options.signal?.addEventListener("abort", () => resolve(), { once: true }));
+      }),
+    } as never;
+    const controller = new LoomRuntimeController(host, client);
+
+    const mounting = controller.mount();
+    expect(useRuntimeStore.getState().startup).toBe("starting");
+    await mounting;
+
+    expect(useRuntimeStore.getState().startup).toBe("ready");
+    controller.destroy();
+    abort.abort();
+  });
+
+  it("can retry a failed startup before the next history load", async () => {
+    useRuntimeStore.getState().reset();
+    let syncCalls = 0;
+    const host = {
+      profileStore: { load: vi.fn(() => ({ profiles: [] })) },
+      syncProfiles: vi.fn(() => {
+        syncCalls += 1;
+        return syncCalls === 1 ? Promise.reject(new Error("sidecar starting")) : Promise.resolve({});
+      }),
+      listLegacySessions: vi.fn(() => Promise.resolve({ sessions: [] })),
+    } as never;
+    const client = {
+      request: vi.fn(() => Promise.resolve({ sessions: [] })),
+      stream: vi.fn(async function* (_path: string, options: { signal?: AbortSignal }) {
+        await new Promise<void>((resolve) => options.signal?.addEventListener("abort", () => resolve(), { once: true }));
+      }),
+    } as never;
+    const controller = new LoomRuntimeController(host, client);
+
+    await controller.mount();
+    expect(useRuntimeStore.getState().startup).toBe("error");
+    await controller.mount();
+
+    expect(syncCalls).toBe(2);
+    expect(useRuntimeStore.getState().startup).toBe("ready");
+    controller.destroy();
+  });
+
   it("routes edited composer sends through native edit-and-rerun and restores version metadata", async () => {
     useChatStore.getState().reset();
     useRuntimeStore.getState().reset();
@@ -102,6 +156,43 @@ describe("runtime session history", () => {
     internals.syncQueue([{ message_id: "queued-1", display_content: "Follow up", state: "pending", created_at: 1_700_000_000.125 }]);
 
     expect(useChatStore.getState().queue[0].createdAt).toBe(1_700_000_000_125);
+  });
+
+  it("keeps queue text when normalized messages pass through the reducer", () => {
+    useChatStore.getState().reset();
+    const controller = new LoomRuntimeController({} as never, {} as never);
+    const internals = controller as unknown as { applyQueueMessage(message: unknown): void };
+
+    internals.applyQueueMessage({ id: "queued-1", text: "Queued follow-up", attachments: [], state: "pending", createdAt: 1 });
+
+    expect(useChatStore.getState().queue[0]).toMatchObject({ id: "queued-1", text: "Queued follow-up" });
+  });
+
+  it("serializes queued images once in create and edit request bodies", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    useRuntimeStore.getState().setSession({ session_id: "kt-1" });
+    const dataUrl = "data:image/png;base64,AQIDBA==";
+    const attachment = { id: "image-1", name: "reference.png", dataUrl, mimeType: "image/png", size: 4 };
+    const request = vi.fn((path: string, options?: RequestInit) => {
+      if (path === "/sessions/kt-1/messages") return Promise.resolve({ message: { message_id: "queued-1", display_content: "Queued", content: JSON.parse(String(options?.body)).content, state: "pending", created_at: 1 } });
+      if (path === "/sessions/kt-1/messages/queued-1") return Promise.resolve({ message: { message_id: "queued-1", display_content: "Edited", content: JSON.parse(String(options?.body)).content, state: "pending", created_at: 1 } });
+      throw new Error(`unexpected path: ${path}`);
+    });
+    const controller = new LoomRuntimeController({} as never, { request } as never);
+    (controller as unknown as { activeRun: { finished: boolean } }).activeRun = { finished: false };
+
+    await controller.sendMessage({ text: "Queued", attachments: [attachment], riskMode: "normal", reasoning: "low" });
+    await controller.editQueuedMessage("queued-1", { text: "Edited", attachments: [attachment], riskMode: "normal", reasoning: "low" });
+
+    for (const [, options] of request.mock.calls) {
+      const body = JSON.parse(String(options?.body));
+      expect(body).not.toHaveProperty("attachments");
+      expect(JSON.stringify(body).split(dataUrl)).toHaveLength(2);
+      expect(body.content).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "image_url", image_url: { url: dataUrl, detail: "high" } }),
+      ]));
+    }
   });
 
   it("refreshes the archive when async metadata generation publishes an event", async () => {
@@ -213,7 +304,11 @@ describe("runtime session history", () => {
 
     await controller.newSession();
 
-    expect(request.mock.calls[0]).toEqual(["/sessions/close", { method: "POST" }]);
+    expect(request.mock.calls.slice(0, 3)).toEqual([
+      ["/runtime"],
+      ["/sessions/close", { method: "POST" }],
+      ["/sessions/open", expect.objectContaining({ method: "POST" })],
+    ]);
     expect(useRuntimeStore.getState().sessionId).toBe("fresh");
     expect(useChatStore.getState().messages).toEqual([]);
   });
@@ -233,6 +328,116 @@ describe("runtime session history", () => {
     expect(sessionId).toBe("surviving");
     expect(useRuntimeStore.getState().sessionId).toBe("surviving");
     expect(request.mock.calls.some(([path]) => path === "/sessions/open")).toBe(false);
+  });
+
+  it("resumes a matching active history session without closing or reopening it", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    const request = vi.fn((path: string) => {
+      if (path === "/runtime") return Promise.resolve({ active_session: { session_id: "kt-1", agent_mode: "normal" } });
+      if (path === "/sessions/kt-1") return Promise.resolve({ messages: [{ role: "user", content: "restored" }] });
+      throw new Error(`unexpected path: ${path}`);
+    });
+    const controller = new LoomRuntimeController({ syncProfiles: vi.fn(() => Promise.resolve()) } as never, { request } as never);
+
+    await controller.openSession("kt-1", true);
+
+    expect(request.mock.calls.some(([path]) => path === "/sessions/close")).toBe(false);
+    expect(request.mock.calls.some(([path]) => path === "/sessions/open")).toBe(false);
+    expect(useChatStore.getState().messages[0]).toMatchObject({ role: "user", content: "restored" });
+  });
+
+  it("closes a different server session before resuming history", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    const host = { syncProfiles: vi.fn(() => Promise.resolve()), assistantConfig: vi.fn(() => ({ profile_id: "mock" })) } as never;
+    const request = vi.fn((path: string) => {
+      if (path === "/runtime") return Promise.resolve({ active_session: { session_id: "old" } });
+      if (path === "/sessions/close") return Promise.resolve({});
+      if (path === "/sessions/open") return Promise.resolve({ session: { session_id: "kt-2" } });
+      if (path === "/sessions/kt-2") return Promise.resolve({ messages: [] });
+      throw new Error(`unexpected path: ${path}`);
+    });
+    const controller = new LoomRuntimeController(host, { request } as never);
+
+    await controller.openSession("kt-2", true);
+
+    expect(request.mock.calls.slice(0, 3).map(([path]) => path)).toEqual(["/runtime", "/sessions/close", "/sessions/open"]);
+    expect(useRuntimeStore.getState().sessionId).toBe("kt-2");
+  });
+
+  it("ignores a session response that arrives after destroy", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    let resolveOpen!: (value: unknown) => void;
+    const open = new Promise((resolve) => { resolveOpen = resolve; });
+    const host = { syncProfiles: vi.fn(() => Promise.resolve()), assistantConfig: vi.fn(() => ({ profile_id: "mock" })) } as never;
+    const request = vi.fn((path: string) => {
+      if (path === "/runtime") return Promise.resolve({ active_session: null });
+      if (path === "/sessions/open") return open;
+      throw new Error(`unexpected path: ${path}`);
+    });
+    const controller = new LoomRuntimeController(host, { request } as never);
+
+    const opening = controller.openSession("late", true);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/sessions/open", expect.anything()));
+    controller.destroy();
+    resolveOpen({ session: { session_id: "late" } });
+
+    await expect(opening).rejects.toMatchObject({ name: "AbortError" });
+    expect(useRuntimeStore.getState().sessionId).toBeNull();
+  });
+
+  it("recovers a conflicting open by adopting the matching server session", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    let runtimeCalls = 0;
+    const host = { syncProfiles: vi.fn(() => Promise.resolve()), assistantConfig: vi.fn(() => ({ profile_id: "mock" })) } as never;
+    const request = vi.fn((path: string) => {
+      if (path === "/runtime") {
+        runtimeCalls += 1;
+        return runtimeCalls === 1 ? Promise.reject(new Error("probe failed")) : Promise.resolve({ active_session: { session_id: "kt-1" } });
+      }
+      if (path === "/sessions/open") return Promise.reject(new KTHttpError(409, "active session"));
+      if (path === "/sessions/kt-1") return Promise.resolve({ messages: [] });
+      throw new Error(`unexpected path: ${path}`);
+    });
+    const controller = new LoomRuntimeController(host, { request } as never);
+
+    await controller.openSession("kt-1", true);
+
+    expect(useRuntimeStore.getState().sessionId).toBe("kt-1");
+    expect(request.mock.calls.some(([path]) => path === "/sessions/close")).toBe(false);
+  });
+
+  it("recovers a conflicting open by closing a different server session and retrying once", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    let runtimeCalls = 0;
+    let openCalls = 0;
+    const host = { syncProfiles: vi.fn(() => Promise.resolve()), assistantConfig: vi.fn(() => ({ profile_id: "mock" })) } as never;
+    const request = vi.fn((path: string) => {
+      if (path === "/runtime") {
+        runtimeCalls += 1;
+        if (runtimeCalls === 1) return Promise.reject(new Error("probe failed"));
+        if (runtimeCalls === 2) return Promise.resolve({ active_session: { session_id: "other" } });
+        return Promise.resolve({ active_session: { session_id: "kt-2" } });
+      }
+      if (path === "/sessions/open") {
+        openCalls += 1;
+        return openCalls === 1 ? Promise.reject(new KTHttpError(409, "active session")) : Promise.resolve({ session: { session_id: "kt-2" } });
+      }
+      if (path === "/sessions/close") return Promise.resolve({});
+      if (path === "/sessions/kt-2") return Promise.resolve({ messages: [] });
+      throw new Error(`unexpected path: ${path}`);
+    });
+    const controller = new LoomRuntimeController(host, { request } as never);
+
+    await controller.openSession("kt-2", true);
+
+    expect(openCalls).toBe(2);
+    expect(request.mock.calls.filter(([path]) => path === "/sessions/close")).toHaveLength(1);
+    expect(useRuntimeStore.getState().sessionId).toBe("kt-2");
   });
 
   it("coalesces streaming deltas into one render per animation frame", async () => {
@@ -272,6 +477,7 @@ describe("runtime session history", () => {
       handleToolEvent(run: unknown, event: Record<string, unknown>): Promise<void>;
     };
     const run = internals.createRun("tool-run");
+    (run as { accepted: boolean }).accepted = true;
     useChatStore.getState().beginRequest("tool-run");
     useRuntimeStore.getState().setWorking("thinking");
 
@@ -311,6 +517,7 @@ describe("runtime session history", () => {
 
     await controller.sendMessage({ text: "hello", attachments: [], riskMode: "normal", reasoning: "low" });
 
+    await vi.waitFor(() => expect(useChatStore.getState().activeRequestId).toBeNull());
     expect(useChatStore.getState().messages.some((message) => message.role === "assistant" && message.content === "old")).toBe(false);
     expect(useChatStore.getState().messages.some((message) => message.role === "assistant" && message.content === "new" && message.status === "complete")).toBe(true);
   });
@@ -343,6 +550,7 @@ describe("runtime session history", () => {
 
     await controller.sendMessage({ text: "hello", attachments: [], riskMode: "normal", reasoning: "low" });
 
+    await vi.waitFor(() => expect(useChatStore.getState().activeRequestId).toBeNull());
     expect(turnStreamCalls).toBe(2);
     expect(useChatStore.getState().messages.some((message) => message.role === "assistant" && message.content === "recovered" && message.status === "complete")).toBe(true);
   });
@@ -378,6 +586,7 @@ describe("runtime session history", () => {
 
     await controller.sendMessage({ text: "hello", attachments: [], riskMode: "normal", reasoning: "low" });
 
+    await vi.waitFor(() => expect(useChatStore.getState().activeRequestId).toBeNull());
     expect(turnStreamCalls).toBe(2);
     expect(useChatStore.getState().messages.some((message) => message.role === "assistant" && message.content === "recovered after EOF" && message.status === "complete")).toBe(true);
   });
@@ -425,6 +634,7 @@ describe("runtime session history", () => {
 
     await controller.sendMessage({ text: "hello", attachments: [], riskMode: "normal", reasoning: "low" });
 
+    await vi.waitFor(() => expect(useChatStore.getState().activeRequestId).toBeNull());
     expect(toolStreamCalls).toBeGreaterThanOrEqual(2);
     expect(host.executeTool).toHaveBeenCalledOnce();
     expect(clientMock.request).toHaveBeenCalledWith("/tools/replies/request-1", expect.objectContaining({ method: "POST" }));
@@ -450,6 +660,38 @@ describe("runtime session history", () => {
     expect(useRuntimeStore.getState().error).toContain("invalid lease");
     expect(cancel).not.toHaveBeenCalled();
     expect(host.releaseToolBridge).toHaveBeenCalledOnce();
+  });
+
+  it("handles an initial bridge claim rejection without an unhandled rejection", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    const host = { claimToolBridge: vi.fn(() => Promise.reject(new Error("bridge offline"))), releaseToolBridge: vi.fn(() => Promise.resolve()) };
+    const controller = new LoomRuntimeController(host as never, { request: vi.fn(() => Promise.resolve({})) } as never);
+    const internals = controller as unknown as { createRun(requestId: string): unknown; startToolStream(run: unknown): Promise<void> };
+    const run = internals.createRun("claim-failure");
+
+    await expect(internals.startToolStream(run)).resolves.toBeUndefined();
+    expect(useRuntimeStore.getState().error).toContain("could not be claimed");
+    expect((run as { finished: boolean }).finished).toBe(true);
+  });
+
+  it("bounds retained Forge snapshots to the most recent messages", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    useRuntimeStore.getState().setSession({ session_id: "kt-1" });
+    const host = { captureForgeState: vi.fn(() => ({ prompt: "snapshot" })), assistantConfig: vi.fn(() => ({ timeout: 1 })), claimToolBridge: vi.fn(() => Promise.resolve({ owned: false, bridge_id: "other" })), releaseToolBridge: vi.fn(() => Promise.resolve()) } as never;
+    const client = {
+      request: vi.fn((path: string) => path === "/runtime" ? Promise.resolve({}) : path === "/turns" ? Promise.reject(new Error("rejected")) : Promise.resolve({})),
+      stream: vi.fn(async function* () { await Promise.resolve(); }),
+    } as never;
+    const controller = new LoomRuntimeController(host, client);
+
+    for (let index = 0; index < 35; index += 1) {
+      await expect(controller.sendMessage({ text: `message ${index}`, attachments: [], riskMode: "normal", reasoning: "low" })).rejects.toThrow();
+      await vi.waitFor(() => expect(useChatStore.getState().activeRequestId).toBeNull());
+    }
+
+    expect((controller as unknown as { snapshots: Map<string, unknown> }).snapshots.size).toBe(32);
   });
 
   it("cancels an accepted turn when bridge ownership is lost during approval", async () => {
@@ -486,7 +728,7 @@ describe("runtime session history", () => {
     expect(useRuntimeStore.getState().pendingToolApproval).toBeNull();
   });
 
-  it("does not submit a turn if destroy wins while the bridge claim is pending", async () => {
+  it("does not block turn submission on a pending bridge claim", async () => {
     useChatStore.getState().reset();
     useRuntimeStore.getState().reset();
     let resolveClaim!: (value: unknown) => void;
@@ -511,9 +753,94 @@ describe("runtime session history", () => {
     await vi.waitFor(() => expect(host.claimToolBridge).toHaveBeenCalledOnce());
     controller.destroy();
     resolveClaim({ owned: true, bridge_id: "late-bridge" });
-    await sending;
+    await expect(sending).resolves.toMatchObject({ kind: "turn", id: "should-not-start" });
 
-    expect(client.request.mock.calls.some(([path]) => path === "/turns")).toBe(false);
+    expect(client.request.mock.calls.some(([path]) => path === "/turns")).toBe(true);
     expect(host.releaseToolBridge).toHaveBeenCalled();
+  });
+
+  it("returns after turn acceptance while streaming continues", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    let finish!: () => void;
+    const finishTurn = new Promise<void>((resolve) => { finish = resolve; });
+    const host = {
+      claimToolBridge: vi.fn(() => Promise.resolve({ owned: true, bridge_id: "bridge" })),
+      assistantConfig: vi.fn(() => ({ timeout: 120 })),
+      captureForgeState: vi.fn(() => ({})),
+    } as never;
+    const client = {
+      request: vi.fn((path: string) => {
+        if (path === "/runtime") return Promise.resolve({ turn_event_sequence: 0, tool_event_sequence: 0 });
+        if (path === "/turns") return Promise.resolve({ turn_id: "turn-accepted" });
+        throw new Error(`unexpected path: ${path}`);
+      }),
+      stream: vi.fn(async function* (path: string) {
+        if (path === "/tools/events") return;
+        await finishTurn;
+        yield { sequence: 1, data: { type: "turn_ended", payload: { turn_id: "turn-accepted", status: "completed", text: "done" } } };
+      }),
+    } as never;
+    const controller = new LoomRuntimeController(host, client);
+    useRuntimeStore.getState().setSession({ session_id: "kt-1" });
+
+    await expect(controller.sendMessage({ text: "hello", attachments: [], riskMode: "normal", reasoning: "low" })).resolves.toMatchObject({ kind: "turn", id: "turn-accepted" });
+    expect(useChatStore.getState().activeRequestId).not.toBeNull();
+    expect(useRuntimeStore.getState().workingPhase).toBe("thinking");
+    finish();
+    await vi.waitFor(() => expect(useChatStore.getState().activeRequestId).toBeNull());
+  });
+
+  it("creates a session before activating the first submitted turn", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    const host = {
+      syncProfiles: vi.fn(() => Promise.resolve({})),
+      assistantConfig: vi.fn(() => ({ profile_id: "mock", timeout: 120 })),
+      captureForgeState: vi.fn(() => ({})),
+      claimToolBridge: vi.fn(() => Promise.resolve({ owned: true, bridge_id: "bridge" })),
+      releaseToolBridge: vi.fn(() => Promise.resolve({ released: true })),
+    } as never;
+    const request = vi.fn((path: string) => {
+      if (path === "/runtime") return Promise.resolve({ active_session: null, turn_event_sequence: 0, tool_event_sequence: 0 });
+      if (path === "/sessions/open") return Promise.resolve({ session: { session_id: "fresh" } });
+      if (path === "/sessions/fresh") return Promise.resolve({ messages: [], queue: [] });
+      if (path === "/turns") return Promise.resolve({ turn_id: "turn-1" });
+      throw new Error(`unexpected path: ${path}`);
+    });
+    const client = {
+      request,
+      stream: vi.fn(async function* (path: string) {
+        if (path === "/tools/events") return;
+        yield { sequence: 1, data: { type: "turn_ended", payload: { turn_id: "turn-1", status: "completed", text: "done" } } };
+      }),
+    } as never;
+    const controller = new LoomRuntimeController(host, client);
+
+    await expect(controller.sendMessage({ text: "first", attachments: [], riskMode: "normal", reasoning: "low" })).resolves.toMatchObject({ kind: "turn", id: "turn-1" });
+
+    expect(request.mock.calls.findIndex(([path]) => path === "/sessions/open")).toBeLessThan(request.mock.calls.findIndex(([path]) => path === "/turns"));
+    expect(useChatStore.getState().messages.some((message) => message.role === "user" && message.content === "first")).toBe(true);
+  });
+
+  it("removes queued messages optimistically and restores them after an unrecoverable failure", async () => {
+    useChatStore.getState().reset();
+    useRuntimeStore.getState().reset();
+    useRuntimeStore.getState().setSession({ session_id: "kt-1" });
+    useChatStore.getState().upsertQueue({ id: "queued-1", text: "Follow up", attachments: [], state: "pending", createdAt: 1 });
+    let rejectCancel!: (error: Error) => void;
+    const cancel = new Promise((_, reject) => { rejectCancel = reject; });
+    const request = vi.fn((path: string) => {
+      if (path.endsWith("/cancel")) return cancel;
+      if (path === "/sessions/kt-1") return Promise.reject(new Error("sidecar unavailable"));
+      throw new Error(`unexpected path: ${path}`);
+    });
+    const controller = new LoomRuntimeController({} as never, { request } as never);
+
+    const removing = controller.removeQueuedMessage("queued-1");
+    expect(useChatStore.getState().queue).toEqual([]);
+    rejectCancel(new Error("cancel failed"));
+    await expect(removing).rejects.toThrow("cancel failed");
+    expect(useChatStore.getState().queue).toHaveLength(1);
   });
 });

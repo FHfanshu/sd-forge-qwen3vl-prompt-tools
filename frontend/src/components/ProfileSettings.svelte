@@ -28,6 +28,7 @@
   let confirm = $state<"delete" | "restore" | null>(null);
   let interacting = $state(false);
   let windowElement = $state<HTMLDivElement>();
+  let connectionController: AbortController | null = null;
   let kind = $state<LayoutViewport>(viewportKind());
   let viewport = $state(readViewportRect());
   const minimum = $derived(kind === "desktop"
@@ -86,11 +87,35 @@
     const detail = error instanceof Error ? error.message : String(error || "");
     return detail.replace(/\s+/g, " ").trim().slice(0, 320);
   }
+  function connectionTransport(result: unknown): string {
+    if (!result || typeof result !== "object") return "";
+    return String((result as { transport?: unknown }).transport || "").replace(/\s+/g, " ").trim().slice(0, 160);
+  }
   async function testConnection(): Promise<void> {
+    connectionController?.abort();
+    const controller = new AbortController();
+    connectionController = controller;
+    const timeout = Math.min(selected.runtime === "llama-once" ? 60 : 30, Math.max(1, selected.parameters.timeout));
+    let timedOut = false;
+    const timer = window.setTimeout(() => { timedOut = true; controller.abort(); }, (timeout + 2) * 1000);
     busy = "test"; status = t("profiles.test.testing", "Testing connection…");
-    try { const host = getHostApi(window.kohakuLoom); if (!host) throw new Error("Host unavailable"); await host.profileChat(selected.id, [{ role: "user", content: t("profiles.test.ping", "Ping. Reply with OK.") }]); status = t("profiles.test.success", "Connection successful."); }
-    catch (error) { const detail = connectionError(error); status = `${t("profiles.test.error", "Connection failed. Check the model profile.")}${detail ? ` ${detail}` : ""}`; }
-    finally { busy = null; }
+    try {
+      const host = getHostApi(window.kohakuLoom);
+      if (!host) throw new Error("Host unavailable");
+      const result = await host.profileChat(selected.id, [{ role: "user", content: t("profiles.test.ping", "Ping. Reply with OK.") }], controller.signal, timeout);
+      const transport = connectionTransport(result);
+      status = `${t("profiles.test.success", "Connection successful.")}${transport ? ` ${t("profiles.test.route", "Route:")} ${transport}.` : ""}`;
+    } catch (error) {
+      if (timedOut) status = t("profiles.test.timeout", "Connection test timed out. The controls are ready to try again.");
+      else if (!controller.signal.aborted) {
+        const detail = connectionError(error);
+        status = `${t("profiles.test.error", "Connection failed. Check the model profile.")}${detail ? ` ${detail}` : ""}`;
+      }
+    } finally {
+      window.clearTimeout(timer);
+      if (connectionController === controller) connectionController = null;
+      busy = null;
+    }
   }
   async function syncModel(): Promise<void> {
     busy = "sync"; status = t("profiles.models_dev.loading", "Querying models.dev…");
@@ -109,7 +134,14 @@
   }
   onMount(() => {
     window.addEventListener("resize", refresh);
-    return () => window.removeEventListener("resize", refresh);
+    window.visualViewport?.addEventListener("resize", refresh);
+    window.visualViewport?.addEventListener("scroll", refresh);
+    return () => {
+      connectionController?.abort();
+      window.removeEventListener("resize", refresh);
+      window.visualViewport?.removeEventListener("resize", refresh);
+      window.visualViewport?.removeEventListener("scroll", refresh);
+    };
   });
   $effect(() => {
     if (!profileTabs.some(([value]) => value === tab)) tab = "model";

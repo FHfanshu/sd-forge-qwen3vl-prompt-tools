@@ -25,6 +25,17 @@ This extension is loaded inside Forge Neo, so keep changes small and easy to aud
 
 - Browser scripts under `javascript/` are loaded by filename order. Keep `kohaku_loom.js` as the core namespace initializer, then layer assistant and boot scripts after it.
 - Shared browser state lives on `window.kohakuLoom`.
+- The frontend toolchain is project-local and pinned by `frontend/.node-version`,
+  `frontend/package.json`, and `frontend/.npmrc`: use Node `22.17.0` and pnpm
+  `10.12.4`; do not use another global Node or pnpm version for installs,
+  checks, tests, or builds.
+- When a compatible version manager is unavailable, run frontend commands from
+  `frontend/` through npm's temporary isolated toolchain, for example:
+  `npx --yes --package node@22.17.0 --package pnpm@10.12.4 pnpm install --frozen-lockfile`
+  and
+  `npx --yes --package node@22.17.0 --package pnpm@10.12.4 pnpm run check`.
+- Keep pnpm's package store in `frontend/.pnpm-store/` as configured by
+  `frontend/.npmrc`; never commit the store or `frontend/node_modules/`.
 - Run `node --check javascript/kohaku_loom*.js` after editing browser scripts when Node is available.
 - `javascript/kohaku_loom_90_ui.js` is generated Vite output and may exceed the 1000-line source limit; never edit it manually. Regenerate it from `frontend/` instead.
 - `javascript/kohaku_loom_99_boot.js` is an intentionally tiny generated-UI gate and may only call the Svelte mount after `UI_READY` and `onUiLoaded` both allow it.

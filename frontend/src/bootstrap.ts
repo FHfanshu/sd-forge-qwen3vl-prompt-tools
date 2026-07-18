@@ -1,26 +1,29 @@
 import { mount, unmount } from "svelte";
-import type { BridgeHandshakeRequest, BridgeHandshakeResponse, KohakuLoomBridgeApi } from "./bridge";
-import { validateHostApi } from "./bridge";
+import { getHostApi, handshakeWithLoom, type BridgeHandshakeRequest, type KohakuLoomBridgeApi } from "./bridge";
 import Shell from "./components/Shell.svelte";
 import { useUiStore } from "./stores/ui";
 
 export const UI_READY = true as const;
 let app: ReturnType<typeof mount> | null = null;
+let mountTarget: HTMLElement | null = null;
 
 export function mountSvelteUi(host: HTMLElement = document.body): ReturnType<typeof mount> | null {
-  if ((!UI_READY && !import.meta.env.DEV) || app) return app;
-  const target = document.createElement("div");
-  target.id = "kohaku-loom-svelte-mount";
-  host.appendChild(target);
-  app = mount(Shell, { target });
+  if (app) return app;
+  const existing = document.querySelector<HTMLElement>("#kohaku-loom-svelte-mount");
+  mountTarget = existing ?? document.createElement("div");
+  mountTarget.id = "kohaku-loom-svelte-mount";
+  if (!mountTarget.isConnected) host.appendChild(mountTarget);
+  app = mount(Shell, { target: mountTarget });
   return app;
 }
 
 export async function unmountSvelteUi(): Promise<void> {
-  if (!app) return;
-  await unmount(app);
-  app = null;
-  document.querySelector("#kohaku-loom-svelte-mount")?.remove();
+  if (app) {
+    await unmount(app);
+    app = null;
+  }
+  mountTarget?.remove();
+  mountTarget = null;
 }
 
 export function openProfileSettings(): void {
@@ -33,26 +36,31 @@ export function closeProfileSettings(): void {
 }
 
 export interface SvelteUiGlobal {
-  UI_READY: typeof UI_READY;
+  readonly UI_READY: typeof UI_READY;
+  readonly bridge?: KohakuLoomBridgeApi;
   mountSvelteUi: typeof mountSvelteUi;
   unmountSvelteUi: typeof unmountSvelteUi;
   openProfileSettings: typeof openProfileSettings;
   closeProfileSettings: typeof closeProfileSettings;
-  bridge?: KohakuLoomBridgeApi;
-  handshake?(request: BridgeHandshakeRequest): BridgeHandshakeResponse;
+  handshake(request: BridgeHandshakeRequest): ReturnType<typeof handshakeWithLoom>;
   error?: string;
 }
 
-export function installRuntimeContracts(globalWindow: Window): SvelteUiGlobal | null {
-  try {
-    const bridge = validateHostApi(globalWindow.kohakuLoom?.hostApi);
-    const api: SvelteUiGlobal = { UI_READY, mountSvelteUi, unmountSvelteUi, openProfileSettings, closeProfileSettings, bridge, handshake: (request) => bridge.handshake(request) };
-    globalWindow.KohakuLoomSvelteUi = api;
-    return api;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    globalWindow.KohakuLoomSvelteUi = { UI_READY, mountSvelteUi, unmountSvelteUi, openProfileSettings, closeProfileSettings, error: message };
-    console.error(`[Kohaku Loom] Svelte UI host contract unavailable: ${message}`);
-    return null;
-  }
+export function installRuntimeContracts(globalWindow: Window): SvelteUiGlobal {
+  const api: SvelteUiGlobal = {
+    UI_READY,
+    get bridge() {
+      return getHostApi(globalWindow.kohakuLoom) ?? undefined;
+    },
+    mountSvelteUi,
+    unmountSvelteUi,
+    openProfileSettings,
+    closeProfileSettings,
+    handshake(request) {
+      return handshakeWithLoom(globalWindow.kohakuLoom ?? {}, request);
+    },
+  };
+  globalWindow.KohakuLoomSvelteUi = api;
+  globalWindow.dispatchEvent(new CustomEvent("kohaku-loom:svelte-ready"));
+  return api;
 }

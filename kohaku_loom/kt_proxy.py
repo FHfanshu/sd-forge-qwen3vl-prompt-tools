@@ -14,6 +14,9 @@ from .sidecar_manager import SidecarManager
 
 _FORWARDED_REQUEST_HEADERS = ("accept", "content-type", "last-event-id", "cache-control")
 _FORWARDED_RESPONSE_HEADERS = ("content-type", "cache-control", "etag", "last-modified")
+_PROFILE_IMPORT_PATH = "profiles/import"
+_PROFILE_IMPORT_ATTEMPTS = 2
+_PROFILE_IMPORT_RETRY_DELAY_SECONDS = 0.15
 
 
 class KohakuTerrariumProxy:
@@ -31,13 +34,21 @@ class KohakuTerrariumProxy:
     async def forward(self, request: Request, sidecar_path: str) -> Response:
         normalized_path = self._normalized_path(sidecar_path)
         body = await request.body() if request.method in {"POST", "PUT", "PATCH"} else b""
-        attempts = 2 if request.method in {"GET", "HEAD", "OPTIONS"} else 1
+        profile_import = request.method == "POST" and normalized_path == _PROFILE_IMPORT_PATH
+        attempts = _PROFILE_IMPORT_ATTEMPTS if profile_import else 2 if request.method in {"GET", "HEAD", "OPTIONS"} else 1
         for attempt in range(attempts):
-            state = await self._ensure_sidecar()
+            state: dict[str, Any] | None = None
             try:
-                return await self._send(request, normalized_path, body, state)
+                state = await self._ensure_sidecar()
+                response = await self._send(request, normalized_path, body, state)
+                if profile_import and response.status_code == 503 and attempt + 1 < attempts:
+                    await self._invalidate(state)
+                    await asyncio.sleep(_PROFILE_IMPORT_RETRY_DELAY_SECONDS)
+                    continue
+                return response
             except httpx.RequestError as error:
-                await self._invalidate(state)
+                if state is not None:
+                    await self._invalidate(state)
                 if attempt + 1 < attempts:
                     continue
                 raise HTTPException(
@@ -91,7 +102,7 @@ class KohakuTerrariumProxy:
             if name in request.headers
         }
         headers["authorization"] = f"Bearer {state['token']}"
-        client = self._client_factory(timeout=None)
+        client = self._client_factory(timeout=None, trust_env=False)
         try:
             upstream_request = client.build_request(
                 request.method,

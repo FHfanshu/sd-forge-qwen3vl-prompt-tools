@@ -35,10 +35,11 @@ export type LocaleMetadataResponse = z.infer<typeof localeMetadataResponseSchema
 const chatAttachmentSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  dataUrl: z.string().min(1),
+  dataUrl: z.string().min(1).optional(),
+  previewUrl: z.string().min(1).optional(),
   mimeType: z.string().optional(),
   size: z.number().int().nonnegative().optional(),
-});
+}).refine((attachment) => Boolean(attachment.dataUrl || attachment.previewUrl), "Attachment data is unavailable");
 
 const createdAtSchema = z.number().finite().nonnegative().transform((value) => Math.trunc(value)).default(() => Date.now());
 
@@ -70,11 +71,13 @@ export type ChatMessageInput = z.input<typeof chatMessageSchema>;
 
 export const attachmentSchema = chatAttachmentSchema;
 export type ChatAttachment = z.infer<typeof attachmentSchema>;
+export type WireAttachment = ChatAttachment & { dataUrl: string };
 
 export const queuedMessageSchema = z.object({
   id: z.string().min(1),
   text: z.string(),
   attachments: z.array(attachmentSchema).default([]),
+  attachmentCount: z.number().int().nonnegative().default(0),
   state: z.enum(["pending", "guide_waiting", "running", "claimed", "failed", "cancelled", "delivered"]).optional(),
   kind: z.enum(["primary", "guide"]).optional(),
   error: z.string().optional(),
@@ -248,7 +251,8 @@ export interface ProfileActionHandlers {
 
 export interface SendMessageInput {
   text: string;
-  attachments: ChatAttachment[];
+  attachments: WireAttachment[];
+  displayAttachments?: ChatAttachment[];
   riskMode: RiskMode;
   reasoning: ReasoningEffort;
   editOf?: string;
@@ -299,8 +303,13 @@ export interface PendingToolApproval {
   arguments: Record<string, unknown>;
 }
 
+export interface MessageSubmission {
+  kind: "turn" | "queued" | "edit" | "local";
+  id?: string;
+}
+
 export interface LoomActionHandlers {
-  sendMessage(input: SendMessageInput): void | Promise<void>;
+  sendMessage(input: SendMessageInput): MessageSubmission | void | Promise<MessageSubmission | void>;
   stopRequest(): void;
   attachFiles(files: File[]): ChatAttachment[] | void | Promise<ChatAttachment[] | void>;
   replaceAttachment(id: string, file: File): ChatAttachment | void | Promise<ChatAttachment | void>;
@@ -310,7 +319,7 @@ export interface LoomActionHandlers {
   copyMessage(message: ChatMessage): void | Promise<void>;
   regenerate(message: ChatMessage): void | Promise<void>;
   changeBranch(message: ChatMessage, branchIndex: number): void | Promise<void>;
-  removeQueuedMessage(id: string): void;
+  removeQueuedMessage(id: string): void | Promise<void>;
   selectHistory(row: HistoryRow): void | Promise<void>;
   newSession(): void | Promise<void>;
   openSettings(): void;

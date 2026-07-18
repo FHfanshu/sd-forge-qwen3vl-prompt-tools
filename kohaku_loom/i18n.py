@@ -243,7 +243,7 @@ _PROFILE_TRANSLATIONS = {
         "profiles.model_path": "GGUF 路径", "profiles.mmproj_path": "mmproj 路径", "profiles.llama_server_path": "llama-server 路径", "profiles.n_ctx": "上下文长度", "profiles.n_gpu_layers": "GPU Layers", "profiles.thinking": "Thinking",
         "profiles.add": "新增", "profiles.duplicate": "复制", "profiles.delete": "删除", "profiles.set_active": "设为主模型", "profiles.restore": "恢复默认配置", "profiles.new_name": "新模型配置", "profiles.new_model_id": "model-id",
         "profiles.delete.confirm": "确定删除这个模型配置吗？", "profiles.delete.last_enabled": "至少需要保留一个已启用的模型配置。", "profiles.active.disabled": "请先启用该配置，再设为主模型。", "profiles.restore.confirm": "确定用默认配置替换全部模型档案吗？",
-        "profiles.test": "测试连接", "profiles.test.testing": "正在测试连接...", "profiles.test.ping": "Ping。只回复 OK。", "profiles.test.success": "连接成功。", "profiles.test.error": "连接失败，请检查模型配置。",
+        "profiles.test": "测试连接", "profiles.test.testing": "正在测试连接...", "profiles.test.ping": "Ping。只回复 OK。", "profiles.test.success": "连接成功。", "profiles.test.error": "连接失败，请检查模型配置。", "profiles.test.timeout": "连接测试超时。控件已恢复，可以重试。", "profiles.test.route": "连接路径：",
     },
     "en": {
         "profiles.title": "Model profiles", "profiles.list": "Model profiles", "profiles.close": "Close",
@@ -259,7 +259,7 @@ _PROFILE_TRANSLATIONS = {
         "profiles.model_path": "GGUF path", "profiles.mmproj_path": "mmproj path", "profiles.llama_server_path": "llama-server path", "profiles.n_ctx": "Context size", "profiles.n_gpu_layers": "GPU layers", "profiles.thinking": "Thinking",
         "profiles.add": "Add", "profiles.duplicate": "Duplicate", "profiles.delete": "Delete", "profiles.set_active": "Set active", "profiles.restore": "Restore defaults", "profiles.new_name": "New model profile", "profiles.new_model_id": "model-id",
         "profiles.delete.confirm": "Delete this model profile?", "profiles.delete.last_enabled": "At least one enabled model profile is required.", "profiles.active.disabled": "Enable this profile before making it active.", "profiles.restore.confirm": "Replace all profiles with the defaults?",
-        "profiles.test": "Test connection", "profiles.test.testing": "Testing connection...", "profiles.test.ping": "Ping. Reply with OK.", "profiles.test.success": "Connection successful.", "profiles.test.error": "Connection failed. Check the model profile.",
+        "profiles.test": "Test connection", "profiles.test.testing": "Testing connection...", "profiles.test.ping": "Ping. Reply with OK.", "profiles.test.success": "Connection successful.", "profiles.test.error": "Connection failed. Check the model profile.", "profiles.test.timeout": "Connection test timed out. The controls are ready to try again.", "profiles.test.route": "Route:",
     },
 }
 for _locale, _messages in _PROFILE_TRANSLATIONS.items():
@@ -541,6 +541,8 @@ _SVELTE_TRANSLATIONS = {
         "history.empty_search": "没有匹配的会话。",
         "chat.role.tool": "工具",
         "chat.status.partial": "生成中",
+        "assistant.working.submitting": "正在发送请求…",
+        "assistant.working.cancelling": "正在停止回复…",
         "assistant.working.thinking": "正在思考…",
         "assistant.working.generating": "正在生成回复…",
         "assistant.working.tool": "正在运行工具…",
@@ -652,6 +654,8 @@ _SVELTE_TRANSLATIONS = {
         "history.empty_search": "No sessions match that search.",
         "chat.role.tool": "Tool",
         "chat.status.partial": "Generating",
+        "assistant.working.submitting": "Sending request…",
+        "assistant.working.cancelling": "Stopping response…",
         "assistant.working.thinking": "Thinking…",
         "assistant.working.generating": "Generating response…",
         "assistant.working.tool": "Running tool…",

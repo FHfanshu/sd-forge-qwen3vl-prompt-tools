@@ -7,6 +7,7 @@ import type {
   Profile,
   QueuedMessage,
   SendMessageInput,
+  WireAttachment,
 } from "./contracts";
 import { attachmentSchema, chatMessageSchema, queuedMessageSchema } from "./contracts";
 import { normalizeProfile } from "./profile-adapter";
@@ -33,6 +34,8 @@ function attachmentsFromContent(content: unknown): ChatAttachment[] {
       id: `server-attachment-${index}-${String(image.url).slice(-12)}`,
       name: String(asRecord(value.meta).source_name ?? "reference image"),
       dataUrl: image.url,
+      mimeType: asRecord(value.meta).source_mime ? String(asRecord(value.meta).source_mime) : undefined,
+      size: Number.isFinite(Number(asRecord(value.meta).source_size)) ? Number(asRecord(value.meta).source_size) : undefined,
     }];
   });
 }
@@ -171,17 +174,19 @@ export function mapConversationMessage(rawValue: unknown, index: number, branche
 
 export function mapQueuedMessage(rawValue: unknown): QueuedMessage {
   const raw = asRecord(rawValue);
+  const attachments = attachmentsFromMessage(raw.content, raw.attachments);
   return queuedMessageSchema.parse({
     id: String(raw.message_id ?? raw.id),
-    text: String(raw.display_content ?? textFromContent(raw.content ?? "")),
-    attachments: Array.isArray(raw.attachments) ? raw.attachments : attachmentsFromContent(raw.content),
+    text: String(raw.display_content ?? raw.text ?? textFromContent(raw.content ?? "")),
+    attachments: [],
+    attachmentCount: Math.max(Number(raw.attachmentCount ?? raw.attachment_count ?? 0) || 0, attachments.length),
     state: raw.state,
     kind: raw.kind,
     error: raw.error ? String(raw.error) : undefined,
-    turnId: raw.turn_id ? String(raw.turn_id) : undefined,
+    turnId: raw.turn_id || raw.turnId ? String(raw.turn_id ?? raw.turnId) : undefined,
     sequence: Number.isFinite(Number(raw.sequence)) ? Number(raw.sequence) : undefined,
-    updatedAt: Number.isFinite(Number(raw.updated_at)) ? Number(raw.updated_at) : undefined,
-    createdAt: createdAtMilliseconds(raw.created_at),
+    updatedAt: Number.isFinite(Number(raw.updated_at ?? raw.updatedAt)) ? Number(raw.updated_at ?? raw.updatedAt) : undefined,
+    createdAt: createdAtMilliseconds(raw.created_at ?? raw.createdAt),
   });
 }
 
@@ -200,13 +205,13 @@ export function mapHistory(rawValue: unknown, source: "KT" | "legacy"): HistoryR
   return { id, source, title, preview, updatedAt: timestamp || "", messageCount: Math.max(0, Number(raw.message_count ?? raw.messageCount ?? 0) || 0) };
 }
 
-export function contentForMessage(input: SendMessageInput): string | RawRecord[] {
+export function contentForMessage(input: Pick<SendMessageInput, "text"> & { attachments: WireAttachment[] }): string | RawRecord[] {
   const parts: RawRecord[] = [];
   if (input.text) parts.push({ type: "text", text: input.text });
   input.attachments.forEach((attachment) => parts.push({
     type: "image_url",
     image_url: { url: attachment.dataUrl, detail: "high" },
-    meta: { source_type: "attachment", source_name: attachment.name },
+    meta: { source_type: "attachment", source_name: attachment.name, source_mime: attachment.mimeType, source_size: attachment.size },
   }));
   return parts.length === 1 && parts[0].type === "text" ? input.text : parts;
 }

@@ -65,6 +65,11 @@ jobs:
           cache-dependency-path: requirements-kt-test.txt
       - name: Install contract-test dependencies
         run: python -m pip install -r requirements-kt-test.txt
+      - name: Install Loom Terrarium package
+        run: python -m kohakuterrarium install "$GITHUB_WORKSPACE" -e
+        env:
+          KT_CONFIG_DIR: ${{ github.workspace }}/.loom/config
+          KT_SESSION_DIR: ${{ github.workspace }}/.loom/sessions
       - name: Run non-skippable contract suite
         run: python tools/test_runner.py --pattern test_loom_kt_contract.py --require-kt
 

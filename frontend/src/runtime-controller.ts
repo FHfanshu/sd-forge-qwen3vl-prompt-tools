@@ -1,14 +1,15 @@
-import type { LoomActionHandlers, ChatMessage, HistoryRow, Profile, SendMessageInput, BranchMetadata, RuntimeSession, RiskMode, PendingToolApproval } from "./contracts";
-import { getHostApi, type KohakuLoomHostApi, type KohakuLoomNamespace } from "./bridge";
+import type { LoomActionHandlers, ChatMessage, HistoryRow, Profile, SendMessageInput, BranchMetadata, RuntimeSession, RiskMode, PendingToolApproval, MessageSubmission } from "./contracts";
+import type { KohakuLoomHostApi } from "./bridge";
 import { KTClient } from "./kt/client";
 import { createAbortError, isAbortError } from "./kt/retry";
-import { chatMessageSchema } from "./contracts";
 import { useChatStore } from "./stores/chat";
 import { useProfileStore } from "./stores/profiles";
 import { useRuntimeStore } from "./stores/runtime";
 import { useUiStore } from "./stores/ui";
 import { normalizeProfile, normalizeProfileState } from "./profile-adapter";
 import { SessionTransition } from "./session-transition";
+import { openSessionWithConflictRecovery } from "./runtime-session";
+import { mapLegacyMessages, parseBridgeLease, queuedMessageFromConversation, setBoundedMapValue } from "./runtime-state";
 import {
   adaptTool,
   asRecord,
@@ -46,27 +47,12 @@ interface LoomRun {
   pendingTurnEvents: RawRecord[];
   cancelRequested: boolean;
   acceptanceTask: Promise<RawRecord> | null;
+  accepted: boolean;
+  acceptedResolve(value: MessageSubmission): void;
+  acceptedReject(reason: unknown): void;
+  acceptedSubmission: Promise<MessageSubmission>;
   resolve(value: RawRecord): void;
   done: Promise<RawRecord>;
-}
-
-interface BridgeLease {
-  owned: boolean;
-  bridgeId: string;
-  pendingRequests: RawRecord[];
-}
-
-function mapProfile(rawValue: unknown): Profile {
-  return normalizeProfile(rawValue);
-}
-
-function parseBridgeLease(value: unknown): BridgeLease | null {
-  const record = asRecord(value);
-  if (typeof record.owned !== "boolean" || typeof record.bridge_id !== "string" || !record.bridge_id.trim()) return null;
-  const pendingRequests = Array.isArray(record.pending_requests)
-    ? record.pending_requests.filter((item): item is RawRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item))
-    : [];
-  return { owned: record.owned, bridgeId: record.bridge_id.trim(), pendingRequests };
 }
 
 export class LoomRuntimeController {
@@ -79,8 +65,10 @@ export class LoomRuntimeController {
   private historyEventsAbort: AbortController | null = null;
   private historyEventsTask: Promise<void> | null = null;
   private readonly sessionTransition = new SessionTransition();
+  private sessionEpoch = 0;
   private disposed = false;
   private readonly toolApprovals = new Map<string, { run: LoomRun; resolve(approved: boolean): void }>();
+  private readonly removingQueueIds = new Set<string>();
 
   constructor(host: KohakuLoomHostApi, client = new KTClient({ baseUrl: host.ktBaseUrl })) {
     this.host = host;
@@ -113,22 +101,26 @@ export class LoomRuntimeController {
     this.mounted = true;
     const runtime = useRuntimeStore.getState();
     runtime.setLoading(true);
+    runtime.setStartup("starting");
+    runtime.setError(null);
     try {
       this.reloadProfiles();
       await this.syncProfiles();
-      // Metadata is generated asynchronously after a turn or when an old
-      // session is opened. Keep the archive in sync even while the chat is
-      // idle; the run stream is only active during a turn.
-      this.startHistoryEvents();
       await this.loadHistory();
+      // Keep async session metadata in sync while the chat is idle.
+      this.startHistoryEvents();
+      runtime.setStartup("ready");
     } catch (error) {
       runtime.setError(errorText(error));
+      runtime.setStartup("error");
+      this.mounted = false;
     } finally {
       runtime.setLoading(false);
     }
   }
 
   destroy(): void {
+    this.sessionEpoch += 1;
     this.disposed = true;
     this.stopRequest();
     this.mounted = false;
@@ -159,25 +151,25 @@ export class LoomRuntimeController {
   }
 
   addProfile(profile: unknown): Profile {
-    const result = mapProfile(this.host.profileStore.add(profile));
+    const result = normalizeProfile(this.host.profileStore.add(profile));
     this.reloadProfiles();
     return result;
   }
 
   duplicateProfile(id: string): Profile {
-    const result = mapProfile(this.host.profileStore.duplicate(id));
+    const result = normalizeProfile(this.host.profileStore.duplicate(id));
     this.reloadProfiles();
     return result;
   }
 
   updateProfile(id: string, patch: unknown): Profile {
-    const result = mapProfile(this.host.profileStore.update(id, patch));
+    const result = normalizeProfile(this.host.profileStore.update(id, patch));
     this.reloadProfiles();
     return result;
   }
 
   deleteProfile(id: string): Profile {
-    const result = mapProfile(this.host.profileStore.delete(id));
+    const result = normalizeProfile(this.host.profileStore.delete(id));
     this.reloadProfiles();
     return result;
   }
@@ -233,11 +225,14 @@ export class LoomRuntimeController {
           if (Number.isFinite(sequence)) cursor = Math.max(cursor, sequence);
           const data = asRecord(event.data);
           const type = String(data.type ?? event.event ?? "");
-          if (type !== "session_metadata_updated") continue;
-          // The event already contains the new metadata, but reloading the
-          // archive also updates modified time and keeps legacy/KT merging in
-          // one place.
-          await this.loadHistory().catch(() => undefined);
+          if (type === "session_metadata_updated") {
+            // The event already contains the new metadata, but reloading the
+            // archive also updates modified time and keeps legacy/KT merging in
+            // one place.
+            await this.loadHistory().catch(() => undefined);
+          } else {
+            this.applyQueueEvent(data);
+          }
         }
       } catch (error) {
         if (signal.aborted || isAbortError(error)) return;
@@ -256,32 +251,28 @@ export class LoomRuntimeController {
   async openSession(sessionId = "", resume = Boolean(sessionId)): Promise<RuntimeSession> {
     return this.sessionTransition.run(() => this.openSessionInternal(sessionId, resume));
   }
-
   private async openSessionInternal(sessionId = "", resume = Boolean(sessionId)): Promise<RuntimeSession> {
     if (this.activeRun && !this.activeRun.finished) throw new Error("Cannot switch sessions while a turn is active");
+    const epoch = ++this.sessionEpoch;
     await this.syncProfiles();
+    const runtime = await this.client.request<RawRecord>("/runtime").catch(() => null);
+    const activeSession = asRecord(asRecord(runtime).active_session);
+    const activeSessionId = String(activeSession.session_id ?? "");
+    if (resume && sessionId && activeSessionId === sessionId) {
+      await this.applySession(sessionId, runtime ?? undefined, epoch, activeSession);
+      return { ...activeSession, session_id: sessionId } as RuntimeSession;
+    }
+    if (activeSessionId) await this.client.request("/sessions/close", { method: "POST" });
     const config = asRecord(this.host.assistantConfig());
-    const current = useRuntimeStore.getState().sessionId;
-    if (current) await this.client.request("/sessions/close", { method: "POST" });
-    const response = await this.client.request<{ session: RuntimeSession }>("/sessions/open", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        profile_id: String(config.profile_id ?? useProfileStore.getState().activeProfileId ?? ""),
-        session_id: sessionId,
-        resume,
-        forge_bridge: true,
-        agent_mode: useUiStore.getState().riskMode,
-      }),
+    const opened = await openSessionWithConflictRecovery(this.client, {
+      profile_id: String(config.profile_id ?? useProfileStore.getState().activeProfileId ?? ""), session_id: sessionId,
+      resume, forge_bridge: true, agent_mode: useUiStore.getState().riskMode,
     });
-    const session = response.session;
-    useRuntimeStore.getState().setSession(session);
-    useUiStore.getState().setRiskMode(session.agent_mode === "yolo" ? "yolo" : "normal");
-    useChatStore.getState().reset();
-    await this.applySession(session.session_id);
+    this.assertSessionCurrent(epoch);
+    const session = opened.session;
+    await this.applySession(session.session_id, opened.runtime, epoch, session);
     return session;
   }
-
   private async ensureSession(): Promise<string> {
     const existing = useRuntimeStore.getState().sessionId;
     if (existing) return existing;
@@ -297,14 +288,18 @@ export class LoomRuntimeController {
       return (await this.openSessionInternal("", false)).session_id;
     });
   }
+  private assertSessionCurrent(epoch: number): void {
+    if (epoch !== this.sessionEpoch || this.disposed) throw createAbortError();
+  }
 
-  private async applySession(sessionId: string, runtime?: RawRecord): Promise<void> {
-    const session = { ...asRecord(asRecord(runtime).active_session), session_id: sessionId } as RuntimeSession;
+  private async applySession(sessionId: string, runtime?: RawRecord, epoch = this.sessionEpoch, seed: RawRecord = {}): Promise<void> {
+    const conversation = await this.client.request<RawRecord>(`/sessions/${encodeURIComponent(sessionId)}`);
+    const status = runtime ?? await this.client.request<RawRecord>("/runtime");
+    this.assertSessionCurrent(epoch);
+    const session = { ...asRecord(status.active_session), ...seed, session_id: sessionId } as RuntimeSession;
     useRuntimeStore.getState().setSession(session);
     useUiStore.getState().setRiskMode(session.agent_mode === "yolo" ? "yolo" : "normal");
-    const conversation = await this.client.request<RawRecord>(`/sessions/${encodeURIComponent(sessionId)}`);
     this.applyConversation(conversation);
-    const status = runtime ?? await this.client.request<RawRecord>("/runtime");
     if (status.active_turn_id) this.attachRuntime(status);
   }
 
@@ -357,14 +352,44 @@ export class LoomRuntimeController {
 
   private syncQueue(rawMessages: unknown[]): void {
     const activeStates = new Set(["pending", "guide_waiting", "running", "claimed", "failed"]);
-    const queue = rawMessages.map(mapQueuedMessage).filter((item) => !item.state || activeStates.has(item.state));
+    const queue = rawMessages
+      .map(mapQueuedMessage)
+      .filter((item) => !this.removingQueueIds.has(item.id) && (!item.state || activeStates.has(item.state)));
     useChatStore.getState().setQueue(queue);
-    useRuntimeStore.getState().setQueuePaused(Boolean(useRuntimeStore.getState().queuePaused));
+  }
+
+  private applyQueueMessage(rawMessage: unknown): void {
+    const message = mapQueuedMessage(rawMessage);
+    if (this.removingQueueIds.has(message.id)) return;
+    if (message.state && ["cancelled", "delivered"].includes(message.state)) {
+      useChatStore.getState().removeQueuedMessage(message.id);
+      return;
+    }
+    useChatStore.getState().upsertQueue(message);
+  }
+
+  private applyQueueEvent(event: RawRecord): void {
+    const type = String(event.type ?? event.event ?? "");
+    const payload = asRecord(event.payload ?? event);
+    if (type === "message_queued" || type === "message_updated") {
+      if (payload.message) this.applyQueueMessage(payload.message);
+    } else if (type === "queue_paused") {
+      useRuntimeStore.getState().setQueuePaused(true);
+    } else if (type === "queue_resumed") {
+      useRuntimeStore.getState().setQueuePaused(false);
+    }
   }
 
   private createRun(requestId: string, runtime?: RawRecord): LoomRun {
     let resolve!: (value: RawRecord) => void;
     const done = new Promise<RawRecord>((complete) => { resolve = complete; });
+    let acceptedResolve!: (value: MessageSubmission) => void;
+    let acceptedReject!: (reason: unknown) => void;
+    const acceptedSubmission = new Promise<MessageSubmission>((complete, reject) => {
+      acceptedResolve = complete;
+      acceptedReject = reject;
+    });
+    void acceptedSubmission.catch(() => undefined);
     const snapshot = asRecord(asRecord(runtime).active_turn);
     return {
       requestId,
@@ -387,6 +412,10 @@ export class LoomRuntimeController {
       pendingTurnEvents: [],
       cancelRequested: false,
       acceptanceTask: null,
+      accepted: Boolean(asRecord(runtime).active_turn_id ?? snapshot.turn_id),
+      acceptedResolve,
+      acceptedReject,
+      acceptedSubmission,
       resolve,
       done,
     };
@@ -434,6 +463,14 @@ export class LoomRuntimeController {
       useRuntimeStore.getState().setWorking("tool", tool);
       return;
     }
+    if (run.cancelRequested) {
+      useRuntimeStore.getState().setWorking("cancelling");
+      return;
+    }
+    if (!run.accepted) {
+      useRuntimeStore.getState().setWorking("submitting");
+      return;
+    }
     useRuntimeStore.getState().setWorking(run.text || run.reasoning ? "generating" : "thinking");
   }
 
@@ -442,17 +479,33 @@ export class LoomRuntimeController {
     if (!activeRequestId || activeRequestId === run.requestId) useRuntimeStore.getState().setWorking("idle");
   }
 
-  private async startStreams(run: LoomRun): Promise<void> {
-    const claim = parseBridgeLease(await this.host.claimToolBridge());
-    if (!claim) throw new Error("Forge tool bridge returned an invalid lease");
-    if (!claim.owned) throw new Error("Forge tool bridge is unavailable or owned by another tab");
+  private startStreams(run: LoomRun): void {
+    void this.consumeStream("/turns/events", run, "turnCursor", (event) => this.handleTurnEvent(run, event));
+    void this.startToolStream(run);
+  }
+
+  private async startToolStream(run: LoomRun): Promise<void> {
+    let claim;
+    try {
+      claim = parseBridgeLease(await this.host.claimToolBridge());
+    } catch {
+      this.loseBridgeLease(run, "Forge tool bridge could not be claimed");
+      return;
+    }
+    if (!claim) {
+      this.loseBridgeLease(run, "Forge tool bridge returned an invalid lease");
+      return;
+    }
+    if (!claim.owned) {
+      this.loseBridgeLease(run, "Forge tool bridge is unavailable or owned by another tab");
+      return;
+    }
     if (this.disposed || run.finished || run.cancelled || run.controller.signal.aborted) {
       if (this.host.releaseToolBridge) await this.host.releaseToolBridge().catch(() => undefined);
       return;
     }
     run.bridgeId = claim.bridgeId;
     run.leaseTimer = setInterval(() => { void this.refreshBridgeLease(run); }, 5000);
-    void this.consumeStream("/turns/events", run, "turnCursor", (event) => this.handleTurnEvent(run, event));
     void this.consumeStream("/tools/events", run, "toolCursor", (event) => this.handleToolEvent(run, event));
     for (const request of claim.pendingRequests) {
       if (run.finished || run.cancelled) return;
@@ -466,8 +519,8 @@ export class LoomRuntimeController {
         if (this.disposed || run.finished || run.cancelled) return;
         const sequence = Number(event.sequence ?? 0);
         if (Number.isFinite(sequence)) run[cursor] = Math.max(run[cursor], sequence);
-        const data = asRecord(event.data);
-        await onEvent(data.type ? data : { type: event.event, payload: data.payload ?? data });
+      const data = asRecord(event.data);
+      await onEvent(data.type ? data : { type: event.event, payload: data.payload ?? data });
       }
       if (!run.finished && !run.cancelled) throw new Error(`${path} ended before its terminal event`);
     } catch (error) {
@@ -508,7 +561,10 @@ export class LoomRuntimeController {
       return;
     }
     if (run.turnId && payload.turn_id && String(payload.turn_id) !== run.turnId) return;
-    if (type === "text_delta") {
+    if (type === "turn_started") {
+      run.accepted = true;
+      this.syncWorking(run);
+    } else if (type === "text_delta") {
       run.text += String(payload.text ?? "");
       this.updateStreamingMessage(run);
     } else if (type === "reasoning_delta") {
@@ -520,12 +576,8 @@ export class LoomRuntimeController {
     } else if (type === "usage") {
       run.usage = payload.usage ?? payload;
       if (run.assistantId) useChatStore.getState().updateMessage(run.assistantId, { usage: usageFrom(run.usage) });
-    } else if (type === "message_queued" || type === "message_updated") {
-      if (payload.message) this.syncQueue([...useChatStore.getState().queue, payload.message]);
-    } else if (type === "queue_paused") {
-      useRuntimeStore.getState().setQueuePaused(true);
-    } else if (type === "queue_resumed") {
-      useRuntimeStore.getState().setQueuePaused(false);
+    } else if (["message_queued", "message_updated", "queue_paused", "queue_resumed"].includes(type)) {
+      this.applyQueueEvent(event);
     } else if (type === "turn_ended") {
       if (run.cancelled) return;
       this.cancelStreamingRender(run);
@@ -533,11 +585,13 @@ export class LoomRuntimeController {
       run.text = finalText;
       if (payload.reasoning) run.reasoning = String(payload.reasoning);
       if (payload.usage) run.usage = payload.usage;
+      const terminalStatus = String(payload.status).toLowerCase();
+      const interrupted = run.cancelRequested || ["interrupted", "cancelled", "canceled"].includes(terminalStatus);
       if (run.assistantId) {
-        useChatStore.getState().updateMessage(run.assistantId, { content: finalText, reasoning: run.reasoning || undefined, usage: usageFrom(run.usage), status: ["ok", "completed"].includes(String(payload.status).toLowerCase()) ? "complete" : "error" });
+        useChatStore.getState().updateMessage(run.assistantId, { content: finalText, reasoning: run.reasoning || undefined, usage: usageFrom(run.usage), status: interrupted ? "cancelled" : ["ok", "completed"].includes(terminalStatus) ? "complete" : "error" });
       } else if (finalText) {
         run.assistantId = `assistant-${run.requestId}`;
-        useChatStore.getState().appendMessage({ id: run.assistantId, role: "assistant", content: finalText, reasoning: run.reasoning || undefined, usage: usageFrom(run.usage), status: "complete" });
+        useChatStore.getState().appendMessage({ id: run.assistantId, role: "assistant", content: finalText, reasoning: run.reasoning || undefined, usage: usageFrom(run.usage), status: interrupted ? "cancelled" : ["ok", "completed"].includes(terminalStatus) ? "complete" : "error" });
       }
       this.finishRun(run, payload);
     }
@@ -605,7 +659,7 @@ export class LoomRuntimeController {
       if (pending.run === run) pending.resolve(false);
     }
     const release = this.host.releaseToolBridge;
-    if (release) void release.call(this.host).catch(() => undefined);
+    if (release) void Promise.resolve(release.call(this.host)).catch(() => undefined);
   }
 
   private requiresToolApproval(name: string, args: RawRecord): boolean {
@@ -640,6 +694,7 @@ export class LoomRuntimeController {
     run.cancelled = true;
     run.cancelRequested = true;
     useRuntimeStore.getState().setError(message);
+    if (!run.accepted) run.acceptedReject(new Error(message));
     this.finishRun(run, { status: "error", error: message });
     if (turnId) void this.cancelAcceptedTurn(run, turnId);
     return false;
@@ -664,7 +719,7 @@ export class LoomRuntimeController {
       const runtime = await this.client.request<RawRecord>("/runtime", { signal: run.controller.signal });
       run.turnCursor = Number(runtime.turn_event_sequence) || 0;
       run.toolCursor = Number(runtime.tool_event_sequence) || 0;
-      await this.startStreams(run);
+      this.startStreams(run);
       if (run.cancelled || run.finished || run.controller.signal.aborted) return;
       const config = asRecord(this.host.assistantConfig());
       const acceptedTask = this.client.request<RawRecord>("/turns", {
@@ -685,14 +740,21 @@ export class LoomRuntimeController {
       });
       const accepted = await Promise.race([acceptedTask, aborted]);
       run.turnId = String(accepted.turn_id ?? run.turnId);
+      if (!run.turnId) throw new Error("Kohaku Loom did not return a turn id");
+      run.accepted = true;
+      useChatStore.getState().appendMessage({ id: run.requestId, role: "user", content: input.text, attachments: input.displayAttachments ?? input.attachments, status: "complete" });
+      run.acceptedResolve({ kind: "turn", id: run.turnId });
+      this.syncWorking(run);
       const pendingEvents = run.pendingTurnEvents.splice(0);
       for (const event of pendingEvents) await this.handleTurnEvent(run, event);
       await run.done;
     } catch (error) {
+      if (!run.accepted) run.acceptedReject(error);
       if (run.cancelled || isAbortError(error)) return;
       if (run.assistantId) useChatStore.getState().updateMessage(run.assistantId, { status: "error" });
       throw error;
     } finally {
+      if (!run.accepted && (run.cancelled || run.finished || run.controller.signal.aborted)) run.acceptedReject(createAbortError());
       if (!run.finished) this.finishRun(run, { status: run.cancelled ? "interrupted" : "error" });
       if (useRuntimeStore.getState().sessionId === sessionId) {
         const latest = await this.client.request<RawRecord>("/runtime").catch(() => null);
@@ -716,10 +778,10 @@ export class LoomRuntimeController {
     useRuntimeStore.getState().setSession({ ...useRuntimeStore.getState().session, ...session, session_id: sessionId });
   }
 
-  async sendMessage(input: SendMessageInput): Promise<void> {
+  async sendMessage(input: SendMessageInput): Promise<MessageSubmission> {
     if (input.editOf) {
       await this.editAndRerun(input);
-      return;
+      return { kind: "edit", id: input.editOf };
     }
     const sessionId = await this.ensureSession();
     if (this.activeRun && !this.activeRun.finished) {
@@ -727,45 +789,68 @@ export class LoomRuntimeController {
       const response = await this.client.request<{ message: unknown }>(`/sessions/${encodeURIComponent(sessionId)}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, display_content: input.text, attachments: input.attachments, operation_id: operationId("message") }),
+        body: JSON.stringify({ content, display_content: input.text, operation_id: operationId("message") }),
       });
-      useChatStore.getState().upsertQueue(mapQueuedMessage(response.message));
-      return;
+      const message = mapQueuedMessage(response.message);
+      this.applyQueueMessage(message);
+      return { kind: "queued", id: message.id };
     }
     const userId = `user-${operationId("message")}`;
-    this.snapshots.set(userId, this.host.captureForgeState());
-    useChatStore.getState().appendMessage({ id: userId, role: "user", content: input.text, attachments: input.attachments, status: "complete" });
+    setBoundedMapValue(this.snapshots, userId, this.host.captureForgeState(), 32);
     const run = this.createRun(userId);
     this.activeRun = run;
     const signal = useChatStore.getState().beginRequest(userId);
     this.syncWorking(run);
     signal.addEventListener("abort", () => run.controller.abort(), { once: true });
-    try {
-      await this.runTurn(input, run, sessionId);
-    } catch (error) {
-      if (!run.cancelled) {
-        useChatStore.getState().appendMessage({ id: `error-${userId}`, role: "error", content: errorText(error), status: "error" });
-      }
-    } finally {
-      useChatStore.getState().finishRequest(userId);
-      this.clearWorking(run);
-      if (this.activeRun === run) this.activeRun = null;
-    }
+    void this.runTurn(input, run, sessionId)
+      .catch((error) => {
+        if (!run.accepted) run.acceptedReject(error);
+        if (!run.cancelled) useChatStore.getState().appendMessage({ id: `error-${userId}`, role: "error", content: errorText(error), status: "error" });
+      })
+      .finally(() => {
+        useChatStore.getState().finishRequest(userId);
+        this.clearWorking(run);
+        if (this.activeRun === run) this.activeRun = null;
+      });
+    return run.acceptedSubmission;
   }
 
   stopRequest(): void {
     const run = this.activeRun;
     if (!run || run.finished) return;
-    run.cancelled = true;
     run.cancelRequested = true;
+    this.syncWorking(run);
+    if (run.turnId) {
+      void this.cancelAcceptedTurn(run, run.turnId);
+      return;
+    }
+    run.cancelled = true;
     useChatStore.getState().cancelRequest();
     this.finishRun(run, { status: "interrupted", cancelled: true });
-    if (run.turnId) void this.cancelAcceptedTurn(run, run.turnId);
   }
 
   private async cancelAcceptedTurn(run: LoomRun, turnId: string): Promise<void> {
     run.turnId = turnId;
-    await this.client.request(`/turns/${encodeURIComponent(turnId)}/cancel`, { method: "POST" }).catch(() => undefined);
+    try {
+      await this.client.request(`/turns/${encodeURIComponent(turnId)}/cancel`, { method: "POST" });
+    } catch (error) {
+      const runtime = await this.client.request<RawRecord>("/runtime").catch(() => null);
+      const activeTurnId = String(asRecord(runtime).active_turn_id ?? "");
+      const lastTurn = asRecord(asRecord(runtime).last_turn);
+      if (activeTurnId === turnId) {
+        run.cancelRequested = false;
+        useRuntimeStore.getState().setError(errorText(error));
+        this.syncWorking(run);
+        return;
+      }
+      if (String(lastTurn.turn_id ?? "") === turnId) {
+        await this.handleTurnEvent(run, { type: "turn_ended", payload: lastTurn });
+        return;
+      }
+      run.cancelled = true;
+      useChatStore.getState().cancelRequest();
+      this.finishRun(run, { status: "interrupted", cancelled: true });
+    }
   }
 
   async readPrompt(): Promise<void> {
@@ -800,10 +885,30 @@ export class LoomRuntimeController {
   async removeQueuedMessage(id: string): Promise<void> {
     const sessionId = useRuntimeStore.getState().sessionId;
     if (!sessionId) return;
-    const response = await this.client.request<{ message: unknown }>(`/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(id)}/cancel`, { method: "POST" });
-    const message = mapQueuedMessage(response.message);
-    if (message.state && ["cancelled", "delivered"].includes(message.state)) useChatStore.getState().removeQueuedMessage(id);
-    else useChatStore.getState().upsertQueue(message);
+    const previous = useChatStore.getState().queue.find((message) => message.id === id);
+    if (!previous || this.removingQueueIds.has(id)) return;
+    this.removingQueueIds.add(id);
+    useChatStore.getState().removeQueuedMessage(id);
+    try {
+      const response = await this.client.request<{ message: unknown }>(`/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+      const message = mapQueuedMessage(response.message);
+      if (!message.state || !["cancelled", "delivered"].includes(message.state)) {
+        this.removingQueueIds.delete(id);
+        this.applyQueueMessage(message);
+      }
+    } catch (error) {
+      const conversation = await this.client.request<RawRecord>(`/sessions/${encodeURIComponent(sessionId)}`).catch(() => null);
+      const authoritative = queuedMessageFromConversation(conversation, id);
+      this.removingQueueIds.delete(id);
+      if (authoritative && (!authoritative.state || !["cancelled", "delivered"].includes(authoritative.state))) {
+        this.applyQueueMessage(authoritative);
+      } else if (!conversation) {
+        useChatStore.getState().upsertQueue(previous);
+        throw error;
+      }
+    } finally {
+      this.removingQueueIds.delete(id);
+    }
   }
 
   async retryQueuedMessage(id: string): Promise<void> {
@@ -820,7 +925,7 @@ export class LoomRuntimeController {
     const response = await this.client.request<{ message: unknown }>(`/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: contentForMessage(input), display_content: input.text, attachments: input.attachments }),
+      body: JSON.stringify({ content: contentForMessage(input), display_content: input.text }),
     });
     useChatStore.getState().upsertQueue(mapQueuedMessage(response.message));
   }
@@ -829,35 +934,7 @@ export class LoomRuntimeController {
     if (row.source === "legacy") {
       const data = await this.host.getLegacySession(row.id);
       useRuntimeStore.getState().setLegacySession(row.id);
-      const messages: ChatMessage[] = [];
-      (Array.isArray(asRecord(data).events) ? asRecord(data).events : []).forEach((event: unknown, index: number) => {
-        const value = asRecord(event);
-        const message = asRecord(value.message ?? value.payload ?? value);
-        const eventType = String(value.event_type ?? message.role ?? "");
-        const attachments = message.image ? [{ id: `legacy-image-${index}`, name: String(message.filename ?? "reference image"), dataUrl: String(message.image) }] : [];
-        if (eventType === "tool_result") {
-          const result = asRecord(message.result);
-          const failed = result.ok === false || Boolean(result.error);
-          messages.push(chatMessageSchema.parse({
-            id: `legacy-${index}`,
-            role: "tool",
-            content: "",
-            status: failed ? "error" : "complete",
-            tool: {
-              name: String(message.tool ?? "Tool"),
-              status: failed ? "error" : "complete",
-              detail: failed ? "Tool failed in this archived session" : "Completed in this archived session",
-            },
-            attachments,
-          }));
-          return;
-        }
-        const content = textFromContent(message.content).trim();
-        if (!content) return;
-        const role = eventType.includes("user") ? "user" : eventType.includes("error") ? "error" : "assistant";
-        messages.push(chatMessageSchema.parse({ id: `legacy-${index}`, role, content, status: role === "error" ? "error" : "complete", attachments }));
-      });
-      useChatStore.getState().setMessages(messages);
+      useChatStore.getState().setMessages(mapLegacyMessages(data));
       useChatStore.getState().setQueue([]);
       return;
     }
@@ -869,9 +946,9 @@ export class LoomRuntimeController {
   }
 
   async newSession(): Promise<void> {
+    this.sessionEpoch += 1;
     await this.sessionTransition.run(async () => {
       if (this.activeRun && !this.activeRun.finished) throw new Error("Cannot create a new session while a turn is active");
-      await this.client.request("/sessions/close", { method: "POST" });
       useRuntimeStore.getState().reset();
       useRuntimeStore.getState().setError(null);
       useChatStore.getState().reset();
@@ -914,15 +991,4 @@ export class LoomRuntimeController {
     const conversation = await this.client.request<RawRecord>(`/sessions/${encodeURIComponent(sessionId)}`);
     this.applyConversation(conversation);
   }
-}
-
-export function createRuntimeController(namespace?: KohakuLoomNamespace): LoomRuntimeController | null {
-  const host = getHostApi(namespace ?? (typeof window === "undefined" ? undefined : window.kohakuLoom));
-  return host ? new LoomRuntimeController(host) : null;
-}
-
-export function requireRuntimeController(namespace?: KohakuLoomNamespace): LoomRuntimeController {
-  const controller = createRuntimeController(namespace);
-  if (!controller) throw new Error("Kohaku Loom Svelte UI requires a compatible host-provided versioned API");
-  return controller;
 }

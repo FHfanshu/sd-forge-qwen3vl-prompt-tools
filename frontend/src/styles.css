@@ -493,7 +493,7 @@
   .kl-history-row-meta { text-align: right; }
   .kl-history-empty { padding: 18px 8px; color: var(--kl-ink-soft); font-size: 11px; text-align: center; }
 
-  @media (max-width: 767px), (pointer: coarse) {
+  @media (max-width: 767px), (pointer: coarse) and (max-height: 599px) {
     .kl-launcher { left: 12px; bottom: max(12px, env(safe-area-inset-bottom)); min-width: 0; padding-right: 10px; }
     .kl-window { min-width: 0; min-height: 0; border-radius: 20px; }
     .kl-window-header { min-height: 59px; padding-left: 12px; }
@@ -752,7 +752,7 @@
   .kl-dialog-confirm { border-color: var(--button-primary-border-color, var(--primary-500)); color: var(--button-primary-text-color, #fff); background: var(--button-primary-background-fill, var(--primary-500)); }
   .kl-profile-mobile-hint, .kl-mobile-resize-hint { border-color: var(--block-border-color); border-radius: var(--button-radius, 6px); color: var(--body-text-color-subdued); background: var(--block-background-fill); box-shadow: var(--kl-shadow); }
 
-  @media (max-width: 767px), (pointer: coarse) {
+  @media (max-width: 767px), (pointer: coarse) and (max-height: 599px) {
     .kl-launcher { left: .65rem; bottom: max(.65rem, env(safe-area-inset-bottom)); }
     .kl-window, .kl-profile-window { border-radius: var(--block-radius, 6px); }
     .kl-window-header { min-height: 3.25rem; }
@@ -946,7 +946,7 @@
   .kl-profile-slider { accent-color: var(--primary-500); }
   .kl-dropdown-item { font-size: var(--kl-type-label); }
 
-  @media (max-width: 767px), (pointer: coarse) {
+  @media (max-width: 767px), (pointer: coarse) and (max-height: 599px) {
     .kl-window,
     .kl-profile-window {
       max-width: calc(100vw - 32px);

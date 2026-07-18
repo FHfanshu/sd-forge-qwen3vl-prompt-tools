@@ -8,6 +8,7 @@ import {
   type QueuedMessage,
   type QueuedMessageInput,
 } from "../contracts";
+import { releaseImageAttachments, retainImageAttachments } from "../attachments";
 
 export interface ChatStore {
   messages: ChatMessage[];
@@ -19,7 +20,7 @@ export interface ChatStore {
   setMessages(messages: ChatMessage[]): void;
   enqueue(message: QueuedMessageInput): void;
   upsertQueue(message: QueuedMessageInput): void;
-  setQueue(messages: QueuedMessage[]): void;
+  setQueue(messages: QueuedMessageInput[]): void;
   removeQueuedMessage(id: string): void;
   clearQueue(): void;
   setAttachments(messageId: string, attachments: ChatAttachment[]): void;
@@ -37,10 +38,17 @@ function readQueue(): QueuedMessage[] {
   if (!storage) return [];
   try {
     const value: unknown = JSON.parse(storage.getItem(QUEUE_STORAGE_KEY) ?? "[]");
-    return Array.isArray(value) ? value.flatMap((item) => {
+    const queue = Array.isArray(value) ? value.flatMap((item) => {
       const parsed = queuedMessageSchema.safeParse(item);
-      return parsed.success ? [parsed.data] : [];
+      if (!parsed.success) return [];
+      return [{
+        ...parsed.data,
+        attachmentCount: Math.max(parsed.data.attachmentCount, parsed.data.attachments.length),
+        attachments: [],
+      }];
     }) : [];
+    storage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(queue));
+    return queue;
   } catch {
     return [];
   }
@@ -61,10 +69,25 @@ function persistQueue(queue: QueuedMessage[]): void {
   const storage = getStorage();
   if (!storage) return;
   try {
-    storage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(queue));
+    storage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(queue.map((message) => ({
+      ...message,
+      attachmentCount: Math.max(message.attachmentCount, message.attachments.length),
+      attachments: [],
+    }))));
   } catch {
     // Queue persistence is best effort in embedded/private contexts.
   }
+}
+
+function newerQueueMessage(current: QueuedMessage, incoming: QueuedMessage): QueuedMessage {
+  if (current.sequence !== undefined && incoming.sequence !== undefined && incoming.sequence < current.sequence) return current;
+  if (current.sequence === incoming.sequence && current.updatedAt !== undefined && incoming.updatedAt !== undefined && incoming.updatedAt < current.updatedAt) return current;
+  return incoming;
+}
+
+function replaceOwnedAttachments(current: ChatAttachment[], next: ChatAttachment[]): void {
+  retainImageAttachments(next);
+  releaseImageAttachments(current);
 }
 
 export const useChatStore = createStore<ChatStore>((set, get) => ({
@@ -72,48 +95,65 @@ export const useChatStore = createStore<ChatStore>((set, get) => ({
   queue: readQueue(),
   activeRequestId: null,
   appendMessage(message) {
-    set((state) => ({ messages: [...state.messages, chatMessageSchema.parse(message)] }));
+    const parsed = chatMessageSchema.parse(message);
+    retainImageAttachments(parsed.attachments);
+    set((state) => ({ messages: [...state.messages, parsed] }));
   },
   upsertMessage(message) {
     const parsed = chatMessageSchema.parse(message);
     set((state) => {
       const index = state.messages.findIndex((item) => item.id === parsed.id);
-      if (index < 0) return { messages: [...state.messages, parsed] };
+      if (index < 0) {
+        retainImageAttachments(parsed.attachments);
+        return { messages: [...state.messages, parsed] };
+      }
       const messages = state.messages.slice();
+      replaceOwnedAttachments(messages[index].attachments, parsed.attachments);
       messages[index] = parsed;
       return { messages };
     });
   },
   updateMessage(id, patch) {
-    set((state) => ({
-      messages: state.messages.map((message) =>
-        message.id === id ? chatMessageSchema.parse({ ...message, ...patch }) : message,
-      ),
-    }));
+    set((state) => ({ messages: state.messages.map((message) => {
+      if (message.id !== id) return message;
+      const next = chatMessageSchema.parse({ ...message, ...patch });
+      replaceOwnedAttachments(message.attachments, next.attachments);
+      return next;
+    }) }));
   },
   setMessages(messages) {
-    set({ messages: messages.map((message) => chatMessageSchema.parse(message)) });
+    const next = messages.map((message) => chatMessageSchema.parse(message));
+    replaceOwnedAttachments(get().messages.flatMap((message) => message.attachments), next.flatMap((message) => message.attachments));
+    set({ messages: next });
   },
   enqueue(message) {
     set((state) => {
-      const queue = [...state.queue, queuedMessageSchema.parse(message)];
+      const parsed = queuedMessageSchema.parse(message);
+      const queue = [...state.queue, { ...parsed, attachmentCount: Math.max(parsed.attachmentCount, parsed.attachments.length), attachments: [] }];
       persistQueue(queue);
       return { queue };
     });
   },
   upsertQueue(message) {
-    const parsed = queuedMessageSchema.parse(message);
+    const value = queuedMessageSchema.parse(message);
+    const parsed = { ...value, attachmentCount: Math.max(value.attachmentCount, value.attachments.length), attachments: [] };
     set((state) => {
       const index = state.queue.findIndex((item) => item.id === parsed.id);
       const queue = state.queue.slice();
       if (index < 0) queue.push(parsed);
-      else queue[index] = parsed;
+      else queue[index] = newerQueueMessage(queue[index], parsed);
       persistQueue(queue);
       return { queue };
     });
   },
   setQueue(messages) {
-    const queue = messages.map((message) => queuedMessageSchema.parse(message));
+    const queue = Array.from(messages.reduce((items, message) => {
+      const value = queuedMessageSchema.parse(message);
+      const parsed = { ...value, attachmentCount: Math.max(value.attachmentCount, value.attachments.length), attachments: [] };
+      const current = items.get(parsed.id);
+      items.set(parsed.id, current ? newerQueueMessage(current, parsed) : parsed);
+      return items;
+    }, new Map<string, QueuedMessage>()).values());
     persistQueue(queue);
     set({ queue });
   },
@@ -131,7 +171,11 @@ export const useChatStore = createStore<ChatStore>((set, get) => ({
   setAttachments(messageId, attachments) {
     set((state) => ({
       messages: state.messages.map((message) => message.id === messageId
-        ? chatMessageSchema.parse({ ...message, attachments })
+        ? (() => {
+          const next = chatMessageSchema.parse({ ...message, attachments });
+          replaceOwnedAttachments(message.attachments, next.attachments);
+          return next;
+        })()
         : message),
     }));
   },
@@ -159,6 +203,7 @@ export const useChatStore = createStore<ChatStore>((set, get) => ({
   reset() {
     activeController?.abort();
     activeController = null;
+    releaseImageAttachments(get().messages.flatMap((message) => message.attachments));
     persistQueue([]);
     set({ messages: [], queue: [], activeRequestId: null });
   },

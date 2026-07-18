@@ -1,7 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { clampWindowLayout, minimumForViewport, readViewportRect } from "../src/window-interactions";
+import { clampWindowLayout, minimumForViewport, readViewportRect, viewportKind } from "../src/window-interactions";
 
 describe("window viewport boundaries", () => {
+  it.each([
+    [390, 844, "mobilePortrait"],
+    [767, 390, "mobileLandscape"],
+    [844, 390, "mobileLandscape"],
+    [768, 1024, "desktop"],
+    [820, 1180, "desktop"],
+    [1180, 820, "desktop"],
+  ] as const)("classifies %sx%s touch viewports as %s", (width, height, expected) => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ matches: true }) });
+
+    expect(viewportKind()).toBe(expected);
+  });
+
   it("shrinks below the logical minimum when the viewport is narrower", () => {
     const layout = clampWindowLayout(
       { left: 12, top: 8, width: 396, height: 620 },

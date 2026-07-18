@@ -9,6 +9,16 @@ import {
   toHostProfilePatch,
 } from "../profile-adapter";
 
+let profileSyncTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleProfileSync(host: NonNullable<ReturnType<typeof getHostApi>>): void {
+  if (profileSyncTimer) clearTimeout(profileSyncTimer);
+  profileSyncTimer = setTimeout(() => {
+    profileSyncTimer = null;
+    void host.syncProfiles().catch(() => undefined);
+  }, 250);
+}
+
 function readHostState(): unknown {
   if (typeof window === "undefined") return null;
   const host = getHostApi(window.kohakuLoom);
@@ -27,7 +37,8 @@ function hostCall(method: keyof NonNullable<ReturnType<typeof getHostApi>>["prof
   if (!action || !host) return null;
   const result = action.apply(host.profileStore, args);
   if (!["load", "current", "teacher", "session", "requestProjection"].includes(method)) {
-    void host.syncProfiles().catch(() => undefined);
+    if (method === "update") scheduleProfileSync(host);
+    else void host.syncProfiles().catch(() => undefined);
   }
   return result;
 }
@@ -186,6 +197,8 @@ export const useProfileStore = createStore<ProfileStore>((set, get) => {
       else apply(hostResult ?? createDefaultProfileState(), get().activeProfileId);
     },
     reset() {
+      if (profileSyncTimer) clearTimeout(profileSyncTimer);
+      profileSyncTimer = null;
       const defaults = createDefaultProfileState();
       set({ ...stateSlice(defaults), selectedProfileId: defaults.activeProfileId, loaded: false });
     },
