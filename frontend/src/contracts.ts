@@ -150,10 +150,12 @@ export const profileSchema = z.object({
   modelInfo: profileModelInfoSchema,
   localModelConfigured: z.boolean(),
   mmprojConfigured: z.boolean(),
+  draftModelConfigured: z.boolean(),
   llamaServerConfigured: z.boolean(),
   nCtx: z.number().int().positive(),
   nGpuLayers: z.number().int(),
   thinking: z.boolean(),
+  unloadAfterTurn: z.boolean(),
 });
 export type Profile = z.infer<typeof profileSchema>;
 
@@ -172,10 +174,12 @@ export const profilePatchSchema = z.object({
   modelInfo: profileModelInfoSchema.partial().optional(),
   modelPath: z.string().optional(),
   mmprojPath: z.string().optional(),
+  draftModelPath: z.string().optional(),
   llamaServerPath: z.string().optional(),
   nCtx: z.number().int().positive().optional(),
   nGpuLayers: z.number().int().optional(),
   thinking: z.boolean().optional(),
+  unloadAfterTurn: z.boolean().optional(),
 });
 export type ProfilePatch = z.infer<typeof profilePatchSchema>;
 

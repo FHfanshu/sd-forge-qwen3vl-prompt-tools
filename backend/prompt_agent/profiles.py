@@ -119,8 +119,6 @@ class ProfileAuthority:
         item = next((profile for profile in state["profiles"] if profile["profile_id"] == profile_id), None)
         if item is None or not item.get("enabled", True):
             raise ValueError("profile must be enabled")
-        if role in {"active", "teacher"} and item["runtime"] == LLAMA_ONCE:
-            raise ValueError(f"{role} profile must support agent streaming")
         if role == "session" and item["runtime"] not in {LLAMA_ENDPOINT, LLAMA_ONCE}:
             raise ValueError("session profile must use a local runtime")
         if role == "naming" and item["runtime"] != LLAMA_ONCE:
@@ -147,7 +145,7 @@ class ProfileAuthority:
         agent_profiles = [
             item["profile_id"]
             for item in profiles
-            if item.get("enabled", True) and item.get("runtime") != LLAMA_ONCE
+            if item.get("enabled", True)
         ]
         first = agent_profiles[0] if agent_profiles else ""
         result = {"version": 1, "profiles": profiles}

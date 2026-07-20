@@ -20,6 +20,7 @@ class StreamRequest:
     top_p: float | None
     max_tokens: int | None
     reasoning: str
+    turn_id: str
 
 
 def parse_stream_request(payload: Any) -> StreamRequest:
@@ -46,7 +47,7 @@ def parse_stream_request(payload: Any) -> StreamRequest:
         raise ValueError("options must be an object")
     forbidden = {
         "api_key", "apiKey", "endpoint", "model", "model_path", "modelPath",
-        "mmproj_path", "mmprojPath", "llama_server_path", "llamaServerPath",
+        "mmproj_path", "mmprojPath", "draft_model_path", "draftModelPath", "llama_server_path", "llamaServerPath",
         "fallback_endpoints", "headers",
     }
     if forbidden.intersection(payload) or forbidden.intersection(options):
@@ -67,6 +68,7 @@ def parse_stream_request(payload: Any) -> StreamRequest:
         top_p=top_p,
         max_tokens=max_tokens,
         reasoning=reasoning,
+        turn_id=_optional_identifier(payload.get("turn_id"), "turn_id", 96),
     )
 
 
@@ -75,6 +77,10 @@ def _identifier(value: Any, field: str, maximum: int) -> str:
     if len(text) > maximum or not _IDENTIFIER_RE.fullmatch(text):
         raise ValueError(f"{field} must be a safe identifier")
     return text
+
+
+def _optional_identifier(value: Any, field: str, maximum: int) -> str:
+    return "" if value is None or value == "" else _identifier(value, field, maximum)
 
 
 def _optional_number(value: Any, field: str, minimum: float, maximum: float) -> float | None:

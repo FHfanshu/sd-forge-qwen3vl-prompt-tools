@@ -33,6 +33,7 @@ def public_models(state: dict[str, Any]) -> dict[str, Any]:
             "modelInfo": _model_info(model_info),
             "localModelConfigured": bool(profile.get("localModelConfigured", profile.get("local_model_configured", False))),
             "mmprojConfigured": bool(profile.get("mmprojConfigured", profile.get("mmproj_configured", False))),
+            "draftModelConfigured": bool(profile.get("draftModelConfigured", profile.get("draft_model_configured", False))),
             "llamaServerConfigured": bool(profile.get("llamaServerConfigured", profile.get("llama_server_configured", False))),
         })
     return {"version": 1, "models": models}

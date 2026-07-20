@@ -35,9 +35,10 @@ export const createPromptAgentStream = (
   profileId: () => string,
   endpoint = "/prompt-agent/api/stream",
   fetchImpl: typeof fetch = fetch,
+  turnId: () => string = () => "",
 ): StreamFn => (model, context, options = {}) => {
   const stream = createAssistantMessageEventStream();
-  void consumeProxy(stream, model, context, options, profileId(), endpoint, fetchImpl);
+  void consumeProxy(stream, model, context, options, profileId(), endpoint, fetchImpl, turnId());
   return stream;
 };
 
@@ -49,6 +50,7 @@ async function consumeProxy(
   profileId: string,
   endpoint: string,
   fetchImpl: typeof fetch,
+  turnId: string,
 ): Promise<void> {
   const partial: AssistantMessage = {
     role: "assistant",
@@ -70,6 +72,7 @@ async function consumeProxy(
       body: JSON.stringify({
         profile_id: profileId,
         request_id: crypto.randomUUID(),
+        turn_id: turnId || undefined,
         context,
         options: {
           temperature: options.temperature,

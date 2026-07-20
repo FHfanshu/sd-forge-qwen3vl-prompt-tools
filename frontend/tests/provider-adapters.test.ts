@@ -39,7 +39,7 @@ describe("provider adapter registry", () => {
     const profile = { protocol: "openai-chat-completions", runtime: "remote-http", capabilities: { ...capabilities, tools: false } };
     expect(adapter.effectiveCapabilities(profile).tools).toBe(false);
     expect(adapter.unsupportedCapabilities(profile)).toContain("tools");
-    expect(providerRegistry.get("llama-cpp").unsupportedCapabilities({ runtime: "llama-once" })).toEqual(expect.arrayContaining(["streaming", "tools", "abort"]));
+    expect(providerRegistry.get("llama-cpp").unsupportedCapabilities({ runtime: "llama-once" })).toEqual([]);
   });
 
   it("returns the shared proxy StreamFn and never needs provider credentials", async () => {

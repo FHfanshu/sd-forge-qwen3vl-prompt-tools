@@ -198,8 +198,8 @@ class ProviderAdapterContractTests(unittest.TestCase):
         self.assertFalse(report["effective"]["tools"])
         self.assertIn("tools", report["unsupported"])
         once_report = capability_report(profile("llama-cpp") | {"runtime": "llama-once"})
-        self.assertFalse(once_report["supported"]["streaming"])
-        self.assertIn("abort", once_report["unsupported"])
+        self.assertTrue(once_report["supported"]["streaming"])
+        self.assertNotIn("abort", once_report["unsupported"])
 
     def test_each_adapter_normalizes_text_reasoning_and_usage(self):
         cases = {

@@ -29,7 +29,7 @@ export interface ProviderAdapter {
   readonly capabilities: ModelCapabilities;
   matches(profile: ProviderProfileMetadata): boolean;
   toPiModel(model: ProviderModel): Model<any>;
-  createStream(profileId: string): StreamFn;
+  createStream(profileId: string, turnId?: () => string): StreamFn;
   stream(model: Model<any>, context: Context, options?: SimpleStreamOptions): ReturnType<StreamFn>;
   effectiveCapabilities(profile: ProviderProfileMetadata): ModelCapabilities;
   unsupportedCapabilities(profile: ProviderProfileMetadata): ProviderCapability[];
@@ -41,7 +41,7 @@ export function createProviderAdapter(
   matches: (profile: ProviderProfileMetadata) => boolean,
   capabilitiesForProfile: (profile: ProviderProfileMetadata) => ModelCapabilities = () => capabilities,
 ): ProviderAdapter {
-  const createStream = (profileId: string): StreamFn => createPromptAgentStream(() => profileId);
+  const createStream = (profileId: string, turnId: () => string = () => ""): StreamFn => createPromptAgentStream(() => profileId, undefined, fetch, turnId);
   const modelProfileIds = new WeakMap<object, string>();
   const effectiveCapabilities = (profile: ProviderProfileMetadata): ModelCapabilities => {
     const declared = profile.capabilities ?? {};

@@ -27,6 +27,7 @@ const modelState = {
     },
     localModelConfigured: false,
     mmprojConfigured: false,
+    draftModelConfigured: false,
     llamaServerConfigured: false,
   }],
 };
@@ -75,10 +76,12 @@ describe("profile API endpoints", () => {
         modelInfo: modelState.models[0].modelInfo,
         localModelConfigured: false,
         mmprojConfigured: false,
+        draftModelConfigured: false,
         llamaServerConfigured: false,
         nCtx: 131072,
         nGpuLayers: -1,
         thinking: false,
+        unloadAfterTurn: true,
       }],
     };
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify(responseState), { status: 200 }));

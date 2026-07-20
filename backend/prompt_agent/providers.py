@@ -12,7 +12,7 @@ import httpx
 
 from .contracts import StreamRequest
 from .errors import sanitize_provider_error
-from .profile_contracts import LLAMA_ONCE, normalize_profile
+from .profile_contracts import normalize_profile
 from .provider_adapters.common import requested_capability, usage
 from .provider_adapters.registry import UnsupportedProviderError, adapter_for_profile, capability_report as profile_capability_report, provider_id_for
 
@@ -30,13 +30,15 @@ def public_profile_state(state: dict[str, Any]) -> dict[str, Any]:
             provider_capabilities = {"supported": {}, "effective": {}, "unsupported": ["provider"]}
         model_path = profile.get("model_path")
         mmproj_path = profile.get("mmproj_path")
+        draft_model_path = profile.get("draft_model_path")
         llama_server_path = profile.get("llama_server_path")
-        for field in ("api_key", "endpoint", "fallback_endpoints", "model_path", "mmproj_path", "llama_server_path"):
+        for field in ("api_key", "endpoint", "fallback_endpoints", "model_path", "mmproj_path", "draft_model_path", "llama_server_path"):
             profile.pop(field, None)
         profile["provider_id"] = resolved_provider_id
         profile["model_configured"] = bool(profile.get("model") or profile.get("model_id"))
         profile["local_model_configured"] = bool(model_path)
         profile["mmproj_configured"] = bool(mmproj_path)
+        profile["draft_model_configured"] = bool(draft_model_path)
         profile["llama_server_configured"] = bool(llama_server_path)
         profile["provider_capabilities"] = provider_capabilities
     return result
@@ -80,17 +82,6 @@ async def stream_profile(request: StreamRequest, profile: dict[str, Any]) -> Asy
         yield _event("start")
         yield _event("error", reason="error", errorCode="profile_disabled", errorMessage="The selected profile is disabled.", usage=_usage())
         return
-    if normalized["runtime"] == LLAMA_ONCE:
-        yield _event("start")
-        yield _event(
-            "error",
-            reason="error",
-            errorCode="unsupported_runtime",
-            errorMessage="llama-once is not available through the streaming proxy yet.",
-            usage=_usage(),
-        )
-        return
-
     try:
         adapter = adapter_for_profile(normalized)
         provider_id = adapter.id

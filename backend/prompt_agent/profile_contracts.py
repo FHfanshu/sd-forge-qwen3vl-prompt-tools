@@ -60,10 +60,12 @@ def normalize_profile(payload: dict[str, Any]) -> dict[str, Any]:
         "model_info": _model_info(profile.get("model_info", profile.get("modelInfo", {})) or {}),
         "model_path": _string(profile, "model_path", aliases=("modelPath",)),
         "mmproj_path": _string(profile, "mmproj_path", aliases=("mmprojPath",)),
+        "draft_model_path": _string(profile, "draft_model_path", aliases=("draftModelPath",)),
         "llama_server_path": _string(profile, "llama_server_path", aliases=("llamaServerPath",)),
         "n_ctx": _integer(profile, "n_ctx", 131072, aliases=("nCtx",)),
         "n_gpu_layers": _integer(profile, "n_gpu_layers", -1, aliases=("nGpuLayers",)),
         "thinking": _boolean(profile, "thinking", False),
+        "unload_after_turn": _boolean(profile, "unload_after_turn", True),
     }
     return result
 
@@ -87,10 +89,12 @@ def public_profile(profile: dict[str, Any], *, has_api_key: bool) -> dict[str, A
         "modelInfo": _public_model_info(profile["model_info"]),
         "localModelConfigured": bool(profile["model_path"]),
         "mmprojConfigured": bool(profile["mmproj_path"]),
+        "draftModelConfigured": bool(profile["draft_model_path"]),
         "llamaServerConfigured": bool(profile["llama_server_path"]),
         "nCtx": profile["n_ctx"],
         "nGpuLayers": profile["n_gpu_layers"],
         "thinking": profile["thinking"],
+        "unloadAfterTurn": profile["unload_after_turn"],
     }
     if profile.get("provider_id"):
         public["providerId"] = profile["provider_id"]

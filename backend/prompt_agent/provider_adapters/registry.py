@@ -36,17 +36,6 @@ ADAPTERS = {
     "llama-cpp": ProviderAdapter("llama-cpp", LLAMA_CPP_CAPABILITIES, stream_llama_cpp),
 }
 
-LLAMA_ONCE_CAPABILITIES = AdapterCapabilities(
-    streaming=False,
-    tools=False,
-    vision=False,
-    reasoning=False,
-    attachments=False,
-    system_prompt=True,
-    usage=False,
-    abort=False,
-)
-
 ALIASES = {
     "openai": "openai-compatible",
     "openai-compatible": "openai-compatible",
@@ -100,5 +89,4 @@ def adapter_for_profile(profile: dict[str, Any]) -> ProviderAdapter:
 
 def capability_report(profile: dict[str, Any]) -> dict[str, Any]:
     adapter = adapter_for_profile(profile)
-    supported = LLAMA_ONCE_CAPABILITIES if adapter.id == "llama-cpp" and profile.get("runtime") == "llama-once" else adapter.capabilities
-    return build_capability_report(profile, supported)
+    return build_capability_report(profile, adapter.capabilities)

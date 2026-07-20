@@ -160,6 +160,7 @@ class PromptAgentApiTests(unittest.TestCase):
                     "enabled": False,
                     "model_path": "C:/private/model.gguf",
                     "mmproj_path": "C:/private/mmproj.gguf",
+                    "draft_model_path": "C:/private/draft.gguf",
                     "llama_server_path": "C:/private/llama-server.exe",
                 })
             app = FastAPI()
@@ -170,7 +171,7 @@ class PromptAgentApiTests(unittest.TestCase):
             payload = response.json()
             self.assertEqual({"version", "models"}, set(payload))
             serialized = response.text
-            for forbidden in ("secret-value", "C:/private", "model_path", "mmproj_path", "llama_server_path"):
+            for forbidden in ("secret-value", "C:/private", "model_path", "mmproj_path", "draft_model_path", "llama_server_path"):
                 self.assertNotIn(forbidden, serialized)
             remote = next(item for item in payload["models"] if item["id"] == "remote")
             self.assertEqual("safe-model", remote["modelId"])
@@ -260,7 +261,7 @@ class PromptAgentApiTests(unittest.TestCase):
             self.assertTrue(remote["hasApiKey"])
             self.assertNotIn("secret-value", str(state))
 
-    def test_llama_once_cannot_be_selected_as_the_active_agent_profile(self):
+    def test_llama_once_can_be_selected_as_the_active_agent_profile(self):
         with TemporaryDirectory() as directory:
             authority = ProfileAuthority(Path(directory))
             authority.create({
@@ -271,10 +272,8 @@ class PromptAgentApiTests(unittest.TestCase):
                 "runtime": "llama-once",
                 "model_path": "C:/models/local-model.gguf",
             })
-            with self.assertRaisesRegex(ValueError, "agent streaming"):
-                authority.set_default("active", "one-shot")
-            with self.assertRaisesRegex(ValueError, "agent streaming"):
-                authority.set_default("teacher", "one-shot")
+            self.assertEqual("one-shot", authority.set_default("active", "one-shot")["activeProfileId"])
+            self.assertEqual("one-shot", authority.set_default("teacher", "one-shot")["teacherProfileId"])
 
     def test_openai_connection_test_performs_bounded_models_request(self):
         calls: list[tuple[str, dict[str, str]]] = []

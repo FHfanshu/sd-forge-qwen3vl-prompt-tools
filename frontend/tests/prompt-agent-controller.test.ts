@@ -152,4 +152,37 @@ describe("PromptAgentController recovery", () => {
     expect(runtime.getSystemPrompt()).toContain("search_danbooru_tags");
     controller.destroy();
   });
+
+  it("keeps llama-once alive across provider rounds and stops it after the complete turn", async () => {
+    const profiles = createDefaultProfileState();
+    const local = profiles.profiles.find((profile) => profile.runtime === "llama-once")!;
+    local.enabled = true;
+    local.capabilities.streaming = true;
+    profiles.activeProfileId = local.id;
+    profiles.teacherProfileId = local.id;
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://localhost");
+      calls.push(url.pathname);
+      if (url.pathname === "/prompt-agent/api/profiles") return new Response(JSON.stringify(profiles), { status: 200 });
+      if (url.pathname.endsWith("/local-runtime/start") || url.pathname.endsWith("/local-runtime/stop")) return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      return new Response([
+        'data: {"type":"start"}',
+        'data: {"type":"text_start","contentIndex":0}',
+        'data: {"type":"text_delta","contentIndex":0,"delta":"Done"}',
+        'data: {"type":"text_end","contentIndex":0}',
+        'data: {"type":"done","reason":"stop"}',
+        "",
+      ].join("\n\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    }));
+    repository.putMessage.mockImplementation(async () => undefined);
+    const controller = new PromptAgentController(repository);
+    await controller.mount();
+
+    await controller.actions.sendMessage({ text: "Hello", attachments: [], reasoning: "none" });
+
+    expect(calls.indexOf("/prompt-agent/api/local-runtime/start")).toBeLessThan(calls.indexOf("/prompt-agent/api/stream"));
+    expect(calls.indexOf("/prompt-agent/api/stream")).toBeLessThan(calls.indexOf("/prompt-agent/api/local-runtime/stop"));
+    controller.destroy();
+  });
 });

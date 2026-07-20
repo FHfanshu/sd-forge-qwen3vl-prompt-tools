@@ -9,6 +9,7 @@ from .forge_tools import (
     validate_forge_tool_request,
 )
 from .models import public_models
+from .local_runtime import LocalLlamaRuntime, LocalRuntimeError
 from .profile_connection import ConnectionTestError, test_profile_connection
 from .profiles import ProfileAuthority
 from .providers import provider_catalog, public_profile_state, stream_profile
@@ -31,7 +32,7 @@ def health_payload() -> dict[str, Any]:
             "provider_proxy": True,
             "forge_tools": True,
             "profiles": True,
-            "local_models": False,
+            "local_models": True,
         },
     }
 
@@ -45,6 +46,10 @@ def register_prompt_agent_api(app: Any, profile_authority: ProfileAuthority | No
         return
     setattr(state, _REGISTRATION_MARKER, True)
     profiles = profile_authority or ProfileAuthority()
+    local_runtime = LocalLlamaRuntime()
+    setattr(state, "_prompt_agent_local_runtime", local_runtime)
+    if hasattr(app, "add_event_handler"):
+        app.add_event_handler("shutdown", local_runtime.close)
 
     @app.get(f"{API_PREFIX}/health")
     async def prompt_agent_health() -> dict[str, Any]:
@@ -166,7 +171,11 @@ def register_prompt_agent_api(app: Any, profile_authority: ProfileAuthority | No
                     "profile_id": profile_id,
                 },
             ) from error
+        turn_id = f"connection-test:{profile_id}"
         try:
+            if profile.get("runtime") == "llama-once":
+                await local_runtime.start_turn(turn_id, profile)
+                profile = await local_runtime.stream_profile(turn_id, profile)
             return await test_profile_connection(profile)
         except ConnectionTestError as error:
             raise HTTPException(
@@ -181,6 +190,11 @@ def register_prompt_agent_api(app: Any, profile_authority: ProfileAuthority | No
                     "profile_id": profile_id,
                 },
             ) from error
+        except LocalRuntimeError as error:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"ok": False, "error": {"code": error.code, "message": error.message, "retryable": True}, "profile_id": profile_id},
+            ) from error
         except Exception as error:  # noqa: BLE001
             raise HTTPException(
                 status_code=502,
@@ -194,12 +208,40 @@ def register_prompt_agent_api(app: Any, profile_authority: ProfileAuthority | No
                     "profile_id": profile_id,
                 },
             ) from error
+        finally:
+            if profile.get("runtime") in {"llama-once", "llama-endpoint"} and turn_id.startswith("connection-test:"):
+                await local_runtime.stop_turn(turn_id, force=True)
+
+    @app.post(f"{API_PREFIX}/local-runtime/start")
+    async def prompt_agent_local_runtime_start(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        try:
+            profile_id, turn_id = _local_runtime_request(payload)
+            return await local_runtime.start_turn(turn_id, profiles.resolve(profile_id))
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="profile not found") from error
+        except (OSError, RuntimeError, ValueError, LocalRuntimeError) as error:
+            status = error.status_code if isinstance(error, LocalRuntimeError) else 422
+            message = error.message if isinstance(error, LocalRuntimeError) else str(error)
+            raise HTTPException(status_code=status, detail=message) from error
+
+    @app.post(f"{API_PREFIX}/local-runtime/stop")
+    async def prompt_agent_local_runtime_stop(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        try:
+            _profile_id, turn_id = _local_runtime_request(payload)
+            force = payload.get("force", False)
+            if not isinstance(force, bool):
+                raise ValueError("force must be a boolean")
+            return await local_runtime.stop_turn(turn_id, force=force)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     @app.post(f"{API_PREFIX}/stream")
     async def prompt_agent_stream(payload: dict[str, Any] = Body(...)):
         try:
             request = parse_stream_request(payload)
             profile = profiles.resolve(request.profile_id)
+            if profile.get("runtime") == "llama-once":
+                profile = await local_runtime.stream_profile(request.turn_id, profile)
         except KeyError as error:
             detail = PromptAgentError(
                 "unknown_profile",
@@ -207,6 +249,9 @@ def register_prompt_agent_api(app: Any, profile_authority: ProfileAuthority | No
                 request_id=str(payload.get("request_id") or ""),
             )
             raise HTTPException(status_code=404, detail=detail.payload()["error"]) from error
+        except LocalRuntimeError as error:
+            detail = PromptAgentError(error.code, error.message, request_id=str(payload.get("request_id") or ""))
+            raise HTTPException(status_code=error.status_code, detail=detail.payload()["error"]) from error
         except (RuntimeError, ValueError) as error:
             detail = PromptAgentError(
                 "validation_error",
@@ -223,3 +268,17 @@ def register_prompt_agent_api(app: Any, profile_authority: ProfileAuthority | No
                 "X-Request-ID": request.request_id,
             },
         )
+
+
+def _local_runtime_request(payload: Any) -> tuple[str, str]:
+    import re
+
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be an object")
+    values = []
+    for key in ("profile_id", "turn_id"):
+        value = str(payload.get(key) or "")
+        if len(value) > 96 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,95}", value):
+            raise ValueError(f"{key} must be a safe identifier")
+        values.append(value)
+    return values[0], values[1]

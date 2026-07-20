@@ -20,6 +20,7 @@ import { PiPromptAgentRuntime, type PromptAgentRuntime } from "./agent-runtime";
 import type { AgentRuntimeState } from "./runtime-state";
 import { createForgeToolRegistry } from "../tools/tool-registry";
 import { getHostApi, promptAgentNamespace } from "../bridge";
+import { startLocalRuntime, stopLocalRuntime } from "../profile-api";
 
 const LAST_SESSION_PREFERENCE = "last-session-id";
 export const FORGE_AGENT_SYSTEM_PROMPT = "You are the SD Forge Neo Prompt Agent. Forge state is live context: select the positive or negative field when reading/editing prompts, read prompts or generation parameters before changing them, use the returned latest hash/context hash, and make only bounded visible-control changes. For non-empty prompts use patches or diff; full prompt overwrite is allowed only when the field is empty. Prefer search_danbooru_tags for unfamiliar tag concepts. Never request paths or provider credentials.";
@@ -34,6 +35,9 @@ export class PromptAgentController {
   private currentSession: PromptAgentSession | null = null;
   private interruptedRecords: PromptAgentMessage[] = [];
   private requestId: string | null = null;
+  private localRuntimeProfileId: string | null = null;
+  private localRuntimeStartController: AbortController | null = null;
+  private forceLocalRuntimeStop = false;
   private persistenceQueue: Promise<void> = Promise.resolve();
   private mounted = false;
   private destroyed = false;
@@ -83,6 +87,9 @@ export class PromptAgentController {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.forceLocalRuntimeStop = true;
+    this.localRuntimeStartController?.abort();
+    if (this.localRuntimeProfileId && this.requestId) void stopLocalRuntime(this.localRuntimeProfileId, this.requestId, true).catch(() => undefined);
     this.unsubscribeRuntime?.();
     this.unsubscribeRuntime = null;
     this.runtime?.destroy();
@@ -146,13 +153,29 @@ export class PromptAgentController {
     useChatStore.getState().setActiveRequest(requestId);
     const images = input.attachments.map(toImageContent);
     const reasoningLevel = input.reasoning === "none" || input.reasoning === "max" ? (input.reasoning === "none" ? "off" : "xhigh") : input.reasoning;
+    const profile = profileById(this.currentSession.profileId) ?? activeProfile();
+    const localStartController = new AbortController();
+    const usesLocalRuntime = profile.runtime === "llama-once";
+    if (usesLocalRuntime) {
+      this.localRuntimeProfileId = profile.id;
+      this.localRuntimeStartController = localStartController;
+      this.forceLocalRuntimeStop = false;
+    }
     try {
+      if (usesLocalRuntime) await startLocalRuntime(profile.id, requestId, localStartController.signal);
       await this.runtime.submit({ text: input.text, images, reasoningLevel });
       await this.queueRuntimePersistence(this.runtime.getState(), this.currentSession.id);
       await this.touchSession(input.text);
       await this.loadHistory();
       return { kind: "local", id: requestId };
     } finally {
+      if (usesLocalRuntime) {
+        try { await stopLocalRuntime(profile.id, requestId, this.forceLocalRuntimeStop); }
+        catch (error) { useRuntimeStore.getState().setError(error instanceof Error ? error.message : String(error)); }
+      }
+      if (this.localRuntimeStartController === localStartController) this.localRuntimeStartController = null;
+      if (this.localRuntimeProfileId === profile.id) this.localRuntimeProfileId = null;
+      this.forceLocalRuntimeStop = false;
       this.requestId = null;
       useChatStore.getState().setActiveRequest(null);
       useRuntimeStore.getState().setWorking("idle");
@@ -162,6 +185,9 @@ export class PromptAgentController {
   private stopRequest(): void {
     if (!this.runtime || !this.requestId) return;
     useRuntimeStore.getState().setWorking("cancelling");
+    this.forceLocalRuntimeStop = true;
+    this.localRuntimeStartController?.abort();
+    if (this.localRuntimeProfileId) void stopLocalRuntime(this.localRuntimeProfileId, this.requestId, true).catch(() => undefined);
     this.runtime.abort();
   }
 
@@ -202,7 +228,7 @@ export class PromptAgentController {
       messages,
       tools: toolRegistry.list(),
       thinkingLevel: normalizedThinking(session.reasoningLevel),
-      streamFn: provider.createStream(profile.id),
+      streamFn: provider.createStream(profile.id, () => this.requestId ?? ""),
       afterToolCall: async (context) => {
         if (context.isError && toolRegistry.permission(context.toolCall.name)) return { terminate: true };
         return undefined;

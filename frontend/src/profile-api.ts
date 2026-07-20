@@ -16,6 +16,7 @@ const publicModelSchema = z.object({
   modelInfo: profileModelInfoSchema,
   localModelConfigured: z.boolean(),
   mmprojConfigured: z.boolean(),
+  draftModelConfigured: z.boolean(),
   llamaServerConfigured: z.boolean(),
 });
 const publicModelStateSchema = z.object({ version: z.literal(1), models: z.array(publicModelSchema) });
@@ -86,4 +87,12 @@ export function restoreDefaultProfiles(): Promise<ProfileState> {
 
 export function testProfileConnection(profileId: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
   return request<Record<string, unknown>>(`/profiles/${encodeURIComponent(profileId)}/connection-test`, { method: "POST", signal });
+}
+
+export function startLocalRuntime(profileId: string, turnId: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>("/local-runtime/start", { method: "POST", body: JSON.stringify({ profile_id: profileId, turn_id: turnId }), signal });
+}
+
+export function stopLocalRuntime(profileId: string, turnId: string, force = false): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>("/local-runtime/stop", { method: "POST", body: JSON.stringify({ profile_id: profileId, turn_id: turnId, force }), keepalive: true });
 }

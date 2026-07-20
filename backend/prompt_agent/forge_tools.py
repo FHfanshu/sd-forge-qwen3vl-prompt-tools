@@ -25,6 +25,7 @@ _FORBIDDEN_KEYS = frozenset({
     "model_path",
     "modelpath",
     "mmproj_path",
+    "draft_model_path",
     "mmprojpath",
     "llama_server_path",
     "llamaserverpath",

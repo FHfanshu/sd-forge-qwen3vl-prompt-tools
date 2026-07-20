@@ -179,11 +179,12 @@ Exit criteria:
 - each adapter has contract tests for text, tools, errors, and abort;
 - unsupported capabilities are explicit in the UI.
 
-The supported llama.cpp adapter targets its OpenAI-compatible endpoint. The
-separate `llama-once` profile runtime remains explicitly unsupported for agent
-streaming and teacher requests rather than silently starting another loop.
-Effective unsupported capabilities are shown in profile settings, and profiles
-without streaming cannot become the active or teacher agent profile.
+The llama.cpp adapter supports both a resident OpenAI-compatible endpoint and
+an on-demand `llama-once` process owned by Python. A single on-demand process
+is reused across every model/tool round in one frontend Pi agent turn, then is
+terminated after the final reply, failure, or abort by default. Profile settings
+can disable reply-end unloading to keep the owned process resident for reuse.
+Local paths stay server-owned and stale interrupted turns are reclaimed.
 
 ## Phase 6: Forge Agent Tools
 

@@ -11,7 +11,7 @@ import httpx
 
 from prompt_agent.provider_errors import safe_provider_error
 
-from .profile_contracts import GEMINI_NATIVE, LLAMA_ONCE, OPENAI_CHAT_COMPLETIONS, normalize_profile
+from .profile_contracts import GEMINI_NATIVE, OPENAI_CHAT_COMPLETIONS, normalize_profile
 
 
 CONNECTION_TIMEOUT_SECONDS = 8.0
@@ -38,12 +38,6 @@ async def test_profile_connection(profile: dict[str, Any]) -> dict[str, Any]:
         raise ConnectionTestError("invalid_profile", "The model profile configuration is invalid.", status_code=422) from error
     if not normalized.get("enabled", True):
         raise ConnectionTestError("profile_disabled", "The selected model profile is disabled.", status_code=409)
-    if normalized["runtime"] == LLAMA_ONCE:
-        raise ConnectionTestError(
-            "unsupported_runtime",
-            "One-shot local profiles cannot be connection-tested without starting a model process.",
-            status_code=422,
-        )
     if normalized["protocol"] not in {OPENAI_CHAT_COMPLETIONS, GEMINI_NATIVE}:
         raise ConnectionTestError("unsupported_protocol", "The selected model protocol is not supported.", status_code=422)
 

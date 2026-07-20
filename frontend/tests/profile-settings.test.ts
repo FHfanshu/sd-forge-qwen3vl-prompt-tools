@@ -214,18 +214,29 @@ describe("Svelte profile settings", () => {
     expect(screen.queryByRole("tab", { name: "Connection" })).not.toBeInTheDocument();
   });
 
-  it("shows effective unsupported capabilities and blocks llama-once activation", () => {
+  it("allows a configured llama-once profile to become the active agent", () => {
     const local = useProfileStore.getState().profiles.find((profile) => profile.runtime === "llama-once");
     expect(local).toBeDefined();
     useProfileStore.getState().updateProfile(local!.id, { enabled: true });
     useProfileStore.getState().selectProfile(local!.id);
     render(ProfileSettings, { open: true, onclose: () => undefined });
 
-    expect(screen.getByRole("status")).toHaveTextContent("Agent chat is unavailable for this runtime");
-    expect(screen.getByRole("status")).toHaveTextContent("Streaming");
-    expect(screen.getByRole("status")).toHaveTextContent("Tool calling");
-    expect(screen.getByRole("status")).toHaveTextContent("Vision input");
-    expect(screen.getByRole("button", { name: "Use model" })).toBeDisabled();
+    expect(screen.queryByText("Agent chat is unavailable for this runtime")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use model" })).toBeEnabled();
+  });
+
+  it("defaults local one-shot profiles to unloading after each complete reply", async () => {
+    const user = userEvent.setup();
+    const local = useProfileStore.getState().profiles.find((profile) => profile.runtime === "llama-once");
+    expect(local?.unloadAfterTurn).toBe(true);
+    useProfileStore.getState().selectProfile(local!.id);
+    render(ProfileSettings, { open: true, onclose: () => undefined });
+    await user.click(screen.getByRole("tab", { name: "Local" }));
+
+    const toggle = screen.getByRole("switch", { name: "Unload local model after each reply" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    await user.click(toggle);
+    expect(useProfileStore.getState().profiles.find((profile) => profile.id === local!.id)?.unloadAfterTurn).toBe(false);
   });
 
   it("keeps local paths out of profile state and submits them only on explicit save", async () => {

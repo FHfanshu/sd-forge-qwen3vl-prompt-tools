@@ -171,10 +171,12 @@ export function normalizeProfile(raw: unknown, fallback?: Partial<Profile>): Pro
     modelInfo,
     localModelConfigured: booleanValue(source, ["localModelConfigured", "local_model_configured"], booleanValue(base, ["localModelConfigured", "local_model_configured"], false)),
     mmprojConfigured: booleanValue(source, ["mmprojConfigured", "mmproj_configured"], booleanValue(base, ["mmprojConfigured", "mmproj_configured"], false)),
+    draftModelConfigured: booleanValue(source, ["draftModelConfigured", "draft_model_configured"], booleanValue(base, ["draftModelConfigured", "draft_model_configured"], false)),
     llamaServerConfigured: booleanValue(source, ["llamaServerConfigured", "llama_server_configured"], booleanValue(base, ["llamaServerConfigured", "llama_server_configured"], false)),
     nCtx: Math.round(numberValue(source, ["nCtx", "n_ctx", "localNCtx", "local_n_ctx"], numberValue(base, ["nCtx", "n_ctx"], 16384), 1024, 1048576)),
     nGpuLayers: Math.round(numberValue(source, ["nGpuLayers", "n_gpu_layers", "localNGpuLayers", "local_n_gpu_layers"], numberValue(base, ["nGpuLayers", "n_gpu_layers"], -1), -1, 10000)),
     thinking: booleanValue(source, ["thinking", "localTextThinking", "local_text_thinking", "enableThinking"], booleanValue(base, ["thinking"], false)),
+    unloadAfterTurn: booleanValue(source, ["unloadAfterTurn", "unload_after_turn"], booleanValue(base, ["unloadAfterTurn", "unload_after_turn"], true)),
   };
   if (providerId) normalized.providerId = providerId;
   if (normalized.runtime !== "remote-http" && ["gemini-native", "anthropic-native"].includes(normalized.protocol)) normalized.protocol = "openai-chat-completions";
@@ -240,7 +242,7 @@ export function toHostProfilePatch(patch: ProfilePatch | Partial<Profile>): Reco
   const source = profilePatchSchema.parse(patch) as RecordValue;
   const result: RecordValue = {};
   const copy = (camel: string, snake: string) => { if (source[camel] !== undefined) result[snake] = source[camel]; };
-  ["providerId", "displayName", "modelId", "enabled", "protocol", "runtime", "endpoint", "fallbackEndpoints", "hasApiKey", "modelPath", "mmprojPath", "llamaServerPath", "nCtx", "nGpuLayers", "thinking"].forEach((key) => {
+  ["providerId", "displayName", "modelId", "enabled", "protocol", "runtime", "endpoint", "fallbackEndpoints", "hasApiKey", "modelPath", "mmprojPath", "draftModelPath", "llamaServerPath", "nCtx", "nGpuLayers", "thinking", "unloadAfterTurn"].forEach((key) => {
     const snake = key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
     copy(key, snake);
   });
