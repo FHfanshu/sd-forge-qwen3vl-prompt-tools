@@ -198,12 +198,15 @@ read_negative_prompt
 edit_negative_prompt
 list_resources
 read_resource_metadata
-ask_teacher
 read_generation_parameters
 apply_generation_parameters
 list_models
 list_loras
 list_embeddings
+search_danbooru_tags
+inspect_danbooru_tag
+inspect_danbooru_tags
+related_danbooru_tags
 ```
 
 Every tool needs a frontend TypeBox schema, backend validation, timeout,
@@ -217,9 +220,11 @@ Exit criteria:
 
 Frontend TypeBox schemas and Python validation cover every listed tool. Prompt
 and generation mutations are freshness guarded, nested patch and generation
-values are revalidated, catalog output is a logical-ID allowlist, and teacher
-errors use a sanitized public projection. Browser-host prompt and generation
-tools call the Python validation boundary before reading or mutating Forge DOM.
+values are revalidated, and catalog output is a logical-ID allowlist. Full
+prompt overwrite is allowed only when the current field is empty. Danbooru tag
+tools execute through the existing resource host path. `ask_teacher` is not
+part of the agent tool surface. Browser-host prompt and generation tools call
+the Python validation boundary before reading or mutating Forge DOM.
 
 ## Phase 7: Profiles
 

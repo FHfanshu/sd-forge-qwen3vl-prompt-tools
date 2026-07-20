@@ -12,12 +12,15 @@ const TOOL_NAMES = [
   "edit_negative_prompt",
   "list_resources",
   "read_resource_metadata",
-  "ask_teacher",
   "read_generation_parameters",
   "apply_generation_parameters",
   "list_models",
   "list_loras",
   "list_embeddings",
+  "search_danbooru_tags",
+  "inspect_danbooru_tag",
+  "inspect_danbooru_tags",
+  "related_danbooru_tags",
 ] as const;
 
 function host(result: unknown = { ok: true, value: "done" }) {
@@ -60,12 +63,15 @@ describe("Forge Agent Tools", () => {
       edit_negative_prompt: { base_hash: "hash" },
       list_resources: { kind: "style" },
       read_resource_metadata: { kind: "style", id: "style" },
-      ask_teacher: { question: "question" },
       read_generation_parameters: {},
       apply_generation_parameters: { context_hash: "hash", parameters: {} },
       list_models: {},
       list_loras: {},
       list_embeddings: {},
+      search_danbooru_tags: { queries: ["long hair"] },
+      inspect_danbooru_tag: { name: "1girl" },
+      inspect_danbooru_tags: { names: ["1girl", "blue eyes"] },
+      related_danbooru_tags: { name: "1girl" },
     } as const;
     expect(tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
     for (const name of TOOL_NAMES) {

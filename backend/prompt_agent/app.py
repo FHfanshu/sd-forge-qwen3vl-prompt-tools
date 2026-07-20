@@ -5,12 +5,8 @@ from typing import Any
 from .contracts import parse_stream_request
 from .errors import PromptAgentError
 from .forge_tools import (
-    ForgeTeacherError,
     ForgeToolValidationError,
-    TeacherRequest,
-    ask_teacher_once,
     execute_catalog_tool,
-    public_teacher_error,
     validate_forge_tool_request,
 )
 from .models import public_models
@@ -140,20 +136,9 @@ def register_prompt_agent_api(app: Any, profile_authority: ProfileAuthority | No
             arguments = validate_forge_tool_request(tool, payload.get("arguments", {}))
             if tool in {"list_models", "list_loras", "list_embeddings"}:
                 return execute_catalog_tool(tool, arguments)
-            if tool != "ask_teacher":
-                raise ForgeToolValidationError("This Forge tool must execute in the browser Forge host.")
-            state = profiles.list_state()
-            teacher_id = str(state.get("teacher_profile_id") or state.get("teacherProfileId") or "")
-            if not teacher_id:
-                raise ForgeToolValidationError("No teacher profile is selected.")
-            teacher_profile = profiles.resolve(teacher_id)
-            return await ask_teacher_once(TeacherRequest(**arguments), teacher_profile)
-        except KeyError as error:
-            raise HTTPException(status_code=404, detail={"ok": False, "error": {"code": "teacher_profile_missing", "message": "The selected teacher profile is unavailable.", "retryable": False}}) from error
+            raise ForgeToolValidationError("This Forge tool must execute in the browser Forge host.")
         except ForgeToolValidationError as error:
             raise HTTPException(status_code=422, detail={"ok": False, "error": {"code": "validation_error", "message": str(error), "retryable": False}}) from error
-        except ForgeTeacherError as error:
-            raise HTTPException(status_code=502, detail={"ok": False, "error": {"code": "teacher_failed", "message": public_teacher_error(error), "retryable": True}}) from error
 
     @app.post(f"{API_PREFIX}/forge-tools/validate")
     async def prompt_agent_validate_forge_tool(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:

@@ -854,12 +854,19 @@
         if (baseHash !== readState[fieldHash]) {
             return { ok: false, target: item.target, field: field, error: "base_hash does not match the latest read_prompt result; read again", last_read_hash: readState[fieldHash] };
         }
-        if ((!Array.isArray(patchList) || !patchList.length) && args.prompt !== undefined) {
-            const prompt = String(args.prompt || "");
-            patchList = readState[fieldText] ? [{ operation: "replace", find: readState[fieldText], replace: prompt }] : [{ operation: "append", text: prompt }];
+        const currentText = String(readState[fieldText] || "");
+        const hasDiffOrPatches = Array.isArray(patchList) && patchList.length > 0;
+        if (args.prompt !== undefined && hasDiffOrPatches) {
+            return { ok: false, target: item.target, field: field, error: "prompt full overwrite cannot be combined with patches or diff" };
+        }
+        if (!hasDiffOrPatches && args.prompt !== undefined) {
+            if (currentText.trim()) {
+                return { ok: false, target: item.target, field: field, error: "full prompt overwrite is allowed only when the current field is empty; use patches or diff", prompt_length: currentText.length };
+            }
+            patchList = [{ operation: "append", text: String(args.prompt || "") }];
         }
         if (!Array.isArray(patchList) || !patchList.length) {
-            return { ok: false, target: item.target, error: "edit_prompt requires diff or patches" };
+            return { ok: false, target: item.target, error: "edit_prompt requires patches, diff, or prompt when empty" };
         }
         const rawResult = patchPromptRoot(item.root, patchList, baseHash, field === "positive");
         const result = compactPromptPatchResult(rawResult, Boolean(args.return_prompt));
@@ -926,23 +933,16 @@
             }, signal);
             return sanitizeForgePublicResult(result);
         }
-        if (name === "ask_teacher" || name === "list_models" || name === "list_loras" || name === "list_embeddings") {
+        if (name === "list_models" || name === "list_loras" || name === "list_embeddings") {
             return await forgeApiTool(name, args, signal);
         }
+        if (name === "patch_current_prompt") return editPromptTool(args, args.patch || args);
+        if (name === "multi_patch_current_prompt") return editPromptTool(args, args.patches || []);
         if (name === "set_current_prompt") {
-            return { ok: false, error: "set_current_prompt is disabled to prevent prompt loss. Use read_prompt, then edit_prompt with base_hash and patches." };
+            return { ok: false, error: "set_current_prompt is disabled; use read_prompt then edit_prompt with base_hash and patches." };
         }
-        if (name === "patch_current_prompt") {
-            return editPromptTool(args, args.patch || args);
-        }
-        if (name === "multi_patch_current_prompt") {
-            return editPromptTool(args, args.patches || []);
-        }
-        if (name === "get_style_template") {
-            return { ok: false, error: "get_style_template is disabled. Use read_prompt; it returns style_template when available." };
-        }
-        if (name === "set_style_template") {
-            return { ok: false, error: "set_style_template is disabled to avoid blind overwrites. Use read_prompt and edit the normal prompt with edit_prompt." };
+        if (name === "get_style_template" || name === "set_style_template" || name === "ask_teacher") {
+            return { ok: false, error: `${name} is disabled; use read_prompt/edit_prompt or the active chat model.` };
         }
         const resourceExecutor = promptAgent.executeResourceTool;
         if (typeof resourceExecutor === "function") {

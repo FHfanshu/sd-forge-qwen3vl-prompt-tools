@@ -226,3 +226,19 @@ local-only under `docs/archive/`.
   PR backend matrix is Python 3.12 only; main/manual keep 3.11–3.13. Coverage
   artifacts stay main/manual. Browser-script syntax merged into the frontend
   job. Concurrency cancels superseded runs.
+
+## 2026-07-20 Agent Tool Surface Revision
+
+- Removed `ask_teacher` from the agent tool registry, Python validation names,
+  forge-tools API execution path, and host dispatch (explicit rejection remains).
+- Registered Danbooru tools already implemented by the resource host:
+  `search_danbooru_tags`, `inspect_danbooru_tag`, `inspect_danbooru_tags`,
+  `related_danbooru_tags`.
+- Host `edit_prompt` / `edit_negative_prompt` now allow full `prompt` overwrite
+  only when the current field is empty; non-empty fields require patches/diff.
+- Updated Anima skill mix guidance, system prompt, README, ROADMAP Phase 6,
+  and focused Python/frontend tool tests.
+- Verification: `python -m unittest tests.test_forge_tools tests.test_architecture`
+  passed 13 tests; frontend vitest 123 passed; `node --check javascript/prompt_agent.js`
+  and `node --test tests/test_frontend_resources.js` passed; rebuilt
+  `javascript/prompt_agent_90_ui.js`.

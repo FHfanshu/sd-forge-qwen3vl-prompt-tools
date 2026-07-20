@@ -144,14 +144,18 @@ describe("PromptAgentController recovery", () => {
       "edit_negative_prompt",
       "list_resources",
       "read_resource_metadata",
-      "ask_teacher",
       "read_generation_parameters",
       "apply_generation_parameters",
       "list_models",
       "list_loras",
       "list_embeddings",
+      "search_danbooru_tags",
+      "inspect_danbooru_tag",
+      "inspect_danbooru_tags",
+      "related_danbooru_tags",
     ]);
     expect(runtime.getSystemPrompt()).toContain("read prompts or generation parameters before changing them");
+    expect(runtime.getSystemPrompt()).toContain("search_danbooru_tags");
     controller.destroy();
   });
 });

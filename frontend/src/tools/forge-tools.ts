@@ -58,10 +58,27 @@ const resourceMetadataSchema = Type.Object({
   cursor: Type.Optional(Type.String({ maxLength: 256 })),
 }, { additionalProperties: false });
 
-const teacherSchema = Type.Object({
-  question: Type.String({ minLength: 1, maxLength: 8_000 }),
-  context: Type.Optional(Type.String({ maxLength: 16_000 })),
-  goal: Type.Optional(Type.String({ maxLength: 1_000 })),
+const danbooruSearchSchema = Type.Object({
+  query: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
+  queries: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 160 }), { minItems: 1, maxItems: 12 })),
+  category: Type.Optional(Type.String({ maxLength: 32 })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 30 })),
+}, { additionalProperties: false });
+
+const danbooruInspectSchema = Type.Object({
+  name: Type.String({ minLength: 1, maxLength: 160 }),
+  include_wiki: Type.Optional(Type.Boolean()),
+}, { additionalProperties: false });
+
+const danbooruInspectBatchSchema = Type.Object({
+  names: Type.Array(Type.String({ minLength: 1, maxLength: 160 }), { minItems: 1, maxItems: 12 }),
+  include_wiki: Type.Optional(Type.Boolean()),
+}, { additionalProperties: false });
+
+const danbooruRelatedSchema = Type.Object({
+  name: Type.String({ minLength: 1, maxLength: 160 }),
+  category: Type.Optional(Type.String({ maxLength: 32 })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 30 })),
 }, { additionalProperties: false });
 
 const generationParameterSchema = Type.Object({
@@ -103,12 +120,15 @@ export const FORGE_TOOL_SCHEMAS = {
   edit_negative_prompt: promptEditSchema,
   list_resources: resourceListSchema,
   read_resource_metadata: resourceMetadataSchema,
-  ask_teacher: teacherSchema,
   read_generation_parameters: readGenerationSchema,
   apply_generation_parameters: applyGenerationSchema,
   list_models: catalogSchema,
   list_loras: catalogSchema,
   list_embeddings: catalogSchema,
+  search_danbooru_tags: danbooruSearchSchema,
+  inspect_danbooru_tag: danbooruInspectSchema,
+  inspect_danbooru_tags: danbooruInspectBatchSchema,
+  related_danbooru_tags: danbooruRelatedSchema,
 } as const;
 
 export type ForgeToolName = keyof typeof FORGE_TOOL_SCHEMAS;
@@ -159,12 +179,15 @@ const TOOL_TIMEOUTS: Record<ForgeToolName, number> = {
   edit_negative_prompt: 15_000,
   list_resources: 15_000,
   read_resource_metadata: 15_000,
-  ask_teacher: 60_000,
   read_generation_parameters: 10_000,
   apply_generation_parameters: 15_000,
   list_models: 15_000,
   list_loras: 15_000,
   list_embeddings: 15_000,
+  search_danbooru_tags: 30_000,
+  inspect_danbooru_tag: 20_000,
+  inspect_danbooru_tags: 30_000,
+  related_danbooru_tags: 20_000,
 };
 
 const WRITE_TOOLS = new Set<ForgeToolName>([
@@ -286,17 +309,36 @@ function createForgeTool<T extends TSchema>(
 export function createForgeAgentTools(options: ForgeToolFactoryOptions = {}): ForgeAgentTool[] {
   return [
     createForgeTool("read_prompt", "Read prompt", "Read the current Forge positive prompt and its latest hashes.", FORGE_TOOL_SCHEMAS.read_prompt, "read", options),
-    createForgeTool("edit_prompt", "Edit prompt", "Edit the positive prompt only after reading it and supplying its latest hash.", FORGE_TOOL_SCHEMAS.edit_prompt, "write", options, (args) => ({ ...args, field: "positive" })),
+    createForgeTool(
+      "edit_prompt",
+      "Edit prompt",
+      "Edit the positive prompt after read_prompt. Use patches/diff when the field is non-empty; full prompt overwrite is allowed only when the current field is empty.",
+      FORGE_TOOL_SCHEMAS.edit_prompt,
+      "write",
+      options,
+      (args) => ({ ...args, field: "positive" }),
+    ),
     createForgeTool("read_negative_prompt", "Read negative prompt", "Read the current Forge negative prompt and its latest hash.", FORGE_TOOL_SCHEMAS.read_negative_prompt, "read", options),
-    createForgeTool("edit_negative_prompt", "Edit negative prompt", "Edit the negative prompt only after reading it and supplying its latest hash.", FORGE_TOOL_SCHEMAS.edit_negative_prompt, "write", options, (args) => ({ ...args, field: "negative" })),
+    createForgeTool(
+      "edit_negative_prompt",
+      "Edit negative prompt",
+      "Edit the negative prompt after read. Use patches/diff when non-empty; full prompt overwrite only when empty.",
+      FORGE_TOOL_SCHEMAS.edit_negative_prompt,
+      "write",
+      options,
+      (args) => ({ ...args, field: "negative" }),
+    ),
     createForgeTool("list_resources", "List Forge resources", "List logical Forge resource IDs such as styles, wildcards, or LoRAs.", FORGE_TOOL_SCHEMAS.list_resources, "read", options),
     createForgeTool("read_resource_metadata", "Read resource metadata", "Read bounded metadata for one logical Forge resource.", FORGE_TOOL_SCHEMAS.read_resource_metadata, "read", options),
-    createForgeTool("ask_teacher", "Ask teacher", "Ask the selected teacher profile one bounded, sanitized question.", FORGE_TOOL_SCHEMAS.ask_teacher, "read", options),
     createForgeTool("read_generation_parameters", "Read generation parameters", "Read the visible allowlisted Forge generation controls and context hash.", FORGE_TOOL_SCHEMAS.read_generation_parameters, "read", options),
     createForgeTool("apply_generation_parameters", "Apply generation parameters", "Apply visible allowlisted Forge generation controls with a fresh context hash.", FORGE_TOOL_SCHEMAS.apply_generation_parameters, "write", options),
     createForgeTool("list_models", "List models", "List logical Forge checkpoint IDs and labels without filesystem paths.", FORGE_TOOL_SCHEMAS.list_models, "read", options),
     createForgeTool("list_loras", "List LoRAs", "List logical LoRA IDs and labels without filesystem paths.", FORGE_TOOL_SCHEMAS.list_loras, "read", options),
     createForgeTool("list_embeddings", "List embeddings", "List logical textual inversion embedding IDs and labels without filesystem paths.", FORGE_TOOL_SCHEMAS.list_embeddings, "read", options),
+    createForgeTool("search_danbooru_tags", "Search Danbooru tags", "Search live Danbooru tag candidates for one or more short visual concepts.", FORGE_TOOL_SCHEMAS.search_danbooru_tags, "read", options),
+    createForgeTool("inspect_danbooru_tag", "Inspect Danbooru tag", "Inspect one Danbooru tag and optional wiki summary.", FORGE_TOOL_SCHEMAS.inspect_danbooru_tag, "read", options),
+    createForgeTool("inspect_danbooru_tags", "Inspect Danbooru tags", "Inspect up to 12 selected Danbooru tags in parallel.", FORGE_TOOL_SCHEMAS.inspect_danbooru_tags, "read", options),
+    createForgeTool("related_danbooru_tags", "Related Danbooru tags", "Expand one verified Danbooru seed with related tag candidates.", FORGE_TOOL_SCHEMAS.related_danbooru_tags, "read", options),
   ];
 }
 

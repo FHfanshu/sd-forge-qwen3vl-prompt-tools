@@ -7,7 +7,7 @@ from typing import Any
 ANIMA_DIT_GUIDE = """# Anima DiT prompt guide
 
 Source: https://huggingface.co/circlestone-labs/Anima
-Reviewed: 2026-07-11
+Reviewed: 2026-07-20
 
 Use this guide only for Anima image checkpoints.
 
@@ -17,9 +17,10 @@ Use this guide only for Anima image checkpoints.
 - Anima Turbo is distilled for fast iteration and normally uses CFG 1 and 8-12 steps. At CFG 1, classifier-free guidance reduces to the positive prediction and the negative prompt has no effect. Do not generate or rely on a negative prompt for the normal Turbo setup.
 
 ## Prompt grammar
-- Anima understands Danbooru/Gelbooru-style tags, natural-language captions, and mixtures of both.
+- Anima understands Danbooru/Gelbooru-style tags, natural-language captions, and mixtures of both. Pure tags, pure short NL, or an organic mix are all valid; choose the form that states the scene most clearly.
 - Write ordinary tags in lowercase and use spaces instead of underscores. Score tags such as `score_7` keep underscores.
 - Preferred tag order: quality/meta/year/safety, subject count, character, series, artist, then general appearance/action/composition tags.
+- Prefer verified Danbooru-style tags for entities and attributes (character, clothing, body, objects, camera). Follow the live Danbooru tag-group wiki when picking canonical forms: https://danbooru.donmai.us/wiki_pages/tag_groups
 - Prefix artist tags with `@`, for example `@artist name`; without `@` the artist effect is weak.
 - Prompt weighting works but usually needs stronger values than SDXL, for example `(chibi:2)`.
 - Preserve wildcard references such as `__artist_names__`, dynamic choices, and LoRA tags such as `<lora:name:1>` exactly. Never expand, translate, rename, or reformat them unless the user explicitly asks.
@@ -27,6 +28,14 @@ Use this guide only for Anima image checkpoints.
 - Keep the final positive prompt well below 256 tokens whenever possible; 256 tokens is an absolute ceiling, not a target. A shorter prompt with clear subject, action, composition, and style is more reliable.
 - Express one visual fact at a time. Avoid nested or dependent clauses, abstract relationships, implied references, long chains of interactions, repeated synonyms, exhaustive tag lists, and conflicting micro-details.
 - For complex requests, keep only the highest-priority visible details. Do not try to preserve every instruction by compressing them into a dense paragraph.
+
+## Tags, natural language, and mix
+- Free form is intentional: tags, short NL, or both may appear in one prompt. Do not force every request into pure tags or pure prose.
+- Natural language often steers the image more strongly than an equal-looking tag list because it spends more tokens on the same idea. Treat long NL as high-weight, not neutral flavor text.
+- Prefer short NL for structure that tags express poorly: spatial layout, multi-character positions, gaze/interaction, and short action chains.
+- Prefer tags for countable visual facts: hair, eyes, clothes, props, medium, framing, and franchise identity. When a concept maps cleanly to a Danbooru tag group, use the tag rather than a long descriptive clause.
+- When mixing, lead with quality/meta/safety and core subject tags, then add at most one or two short NL clauses for layout or relationship, then remaining detail tags. Do not restate the same fact in both forms.
+- If NL starts to drown tags, shorten the sentences or convert repeated descriptors back into tags. Never pad with synonym-heavy prose to “make it stronger.”
 
 ## Useful defaults
 - Base positive prefix: `masterpiece, best quality, score_7, safe, `.
@@ -62,7 +71,7 @@ PROMPT_SKILLS = {
         "title": "Anima DiT prompt guide",
         "guide": ANIMA_DIT_GUIDE,
         "source": "https://huggingface.co/circlestone-labs/Anima",
-        "reviewed": "2026-07-11",
+        "reviewed": "2026-07-20",
     },
     "danbooru_tags": {
         "name": "danbooru_tags",

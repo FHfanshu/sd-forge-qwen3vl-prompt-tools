@@ -47,14 +47,14 @@ data/                   # local runtime state (gitignored)
 
 ## Agent tools
 
-The model only sees these Forge tools (frontend registry + Python validation):
+The model only sees these tools (frontend registry + Python validation / host):
 
 | Tool | Access | Purpose |
 | --- | --- | --- |
 | `read_prompt` | read | Read positive prompt + hash |
-| `edit_prompt` | write | Patch positive prompt with current hash |
+| `edit_prompt` | write | Patch positive prompt; full `prompt` overwrite only when empty |
 | `read_negative_prompt` | read | Read negative prompt + hash |
-| `edit_negative_prompt` | write | Patch negative prompt with current hash |
+| `edit_negative_prompt` | write | Patch negative prompt; full overwrite only when empty |
 | `read_generation_parameters` | read | Read allowlisted generation controls + hash |
 | `apply_generation_parameters` | write | Apply allowlisted generation controls with hash |
 | `list_resources` | read | List styles / wildcards / LoRAs (logical IDs) |
@@ -62,11 +62,15 @@ The model only sees these Forge tools (frontend registry + Python validation):
 | `list_models` | read | Checkpoint IDs/labels (no filesystem paths) |
 | `list_loras` | read | LoRA IDs/labels |
 | `list_embeddings` | read | Embedding IDs/labels |
-| `ask_teacher` | read | One-shot question to a selected teacher profile |
+| `search_danbooru_tags` | read | Live Danbooru tag search for 1–12 concepts |
+| `inspect_danbooru_tag` | read | Inspect one tag (+ optional wiki) |
+| `inspect_danbooru_tags` | read | Inspect up to 12 tags |
+| `related_danbooru_tags` | read | Related tags for one verified seed |
 
-Write tools require a fresh hash from a prior read. Browser arguments are
-revalidated by Python before any Forge DOM access. Resource listing is
-read-only until an explicit apply/edit tool runs.
+Write tools require a fresh hash from a prior read. Non-empty prompt fields must
+use `patches` or `diff`; a full `prompt` body is accepted only when the current
+field is empty. Browser arguments are revalidated by Python before Forge DOM
+access. `ask_teacher` is removed.
 
 ## Model profiles
 
