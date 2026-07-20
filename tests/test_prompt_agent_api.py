@@ -17,6 +17,7 @@ from backend.prompt_agent.profiles import ProfileAuthority, default_storage_root
 from backend.prompt_agent.providers import public_profile_state
 from backend.prompt_agent import secrets
 from backend.prompt_agent.profile_connection import ConnectionTestError, test_profile_connection
+from quality.acceptance import acceptance
 
 
 class PromptAgentApiTests(unittest.TestCase):
@@ -36,6 +37,7 @@ class PromptAgentApiTests(unittest.TestCase):
         self.assertEqual(payload["features"]["agent_loop"], True)
         self.assertEqual(payload["features"]["provider_proxy"], True)
 
+    @acceptance("SECURITY-PRIVACY-001@1", "projection")
     def test_profiles_never_return_secret_or_local_paths(self):
         app = FastAPI()
         register_prompt_agent_api(app)
@@ -79,6 +81,7 @@ class PromptAgentApiTests(unittest.TestCase):
             self.assertNotIn("mmprojPath", created)
             self.assertNotIn("llamaServerPath", created)
 
+    @acceptance("SECURITY-PRIVACY-001@1", "request-rejection")
     def test_stream_rejects_browser_owned_provider_fields(self):
         app = FastAPI()
         register_prompt_agent_api(app)
@@ -273,7 +276,8 @@ class PromptAgentApiTests(unittest.TestCase):
                 "model_path": "C:/models/local-model.gguf",
             })
             self.assertEqual("one-shot", authority.set_default("active", "one-shot")["activeProfileId"])
-            self.assertEqual("one-shot", authority.set_default("teacher", "one-shot")["teacherProfileId"])
+            with self.assertRaisesRegex(ValueError, "invalid profile route role"):
+                authority.set_default("teacher", "one-shot")
 
     def test_openai_connection_test_performs_bounded_models_request(self):
         calls: list[tuple[str, dict[str, str]]] = []

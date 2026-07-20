@@ -235,6 +235,14 @@ def register_prompt_agent_api(app: Any, profile_authority: ProfileAuthority | No
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
+    @app.post(f"{API_PREFIX}/local-runtime/status")
+    async def prompt_agent_local_runtime_status(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        try:
+            profile_id, turn_id = _local_runtime_request(payload)
+            return await local_runtime.status(turn_id, profile_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
     @app.post(f"{API_PREFIX}/stream")
     async def prompt_agent_stream(payload: dict[str, Any] = Body(...)):
         try:

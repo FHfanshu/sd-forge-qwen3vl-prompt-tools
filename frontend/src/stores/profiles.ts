@@ -15,18 +15,16 @@ function nextId(prefix: string, profiles: Profile[]): string {
 export interface ProfileStore extends ProfileStoreActionContracts {
   profiles: Profile[];
   activeProfileId: string;
-  teacherProfileId: string;
   sessionProfileId: string;
   namingProfileId: string;
   selectedProfileId: string;
   loaded: boolean;
 }
 
-function stateSlice(state: ProfileState): Pick<ProfileStore, "profiles" | "activeProfileId" | "teacherProfileId" | "sessionProfileId" | "namingProfileId"> {
+function stateSlice(state: ProfileState): Pick<ProfileStore, "profiles" | "activeProfileId" | "sessionProfileId" | "namingProfileId"> {
   return {
     profiles: state.profiles,
     activeProfileId: state.activeProfileId,
-    teacherProfileId: state.teacherProfileId,
     sessionProfileId: state.sessionProfileId,
     namingProfileId: state.namingProfileId,
   };
@@ -103,11 +101,6 @@ export const useProfileStore = createStore<ProfileStore>((set, get) => {
       if (!get().profiles.some((profile) => profile.id === profileId && profile.enabled && supportsAgentChat(profile))) return;
       set({ activeProfileId: profileId });
       persist(api.setProfileRoute("active", profileId).then((state) => apply(state)));
-    },
-    setTeacherProfile(profileId) {
-      if (!get().profiles.some((profile) => profile.id === profileId && profile.enabled && supportsAgentChat(profile))) return;
-      set({ teacherProfileId: profileId });
-      persist(api.setProfileRoute("teacher", profileId).then((state) => apply(state)));
     },
     setSessionProfile(profileId) {
       if (!get().profiles.some((profile) => ["llama-endpoint", "llama-once"].includes(profile.runtime) && profile.id === profileId && profile.enabled)) return;

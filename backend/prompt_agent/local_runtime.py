@@ -27,9 +27,12 @@ class LocalLlamaRuntime:
         self._signature: tuple[Any, ...] = ()
         self._endpoint = ""
         self._ready_task: asyncio.Task[None] | None = None
+        self._started_at = 0.0
         self._turns: dict[str, float] = {}
         self._reapers: dict[str, asyncio.Task[None]] = {}
-        self._unload_after_turn = True
+        self._idle_reaper: asyncio.Task[None] | None = None
+        self._unload_after_turn = False
+        self._idle_unload_minutes = 30
 
     async def start_turn(self, turn_id: str, profile: dict[str, Any]) -> dict[str, Any]:
         if profile.get("runtime") != "llama-once":
@@ -49,8 +52,11 @@ class LocalLlamaRuntime:
                 self._profile_id = profile["profile_id"]
                 self._signature = signature
                 self._ready_task = asyncio.create_task(_wait_ready(self._process, self._endpoint, timeout))
+                self._started_at = time.monotonic()
             ready_task = self._ready_task
-            self._unload_after_turn = bool(profile.get("unload_after_turn", True))
+            self._cancel_idle_reaper_locked()
+            self._unload_after_turn = bool(profile.get("unload_after_turn", False))
+            self._idle_unload_minutes = _idle_unload_minutes(profile)
             self._turns[turn_id] = time.monotonic()
             self._schedule_reaper_locked(turn_id, timeout + 120)
         try:
@@ -69,6 +75,23 @@ class LocalLlamaRuntime:
                 raise LocalRuntimeError("local_runtime_cancelled", "The local model startup was cancelled.", status_code=409)
             return {"ok": True, "profile_id": self._profile_id, "turn_id": turn_id, "runtime": "llama-once"}
 
+    async def status(self, turn_id: str, profile_id: str) -> dict[str, Any]:
+        async with self._lock:
+            await self._drop_dead_process_locked()
+            if self._process is None or self._profile_id != profile_id or turn_id not in self._turns:
+                return {"ok": True, "profile_id": profile_id, "turn_id": turn_id, "phase": "idle", "elapsed_seconds": 0}
+            phase = "loading"
+            if self._ready_task is not None and self._ready_task.done():
+                try:
+                    self._ready_task.result()
+                    phase = "ready"
+                except asyncio.CancelledError:
+                    phase = "idle"
+                except BaseException:
+                    phase = "failed"
+            elapsed = max(0, int(time.monotonic() - self._started_at)) if self._started_at else 0
+            return {"ok": True, "profile_id": profile_id, "turn_id": turn_id, "phase": phase, "elapsed_seconds": elapsed}
+
     async def stream_profile(self, turn_id: str, profile: dict[str, Any]) -> dict[str, Any]:
         async with self._lock:
             await self._drop_dead_process_locked()
@@ -86,9 +109,12 @@ class LocalLlamaRuntime:
             if task is not None and task is not asyncio.current_task():
                 task.cancel()
             stopped = False
-            if self._process is not None and not self._turns and (force or self._unload_after_turn):
-                await self._stop_process_locked()
-                stopped = True
+            if self._process is not None and not self._turns:
+                if force or self._unload_after_turn:
+                    await self._stop_process_locked()
+                    stopped = True
+                else:
+                    self._schedule_idle_reaper_locked()
             return {"ok": True, "turn_id": turn_id, "stopped": stopped}
 
     async def close(self) -> None:
@@ -101,10 +127,28 @@ class LocalLlamaRuntime:
             current.cancel()
         self._reapers[turn_id] = asyncio.create_task(self._reap_stale_turn(turn_id, max(300, delay)))
 
+    def _schedule_idle_reaper_locked(self) -> None:
+        self._cancel_idle_reaper_locked()
+        if self._idle_unload_minutes > 0:
+            self._idle_reaper = asyncio.create_task(self._reap_idle_process(self._idle_unload_minutes * 60))
+
+    def _cancel_idle_reaper_locked(self) -> None:
+        if self._idle_reaper is not None and self._idle_reaper is not asyncio.current_task():
+            self._idle_reaper.cancel()
+        self._idle_reaper = None
+
+    async def _reap_idle_process(self, delay: int) -> None:
+        try:
+            await asyncio.sleep(delay)
+            await self.stop_turn("idle-unload", force=True)
+        except asyncio.CancelledError:
+            return
+
     async def _reap_stale_turn(self, turn_id: str, delay: int) -> None:
         try:
             await asyncio.sleep(delay)
-            await self.stop_turn(turn_id)
+            # A turn that outlives its request is no longer safe to keep resident.
+            await self.stop_turn(turn_id, force=True)
         except asyncio.CancelledError:
             return
 
@@ -125,6 +169,7 @@ class LocalLlamaRuntime:
             await asyncio.to_thread(process.wait, 5)
 
     async def _clear_process_locked(self) -> None:
+        self._cancel_idle_reaper_locked()
         if self._ready_task is not None and self._ready_task is not asyncio.current_task():
             self._ready_task.cancel()
         for task in self._reapers.values():
@@ -137,7 +182,9 @@ class LocalLlamaRuntime:
         self._signature = ()
         self._endpoint = ""
         self._ready_task = None
-        self._unload_after_turn = True
+        self._started_at = 0.0
+        self._unload_after_turn = False
+        self._idle_unload_minutes = 30
 
 
 def _server_command(profile: dict[str, Any]) -> tuple[list[str], tuple[Any, ...]]:
@@ -228,3 +275,11 @@ def _timeout(profile: dict[str, Any]) -> int:
     parameters = profile.get("parameters")
     value = parameters.get("timeout", 180) if isinstance(parameters, dict) else 180
     return max(10, min(3600, int(value)))
+
+
+def _idle_unload_minutes(profile: dict[str, Any]) -> int:
+    try:
+        value = int(profile.get("idle_unload_minutes", 30))
+    except (TypeError, ValueError):
+        value = 30
+    return max(0, min(1440, value))

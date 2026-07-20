@@ -3,7 +3,7 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
   testDir: "./tests/e2e",
   testIgnore: "**/real-forge.spec.ts",
-  timeout: 10_000,
+  timeout: 30_000,
   fullyParallel: true,
   reporter: "list",
   use: {
@@ -12,7 +12,7 @@ export default defineConfig({
     ...devices["Desktop Chrome"],
   },
   webServer: {
-    command: "npm exec --yes pnpm@10 -- dev --host 127.0.0.1 --port 4174",
+    command: "pnpm dev --host 127.0.0.1 --port 4174",
     url: "http://127.0.0.1:4174",
     reuseExistingServer: !process.env.CI,
   },

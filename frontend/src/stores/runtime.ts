@@ -1,7 +1,7 @@
 import { createStore } from "./store";
 import type { HistoryRow, RuntimeSession } from "../contracts";
 
-export type WorkingPhase = "idle" | "submitting" | "thinking" | "generating" | "retrying" | "tool" | "cancelling";
+export type WorkingPhase = "idle" | "model-loading" | "submitting" | "thinking" | "generating" | "retrying" | "tool" | "cancelling";
 export type RuntimeStartupState = "idle" | "starting" | "ready" | "error";
 
 export interface RuntimeStore {
@@ -49,7 +49,7 @@ export const useRuntimeStore = createStore<RuntimeStore>((set) => ({
     set({
       workingPhase,
       workingTool: workingPhase === "tool" ? detail : null,
-      workingDetail: workingPhase === "retrying" ? detail : null,
+      workingDetail: workingPhase === "retrying" || workingPhase === "model-loading" ? detail : null,
     });
   },
   setError(error) {

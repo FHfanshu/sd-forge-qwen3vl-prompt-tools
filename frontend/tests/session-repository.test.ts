@@ -208,6 +208,17 @@ describe("PromptAgentSessionRepository", () => {
     repository.close();
   });
 
+  it("deletes a message suffix in one repository operation", async () => {
+    const repository = new PromptAgentSessionRepository();
+    await repository.putMessage({ id: "keep", sessionId: "session", message: userMessage("keep", 1), status: "complete", createdAt: 1, updatedAt: 1 });
+    await repository.putMessage({ id: "edit", sessionId: "session", message: userMessage("edit", 2), status: "complete", createdAt: 2, updatedAt: 2 });
+    await repository.putMessage({ id: "reply", sessionId: "session", message: userMessage("reply", 3), status: "complete", createdAt: 3, updatedAt: 3 });
+
+    expect(await repository.deleteMessages(["edit", "reply", "missing", "edit"])).toBe(2);
+    expect((await repository.getMessages("session")).map((message) => message.id)).toEqual(["keep"]);
+    repository.close();
+  });
+
   it("deletes a session and its messages and attachments in one transaction", async () => {
     const repository = new PromptAgentSessionRepository();
     await repository.putSession(session("session"));

@@ -1,0 +1,222 @@
+{
+  "version": 1,
+  "requirements": [
+    {
+      "id": "UI-BOOT-001",
+      "revision": 1,
+      "area": "ui",
+      "title": "Forge-controlled UI boot",
+      "acceptance": [
+        "Loading the generated module alone does not mount the Prompt Agent UI.",
+        "The UI connects when the Forge host becomes available after the bundle loads."
+      ],
+      "required_scenarios": ["boot-gate", "late-host"],
+      "paths": [
+        "frontend/src/bootstrap.ts",
+        "frontend/src/runtime-connection.ts",
+        "javascript/prompt_agent_99_boot.js",
+        "frontend/tests/e2e/mock-host.spec.ts"
+      ],
+      "assertion_policy": "Observe mount and connection state; do not lock incidental DOM nesting."
+    },
+    {
+      "id": "UI-WINDOW-001",
+      "revision": 1,
+      "area": "ui",
+      "title": "Responsive floating windows and focus",
+      "acceptance": [
+        "Chat and settings remain fully inside the current viewport.",
+        "Phone settings use the persisted floating layout rather than a forced full-screen layout.",
+        "Tablet and desktop may show chat and settings together.",
+        "Focusing the chat composer brings chat forward and permits continuous input."
+      ],
+      "required_scenarios": ["phone", "tablet", "focus"],
+      "paths": [
+        "frontend/src/components/Surface.svelte",
+        "frontend/src/components/ProfileSettings.svelte",
+        "frontend/src/styles.css",
+        "frontend/src/window-interactions.ts",
+        "frontend/tests/e2e/mock-host.spec.ts",
+        "frontend/tests/surface.test.ts"
+      ],
+      "assertion_policy": "Assert containment, floating behavior, visibility, focus, and input continuity. Exact coordinates or dimensions require an explicit acceptance statement."
+    },
+    {
+      "id": "UI-FEEDBACK-001",
+      "revision": 1,
+      "area": "ui",
+      "title": "Local model loading feedback",
+      "acceptance": [
+        "On-demand local model startup shows a distinct loading phase and elapsed time.",
+        "Completion, failure, and cancellation clear the loading state without leaving the composer disabled."
+      ],
+      "required_scenarios": ["loading", "recovery"],
+      "paths": [
+        "backend/prompt_agent/local_runtime.py",
+        "frontend/src/agent/controller.ts",
+        "frontend/src/components/WorkingIndicator.svelte",
+        "frontend/src/stores/runtime.ts",
+        "frontend/tests/surface.test.ts",
+        "tests/test_local_runtime.py"
+      ],
+      "assertion_policy": "Assert user-visible phase and recovery, not polling count or timer implementation."
+    },
+    {
+      "id": "SESSION-LIFECYCLE-001",
+      "revision": 1,
+      "area": "session",
+      "title": "Terminal request recovery",
+      "acceptance": [
+        "Provider failure and user abort both reach a terminal runtime state.",
+        "The active request is cleared and the composer can submit again."
+      ],
+      "required_scenarios": ["failure", "abort", "recovery"],
+      "paths": [
+        "frontend/src/agent/agent-runtime.ts",
+        "frontend/src/agent/controller.ts",
+        "frontend/src/stores/chat.ts",
+        "frontend/tests/prompt-agent-controller.test.ts",
+        "frontend/tests/e2e/mock-host.spec.ts"
+      ],
+      "assertion_policy": "Assert terminal state and later usability; do not depend on private promise ordering."
+    },
+    {
+      "id": "SESSION-REFRESH-001",
+      "revision": 1,
+      "area": "session",
+      "title": "Refresh interruption without replay",
+      "acceptance": [
+        "Partial assistant content is persisted before refresh.",
+        "Unfinished work becomes interrupted and no old provider request or tool call resumes.",
+        "A later submission succeeds."
+      ],
+      "required_scenarios": ["interruption", "no-replay", "recovery"],
+      "paths": [
+        "frontend/src/sessions/**",
+        "frontend/src/agent/controller.ts",
+        "frontend/tests/e2e/mock-host.spec.ts",
+        "frontend/tests/session-repository.test.ts"
+      ],
+      "assertion_policy": "Assert durable transcript and request/tool counts across reload."
+    },
+    {
+      "id": "AGENT-LOOKUP-001",
+      "revision": 1,
+      "area": "agent",
+      "title": "Verified named-entity background lookup",
+      "acceptance": [
+        "Named-entity background questions first search and inspect local Forge styles.",
+        "Danbooru lookup is used only when no local style matches.",
+        "Unverified text is hidden and cannot become the persisted answer."
+      ],
+      "required_scenarios": ["style-first", "fallback", "unverified-hidden"],
+      "paths": [
+        "frontend/src/agent/agent-runtime.ts",
+        "frontend/src/agent/controller.ts",
+        "frontend/src/providers/proxy-stream.ts",
+        "frontend/tests/agent-runtime.test.ts"
+      ],
+      "assertion_policy": "Assert forced tool sequence, source fallback, and visible transcript semantics."
+    },
+    {
+      "id": "AGENT-TOOLS-001",
+      "revision": 1,
+      "area": "agent",
+      "title": "Forge tool authority and freshness",
+      "acceptance": [
+        "The agent receives only the declared Forge tool surface.",
+        "Browser tool arguments are revalidated by Python.",
+        "Prompt and generation mutations require fresh hashes."
+      ],
+      "required_scenarios": ["surface", "revalidation", "freshness"],
+      "paths": [
+        "backend/prompt_agent/forge_tools.py",
+        "frontend/src/tools/**",
+        "javascript/prompt_agent*.js",
+        "tests/test_forge_tools.py",
+        "tests/test_host_bridge.py"
+      ],
+      "assertion_policy": "Exact tool names are contractual; internal registry implementation is not."
+    },
+    {
+      "id": "PROVIDER-TOOLS-001",
+      "revision": 1,
+      "area": "provider",
+      "title": "Provider-native tool execution contract",
+      "acceptance": [
+        "OpenAI-compatible, Anthropic, Gemini, and llama.cpp requests use their native forced-tool format.",
+        "Tool-call streams normalize to one frontend event contract.",
+        "Cancellation closes upstream work."
+      ],
+      "required_scenarios": ["forced-choice", "normalization", "abort"],
+      "paths": [
+        "backend/prompt_agent/provider_adapters/**",
+        "backend/prompt_agent/contracts.py",
+        "frontend/src/providers/**",
+        "tests/test_prompt_agent_provider_adapters.py"
+      ],
+      "assertion_policy": "Provider wire fields are contractual; request ordering outside the protocol is not."
+    },
+    {
+      "id": "LOCAL-RUNTIME-001",
+      "revision": 1,
+      "area": "lifecycle",
+      "title": "On-demand llama.cpp lifecycle",
+      "acceptance": [
+        "Runtime status exposes only idle, loading, ready, or failed plus elapsed time.",
+        "Force stop during loading reclaims the process.",
+        "Status and stop responses do not expose local paths or endpoints."
+      ],
+      "required_scenarios": ["loading", "abort", "privacy"],
+      "paths": [
+        "backend/prompt_agent/local_runtime.py",
+        "backend/prompt_agent/app.py",
+        "frontend/src/profile-api.ts",
+        "tests/test_local_runtime.py"
+      ],
+      "assertion_policy": "Assert lifecycle phases, process reclamation, and safe public projection."
+    },
+    {
+      "id": "SECURITY-PRIVACY-001",
+      "revision": 1,
+      "area": "security",
+      "title": "Secrets and local paths remain server-owned",
+      "acceptance": [
+        "Public profile and error responses never contain plaintext secrets, provider endpoints, or local paths.",
+        "Browser stream requests cannot inject server-owned credentials, endpoints, models, headers, or paths.",
+        "UNC and untrusted executable/model paths are rejected before filesystem access."
+      ],
+      "required_scenarios": ["projection", "request-rejection", "path-rejection"],
+      "paths": [
+        "backend/prompt_agent/contracts.py",
+        "backend/prompt_agent/profile_contracts.py",
+        "backend/prompt_agent/secrets.py",
+        "prompt_agent/model_paths.py",
+        "tests/test_prompt_agent_api.py",
+        "tests/test_security_boundaries.py"
+      ],
+      "assertion_policy": "Assert absence of sensitive values and rejection before privileged access."
+    },
+    {
+      "id": "DATA-INTEGRITY-001",
+      "revision": 1,
+      "area": "data",
+      "title": "Stale writes and replay are prevented",
+      "acceptance": [
+        "Prompt and generation writes require the latest server-validated hash.",
+        "Stale tool feedback can be refreshed and retried without repeating the same blind write.",
+        "Refresh never replays an old tool call."
+      ],
+      "required_scenarios": ["freshness", "stale-recovery", "no-replay"],
+      "paths": [
+        "backend/prompt_agent/forge_tools.py",
+        "frontend/src/agent/agent-runtime.ts",
+        "frontend/src/agent/controller.ts",
+        "frontend/tests/prompt-agent-controller.test.ts",
+        "frontend/tests/e2e/mock-host.spec.ts",
+        "tests/test_forge_tools.py"
+      ],
+      "assertion_policy": "Assert hash validation, corrected retry, and no replay."
+    }
+  ]
+}

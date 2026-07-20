@@ -13,7 +13,7 @@ describe("profile migration adapters", () => {
       fallback_endpoints: ["http://backup.local/v1"],
       has_api_key: true,
       capabilities: { tools: true, vision: true, streaming: true, reasoning: false },
-      parameters: { temperature: 0.4, top_p: 0.8, max_tokens: 2048, reasoning_effort: "none", timeout: 90, sanitize_sensitive: false, teacher_mode: "regex" },
+      parameters: { temperature: 0.4, top_p: 0.8, max_tokens: 2048, reasoning_effort: "none", timeout: 90, sanitize_sensitive: false },
       local_model_configured: true,
       mmproj_configured: true,
       llama_server_configured: true,
@@ -33,7 +33,8 @@ describe("profile migration adapters", () => {
       llamaServerConfigured: true,
       nCtx: 8192,
       nGpuLayers: 12,
-      parameters: { topP: 0.8, maxTokens: 2048, sanitizeSensitive: false, teacherMode: "regex" },
+      idleUnloadMinutes: 30,
+      parameters: { topP: 0.8, maxTokens: 2048, sanitizeSensitive: false },
     });
   });
 
@@ -41,7 +42,6 @@ describe("profile migration adapters", () => {
     const state = normalizeProfileState({
       version: 1,
       active_profile_id: "disabled",
-      teacher_profile_id: "grok",
       session_profile_id: "deepseek",
       naming_profile_id: "local-qwen-once",
       profiles: [
@@ -52,17 +52,30 @@ describe("profile migration adapters", () => {
     });
 
     expect(state.activeProfileId).toBe("grok");
-    expect(state.teacherProfileId).toBe("grok");
     expect(state.sessionProfileId).toBe("local-qwen-once");
     expect(state.namingProfileId).toBe("local-qwen-once");
   });
 
   it("serializes nested Svelte patches for the host facade", () => {
-    expect(toHostProfilePatch({ parameters: { topP: 0.7, maxTokens: 4096 }, modelInfo: { providerId: "openai" }, capabilities: { vision: false } })).toEqual({
+  expect(toHostProfilePatch({ parameters: { topP: 0.7, maxTokens: 4096 }, modelInfo: { providerId: "openai" }, capabilities: { vision: false } })).toEqual({
       parameters: { top_p: 0.7, max_tokens: 4096 },
       model_info: { provider_id: "openai" },
       capabilities: { vision: false },
     });
+  });
+
+  it("normalizes resident local runtime idle unloading", () => {
+    const profile = normalizeProfile({
+      id: "local",
+      runtime: "llama-once",
+      protocol: "openai-chat-completions",
+      modelId: "gemma",
+      idle_unload_minutes: 0,
+    });
+
+    expect(profile.unloadAfterTurn).toBe(false);
+    expect(profile.idleUnloadMinutes).toBe(0);
+    expect(toHostProfilePatch({ idleUnloadMinutes: 45 })).toEqual({ idle_unload_minutes: 45 });
   });
 
   it("keeps local paths write-only", () => {

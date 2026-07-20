@@ -21,6 +21,7 @@ class StreamRequest:
     max_tokens: int | None
     reasoning: str
     turn_id: str
+    tool_choice: str
 
 
 def parse_stream_request(payload: Any) -> StreamRequest:
@@ -58,6 +59,9 @@ def parse_stream_request(payload: Any) -> StreamRequest:
     reasoning = str(options.get("reasoning") or "off").lower()
     if reasoning not in _REASONING_LEVELS:
         raise ValueError("reasoning is invalid")
+    tool_choice = _optional_identifier(options.get("toolChoice"), "toolChoice", 96)
+    if tool_choice and tool_choice not in {str(tool.get("name") or "") for tool in tools if isinstance(tool, dict)}:
+        raise ValueError("toolChoice must name a declared tool")
     return StreamRequest(
         profile_id=profile_id,
         request_id=request_id,
@@ -69,6 +73,7 @@ def parse_stream_request(payload: Any) -> StreamRequest:
         max_tokens=max_tokens,
         reasoning=reasoning,
         turn_id=_optional_identifier(payload.get("turn_id"), "turn_id", 96),
+        tool_choice=tool_choice,
     )
 
 

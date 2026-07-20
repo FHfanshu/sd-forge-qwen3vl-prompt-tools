@@ -65,7 +65,8 @@ def normalize_profile(payload: dict[str, Any]) -> dict[str, Any]:
         "n_ctx": _integer(profile, "n_ctx", 131072, aliases=("nCtx",)),
         "n_gpu_layers": _integer(profile, "n_gpu_layers", -1, aliases=("nGpuLayers",)),
         "thinking": _boolean(profile, "thinking", False),
-        "unload_after_turn": _boolean(profile, "unload_after_turn", True),
+        "unload_after_turn": _boolean(profile, "unload_after_turn", False),
+        "idle_unload_minutes": _bounded_integer(profile, "idle_unload_minutes", 30, 0, 1440),
     }
     return result
 
@@ -95,6 +96,7 @@ def public_profile(profile: dict[str, Any], *, has_api_key: bool) -> dict[str, A
         "nGpuLayers": profile["n_gpu_layers"],
         "thinking": profile["thinking"],
         "unloadAfterTurn": profile["unload_after_turn"],
+        "idleUnloadMinutes": profile["idle_unload_minutes"],
     }
     if profile.get("provider_id"):
         public["providerId"] = profile["provider_id"]
@@ -109,7 +111,6 @@ def _public_parameters(value: dict[str, Any]) -> dict[str, Any]:
         "reasoningEffort": value["reasoning_effort"],
         "timeout": value["timeout"],
         "sanitizeSensitive": value["sanitize_sensitive"],
-        "teacherMode": value["teacher_mode"],
     }
 
 
@@ -170,6 +171,13 @@ def _integer(source: dict[str, Any], key: str, default: int, aliases: tuple[str,
     return value
 
 
+def _bounded_integer(source: dict[str, Any], key: str, default: int, minimum: int, maximum: int) -> int:
+    value = _integer(source, key, default)
+    if value < minimum or value > maximum:
+        raise ValueError(f"{key} is out of range")
+    return value
+
+
 def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         raise ValueError("fallback_endpoints must be a list")
@@ -221,7 +229,6 @@ def _parameters(value: dict[str, Any]) -> dict[str, Any]:
         "reasoning_effort": str(value.get("reasoning_effort", value.get("reasoningEffort", "low"))),
         "timeout": int(value.get("timeout", 180)),
         "sanitize_sensitive": bool(value.get("sanitize_sensitive", value.get("sanitizeSensitive", True))),
-        "teacher_mode": str(value.get("teacher_mode", value.get("teacherMode", "qwen-redact"))),
     }
     if not 0 <= result["temperature"] <= 2 or not 0 <= result["top_p"] <= 1:
         raise ValueError("profile sampling parameters are out of range")

@@ -7,6 +7,7 @@ import { useChatStore } from "../src/stores/chat";
 import { useProfileStore } from "../src/stores/profiles";
 import { useRuntimeStore } from "../src/stores/runtime";
 import { useUiStore } from "../src/stores/ui";
+import { acceptanceTest } from "./acceptance";
 
 function installObjectUrlMocks(): { create: ReturnType<typeof vi.fn>; revoke: ReturnType<typeof vi.fn> } {
   let index = 0;
@@ -225,6 +226,31 @@ describe("Svelte chat surface", () => {
     expect(screen.queryByRole("button", { name: /Permission mode/ })).not.toBeInTheDocument();
   });
 
+  it("restores user-message edit and resend without losing the existing draft", async () => {
+    const user = userEvent.setup();
+    const sendMessage = vi.fn();
+    render(Surface, { initialOpen: true, messages: mockMessages, actions: { sendMessage } });
+    const composer = screen.getByRole("textbox", { name: "Message Prompt Agent" });
+    await user.type(composer, "Keep this draft");
+
+    await user.click(screen.getByRole("button", { name: "Edit and resend" }));
+    expect(composer).toHaveValue(mockMessages[0].content);
+    expect(screen.getByRole("status")).toHaveTextContent("Editing message");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(composer).toHaveValue("Keep this draft");
+
+    await user.click(screen.getByRole("button", { name: "Edit and resend" }));
+    await user.clear(composer);
+    await user.type(composer, "Edited request");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      text: "Edited request",
+      editOf: mockMessages[0].id,
+    }));
+    expect(screen.queryByText("Editing message")).not.toBeInTheDocument();
+  });
+
   it("keeps the touch composer focused and sendable while the virtual keyboard is open", async () => {
     const user = userEvent.setup();
     const sendMessage = vi.fn();
@@ -422,13 +448,16 @@ describe("Svelte chat surface", () => {
     expect(stopRequest).toHaveBeenCalledOnce();
   });
 
-  it("shows the current assistant working phase", async () => {
+  acceptanceTest("UI-FEEDBACK-001@1", "loading", "shows the current assistant working phase", async () => {
     useChatStore.getState().beginRequest("active");
     useRuntimeStore.getState().setWorking("submitting");
     render(Surface, { initialOpen: true, actions: {} });
 
     expect(screen.getByText("Sending request…")).toBeInTheDocument();
     expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+    useRuntimeStore.getState().setWorking("model-loading", "loading:7");
+    expect(await screen.findByText("Loading local model…")).toBeInTheDocument();
+    expect(screen.getByText("Starting llama.cpp and loading model weights · 7s")).toBeInTheDocument();
     useRuntimeStore.getState().setWorking("thinking");
     expect(await screen.findByText("Thinking…")).toBeInTheDocument();
     useChatStore.getState().appendMessage({ id: "assistant-active", role: "assistant", content: "", reasoning: "draft rationale", status: "streaming" });
@@ -438,9 +467,26 @@ describe("Svelte chat surface", () => {
     useRuntimeStore.getState().setWorking("tool", "edit_prompt");
     expect((await screen.findByText("Running tool…")).closest("details")).not.toHaveAttribute("open");
     expect(screen.getByText("Tool: edit_prompt")).toBeInTheDocument();
+    useRuntimeStore.getState().setWorking("retrying", "Tool feedback received");
+    expect(await screen.findByText("Retrying with tool feedback…")).toBeInTheDocument();
+    expect(screen.getByText("Tool feedback received")).toBeInTheDocument();
 
     useChatStore.getState().cancelRequest();
     await waitFor(() => expect(screen.queryByText("Running tool…")).not.toBeInTheDocument());
+  });
+
+  acceptanceTest("UI-WINDOW-001@1", "focus", "keeps desktop chat input usable while settings is open", async () => {
+    const user = userEvent.setup();
+    render(Surface, { initialOpen: true, actions: {} });
+
+    await user.click(screen.getByRole("button", { name: "Open settings" }));
+    expect(screen.getByRole("dialog", { name: "Prompt Agent chat" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Model profiles" })).toBeInTheDocument();
+    const composer = screen.getByRole("textbox", { name: "Message Prompt Agent" });
+    await user.click(composer);
+    await user.type(composer, "Chat input works again");
+    expect(composer).toHaveValue("Chat input works again");
+    expect(useUiStore.getState().frontWindow).toBe("chat");
   });
 
   it("offers undo on a successful prompt tool result", async () => {

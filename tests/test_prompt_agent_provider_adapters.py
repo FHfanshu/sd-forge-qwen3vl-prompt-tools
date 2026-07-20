@@ -10,6 +10,7 @@ import httpx
 from backend.prompt_agent.contracts import parse_stream_request
 from backend.prompt_agent.provider_adapters.registry import capability_report, provider_id_for
 from backend.prompt_agent.providers import stream_profile
+from quality.acceptance import acceptance
 
 
 REAL_ASYNC_CLIENT = httpx.AsyncClient
@@ -128,7 +129,7 @@ def gemini_frames(*, tool: bool = False) -> list[bytes]:
     })]
 
 
-def request(*, tools: bool = False, request_id: str = "adapter-request"):
+def request(*, tools: bool = False, request_id: str = "adapter-request", tool_choice: str = ""):
     return parse_stream_request({
         "profile_id": "profile",
         "request_id": request_id,
@@ -137,7 +138,7 @@ def request(*, tools: bool = False, request_id: str = "adapter-request"):
             "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}, {"type": "image", "mimeType": "image/png", "data": "aW1hZ2U="}]}],
             "tools": [{"name": "lookup", "description": "Find", "parameters": {"type": "object"}}] if tools else [],
         },
-        "options": {"reasoning": "medium", "maxTokens": 128},
+        "options": {"reasoning": "medium", "maxTokens": 128, "toolChoice": tool_choice or None},
     })
 
 
@@ -181,6 +182,15 @@ class ProviderAdapterContractTests(unittest.TestCase):
 
         return asyncio.run(run())
 
+    def collect_forced_tool(self, harness: UpstreamHarness, provider: str) -> dict:
+        async def run() -> dict:
+            with patch("backend.prompt_agent.providers.httpx.AsyncClient", new=harness.client_factory):
+                async for _frame in stream_profile(request(tools=True, tool_choice="lookup"), profile(provider)):
+                    pass
+            return json.loads(harness.requests[0].content)
+
+        return asyncio.run(run())
+
     def test_registry_resolves_all_provider_ids_and_reports_explicit_capabilities(self):
         profiles = {
             "openai-compatible": profile("openai-compatible"),
@@ -220,6 +230,7 @@ class ProviderAdapterContractTests(unittest.TestCase):
                 self.assertEqual(2, events[-1]["usage"]["output"])
                 self.assertIn("thinking_delta", types)
 
+    @acceptance("PROVIDER-TOOLS-001@1", "normalization")
     def test_each_adapter_normalizes_tool_calls_and_native_request_schema(self):
         cases = {
             "openai-compatible": openai_frames(tool=True),
@@ -252,6 +263,29 @@ class ProviderAdapterContractTests(unittest.TestCase):
                     self.assertEqual("provider-secret", harness.requests[0].headers["x-goog-api-key"])
                     self.assertNotIn("key=", str(harness.requests[0].url))
 
+    @acceptance("PROVIDER-TOOLS-001@1", "forced-choice")
+    def test_each_adapter_forces_the_requested_declared_tool(self):
+        cases = {
+            "openai-compatible": openai_frames(tool=True),
+            "openrouter": openai_frames(tool=True),
+            "anthropic": anthropic_frames(tool=True),
+            "gemini": gemini_frames(tool=True),
+            "llama-cpp": openai_frames(tool=True),
+        }
+        for provider, chunks in cases.items():
+            with self.subTest(provider=provider):
+                body = self.collect_forced_tool(UpstreamHarness(200, chunks), provider)
+                if provider in {"openai-compatible", "openrouter", "llama-cpp"}:
+                    self.assertEqual({"type": "function", "function": {"name": "lookup"}}, body["tool_choice"])
+                elif provider == "anthropic":
+                    self.assertEqual({"type": "tool", "name": "lookup"}, body["tool_choice"])
+                else:
+                    self.assertEqual({"mode": "ANY", "allowedFunctionNames": ["lookup"]}, body["toolConfig"]["functionCallingConfig"])
+
+    def test_rejects_forced_tool_that_was_not_declared(self):
+        with self.assertRaisesRegex(ValueError, "declared tool"):
+            request(tools=True, tool_choice="missing")
+
     def test_each_adapter_sanitizes_terminal_http_errors(self):
         for provider in ("openai-compatible", "openrouter", "anthropic", "gemini", "llama-cpp"):
             with self.subTest(provider=provider):
@@ -261,6 +295,7 @@ class ProviderAdapterContractTests(unittest.TestCase):
                 self.assertNotIn("provider-secret", json.dumps(events))
                 self.assertIn("credentials", events[-1]["errorMessage"])
 
+    @acceptance("PROVIDER-TOOLS-001@1", "abort")
     def test_each_adapter_cancellation_closes_upstream_work(self):
         async def run(provider: str) -> tuple[list[str], TrackingByteStream, httpx.AsyncClient]:
             started = asyncio.Event()

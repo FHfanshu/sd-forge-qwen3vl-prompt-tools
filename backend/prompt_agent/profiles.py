@@ -113,7 +113,7 @@ class ProfileAuthority:
         return self.create(source)
 
     def set_default(self, role: str, profile_id: str) -> dict[str, Any]:
-        if role not in {"active", "teacher", "session", "naming"}:
+        if role not in {"active", "session", "naming"}:
             raise ValueError("invalid profile route role")
         state = self._load_state()
         item = next((profile for profile in state["profiles"] if profile["profile_id"] == profile_id), None)
@@ -149,7 +149,7 @@ class ProfileAuthority:
         ]
         first = agent_profiles[0] if agent_profiles else ""
         result = {"version": 1, "profiles": profiles}
-        for role in ("active", "teacher", "session", "naming"):
+        for role in ("active", "session", "naming"):
             value = str(source.get(f"{role}_profile_id") or source.get(f"{role}ProfileId") or "")
             if role == "naming":
                 valid = value in enabled and next(item for item in profiles if item["profile_id"] == value).get("runtime") == LLAMA_ONCE
@@ -157,7 +157,7 @@ class ProfileAuthority:
             elif role == "session":
                 local = [item["profile_id"] for item in profiles if item["profile_id"] in enabled and item.get("runtime") in {LLAMA_ENDPOINT, LLAMA_ONCE}]
                 result[f"{role}_profile_id"] = value if value in local else (local[0] if local else "")
-            elif role in {"active", "teacher"}:
+            elif role == "active":
                 result[f"{role}_profile_id"] = value if value in agent_profiles else first
             else:
                 result[f"{role}_profile_id"] = value if value in enabled else first
@@ -180,7 +180,6 @@ class ProfileAuthority:
         return {
             "version": 1,
             "active_profile_id": "local-endpoint",
-            "teacher_profile_id": "local-endpoint",
             "session_profile_id": "local-endpoint",
             "naming_profile_id": "",
             "profiles": [normalize_profile({
@@ -196,17 +195,14 @@ class ProfileAuthority:
     @staticmethod
     def _public_state(state: dict[str, Any], profiles: list[dict[str, Any]]) -> dict[str, Any]:
         active = state.get("active_profile_id", "")
-        teacher = state.get("teacher_profile_id", "")
         session = state.get("session_profile_id", "")
         naming = state.get("naming_profile_id", "")
         return {
             "version": 2,
             "active_profile_id": active,
-            "teacher_profile_id": teacher,
             "session_profile_id": session,
             "naming_profile_id": naming,
             "activeProfileId": active,
-            "teacherProfileId": teacher,
             "sessionProfileId": session,
             "namingProfileId": naming,
             "profiles": profiles,

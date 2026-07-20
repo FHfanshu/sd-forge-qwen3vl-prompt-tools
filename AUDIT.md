@@ -5,6 +5,47 @@ Historical migration implementation remains available on branch `kt` and tag
 `docs/archive/audit-archive-2026-07-19.md`; detailed working notes are
 local-only under `docs/archive/`.
 
+## 2026-07-20 Local Runtime Feedback And Agent Tool Enforcement
+
+- Root cause: on-demand llama.cpp startup blocked on its readiness probe while
+  the frontend exposed only the generic submitting state. Separately, named
+  entity background questions used provider `tool_choice=auto`; the runtime
+  enforced `edit_prompt` for mutations but had no equivalent lookup invariant,
+  so Gemma4 could legally emit an unverified text answer without using tools.
+- Added a sanitized local runtime status endpoint exposing only
+  `idle/loading/ready/failed` and elapsed seconds. The chat working indicator now
+  reports local model startup and weight loading, and cancellation/failure clears
+  the watcher without leaving the composer disabled.
+- Added a background-lookup gate for explicit named-entity/background questions.
+  The provider is forced through `search_resources(kind=style)` and
+  `inspect_resource(kind=style)` because local Forge styles are authoritative for
+  character trigger words. It falls back to Danbooru only when no style matches.
+  Unverified streaming text is hidden, successful inspection restores normal
+  auto selection, and bounded corrective retries end in a visible failure rather
+  than a fabricated answer.
+- Fixed chat/settings interaction by preserving desktop/tablet floating windows,
+  bringing chat to the front when its composer receives focus, and retaining the
+  separate-view/focus-restoration behavior on phone layouts.
+- Live Forge read-only verification returned exactly one local style for
+  `moqing`; inspecting its logical ID returned the configured positive and
+  negative trigger templates without exposing a filesystem path.
+- Re-audited mobile acceptance chronology before changing layout code. The exact
+  full-screen phone assertions dated to July 17, while the July 20 profile
+  settings refactor explicitly replaced that behavior with persisted floating
+  mobile layouts and added a CSS regression guard. Updated the stale mock-host
+  E2E assertions to require an in-viewport, non-full-screen settings window;
+  production CSS was not reverted to satisfy the obsolete expectation.
+- Changed files include `backend/prompt_agent/{app,contracts,local_runtime}.py`,
+  provider adapters, `frontend/src/agent/{agent-runtime,controller}.ts`,
+  `frontend/src/{profile-api,providers/proxy-stream}.ts`, runtime/UI components,
+  i18n, and focused Python/frontend tests.
+- Verification: 88 Python tests and 144 frontend tests passed. Svelte check
+  reported 0 errors and 0 warnings. The Vite build regenerated
+  `javascript/prompt_agent_90_ui.js` at 756,574 raw bytes and 218,425 gzip
+  bytes, within budget. All six Prompt Agent browser scripts passed `node
+  --check`; all seven mock-host Playwright scenarios passed; `git diff --check`
+  reported only existing line-ending warnings.
+
 ## 2026-07-19 Phase 9 Runtime Removal
 
 - Removed the managed KT/Terrarium sidecar, installer/configuration, old
@@ -258,3 +299,175 @@ local-only under `docs/archive/`.
   reported 0 errors/warnings; browser contracts passed 11 tests; all Prompt
   Agent scripts passed `node --check`; Vite build and bundle-size passed
   (740,340 raw / 213,867 gzip bytes).
+
+## 2026-07-20 Installer Namespace And Forge Locale Recovery
+
+- Installer root cause: the extension's `backend/__init__.py` made `backend` a
+  regular package and shadowed Forge Neo's sibling `backend.args` while the
+  extension installer was first on `sys.path`. Removed that marker so both
+  trees participate in the `backend` namespace package.
+- Locale root cause: the Svelte store fetched `/prompt-agent/api/i18n/locale`
+  but discarded its parsed Forge locale. Initial host hints could therefore
+  fall back to the browser language and remain English even when Forge used
+  `zh_CN`.
+- Applied Python locale metadata to `forgeLocale` during preload and after host
+  locale events. Added regressions for namespace coexistence and Forge-locale
+  precedence over an English browser locale.
+- Verification: the real Forge venv ran `install.py` successfully;
+  `python tests/run_suite.py --max-skips 20` passed 79 tests with 0 skipped;
+  frontend Vitest passed 124 tests and Svelte check reported 0 errors/warnings;
+  root browser contracts passed 11 tests; Vite build, `node --check`, and the
+  bundle-size check passed (740,420 raw / 213,885 gzip bytes). The configured
+  Playwright web-server command could not launch `pnpm@10` on Windows, so the
+  same pinned Vite server was started explicitly and all 7 mock Chromium
+  scenarios passed.
+
+## 2026-07-20 Gemma 4 12B On-Demand Local Runtime
+
+- Restored `llama-once` as a streaming Pi agent runtime without restoring the
+  archived sidecar. Python now owns one loopback-only llama.cpp process while
+  the frontend owns the complete agent turn and its tool loop.
+- Added explicit turn start/stop boundaries so model calls before and after
+  Forge tools reuse the same process. The process is terminated after the final
+  reply, failure, abort, or stale interrupted turn by default. A profile toggle
+  can keep it resident between replies instead.
+- Added server-only MTP draft-model configuration and safe public configured
+  flags. Model, mmproj, draft, and executable paths remain absent from browser
+  profile responses and stream requests.
+- Configured the local machine profile for Gemma 4 12B Q8, its BF16 mmproj and
+  MTP draft model under `E:\AI\lmcpp`, with 16K context, full RTX 3090 offload,
+  one slot, flash attention, prompt-cache disabled, and reply-end unloading.
+- Corrected `E:\AI\lmcpp\start-server.bat` to use the installed mmproj and the
+  current llama.cpp MTP flags while binding only to `127.0.0.1`.
+- Real verification loaded Gemma on a dynamic loopback port, returned exactly
+  `LOCAL_OK`, then reported `stopped: true`; the PID disappeared and GPU memory
+  returned to approximately 1.69 GiB baseline. Python passed 82 tests with 0
+  skipped; frontend Vitest passed 127 tests and Svelte check reported 0 errors
+  or warnings. The generated bundle passed its size budget at 743,468 raw /
+  214,508 gzip bytes; browser contracts passed 11 tests and mock Chromium E2E
+  passed all 7 scenarios.
+
+## 2026-07-20 Bugfix: Settings Selects Lost Styling
+
+- Symptom: dropdowns/selects in the profile settings window were unusable
+  after the minimalist refresh.
+- Root cause: the `styles.css` consolidation removed legacy CSS variables
+  (`--pa-border`, `--pa-input`, `--pa-ring`, `--pa-background`,
+  `--pa-secondary-foreground`, `--pa-muted*`, `--pa-popover*`,
+  `--pa-radius-sm`, and the shadcn-meaning `--pa-accent`) that
+  `frontend/tailwind.config.ts` maps into Tailwind theme colors used by the
+  shared UI primitives (`pa-border-input`, `pa-bg-background`,
+  `pa-ring-ring`, etc.).
+- Fix: restored every Tailwind-consumed token on the surface root and moved
+  the refresh's primary-accent usages to a dedicated `--pa-focus` token to
+  avoid the `--pa-accent` semantic collision.
+- Regression coverage: new `frontend/tests/style-tokens.test.ts` asserts all
+  Tailwind-consumed tokens stay defined in `styles.css`.
+- Verification: `pnpm run test` 125 passed across 22 files; `pnpm run build`
+  succeeded; `node --check` passed on the generated bundle; manually verified
+  against the Vite mock host that the Runtime select changes value and the
+  header DropdownMenu opens and renders correctly. The mock Playwright
+  webServer script fails under the npm temporary-toolchain wrapper (env issue,
+  unrelated to this fix).
+
+## 2026-07-20 Profile Settings Refactor And Teacher Removal
+
+- Root causes: narrow/mobile profile settings were forced into a full-viewport
+  layout; controlled profile fields autosaved on every keystroke and normalized
+  empty intermediate values back to hard-coded defaults; the retired two-model
+  Teacher route and `teacher_mode` redaction field still crossed frontend and
+  backend profile contracts.
+- Added commit-on-change input/textarea wrappers so identity, endpoint,
+  fallback endpoint, and numeric fields remain freely editable until commit.
+  Empty required values revert with validation feedback; ordinary typing no
+  longer sends one PATCH per keystroke.
+- Mobile profile settings now use their persisted floating layout, remain
+  draggable like the chat window, and keep resize disabled on narrow/mobile
+  viewports. Removed the forced `inset: 0` full-screen CSS path and softened
+  warning/tab/form visual hierarchy.
+- Removed the Teacher route and `teacher_mode` end to end from frontend
+  contracts, state adapter/store/API, profile settings, backend profile
+  authority/migration/public contracts, active locale strings, mocks, and
+  regression tests. Legacy JSON keys are ignored and disappear on normalized
+  writeback; the main active profile remains the sole agent profile.
+- Verification: Svelte check reported 0 errors and warnings; frontend Vitest
+  passed 141 tests across 22 files; Python unittest passed 85 tests; Vite build
+  regenerated `javascript/prompt_agent_90_ui.js` at 751.74 kB raw / 217.59 kB
+  gzip; generated and boot scripts passed `node --check`.
+
+## 2026-07-20 Bugfix: Agent Recovery And Edit Resend
+
+- Symptoms: a failed Forge tool call ended the agent turn instead of letting the
+  model inspect the error and retry, direct prompt-edit requests could finish
+  with advice but no successful `edit_prompt`, and the Pi migration no longer
+  exposed the previous user-message edit-and-resend workflow.
+- Root causes: the browser controller marked tool errors as terminal, the
+  runtime had no bounded completion guard for requested prompt mutations, and
+  the migrated UI/session layer omitted transcript rewind and persisted-message
+  suffix deletion.
+- Fix: tool failures now remain in the single browser-owned Pi loop with a
+  visible `retrying` state. Direct mutation requests receive at most two hidden
+  corrective follow-ups until `edit_prompt` succeeds, then fail explicitly
+  with `prompt_mutation_incomplete` instead of claiming success. Hidden control
+  messages and superseded assistant replies are excluded from UI, snapshots,
+  and persistence.
+- Restored edit and resend by deleting the selected user message and all later
+  records in one IndexedDB transaction, replacing the runtime transcript, and
+  submitting the edited text and attachments. Cancel restores the pre-existing
+  composer draft. Ordinary streaming snapshots retain earlier complete
+  history; cleanup of superseded records only runs at correction and terminal
+  persistence boundaries.
+- Changed files: `frontend/src/agent/agent-runtime.ts`,
+  `frontend/src/agent/controller.ts`, `frontend/src/agent/runtime-state.ts`,
+  `frontend/src/components/Surface.svelte`,
+  `frontend/src/components/WorkingIndicator.svelte`,
+  `frontend/src/contracts.ts`, `frontend/src/sessions/repository.ts`,
+  `frontend/src/styles.css`, `prompt_agent/i18n.py`, focused frontend tests, and
+  rebuilt `javascript/prompt_agent_90_ui.js`.
+- Regression coverage includes stale prompt-hash refresh and retry, bounded
+  hidden mutation correction, explicit incomplete-mutation failure, transcript
+  replacement, IndexedDB suffix deletion, stale snapshot cleanup, ordinary
+  streaming-history retention, edit cancellation/draft preservation, and mock
+  Chromium edit-and-resend, abort, and refresh interruption flows.
+- Verification: `python -m unittest discover -s tests` passed 85 tests;
+  frontend `pnpm run test` passed 143 tests across 24 files; focused frontend
+  tests passed 61; `pnpm run check` reported 0 errors and two pre-existing
+  settings-input warnings; Vite build and bundle-size passed at 752,538 raw /
+  217,358 gzip bytes; all Prompt Agent browser scripts passed `node --check`;
+  browser contracts passed 11 tests; final targeted Playwright passed all 3
+  affected scenarios. The full mock suite passed 6 of 7; its remaining mobile
+  settings-window offset assertion and the configured Windows web-server npm
+  package-name error are unrelated to this agent-loop/message-history fix.
+
+## 2026-07-20 Critical Acceptance Quality Gates
+
+- Root cause: critical product behavior was distributed across ordinary tests
+  without a revisioned source of truth, so stale high-level assertions could
+  pressure production code to restore superseded behavior. Local verification
+  also relied on manually assembled commands instead of a consistent affected
+  versus delivery gate.
+- Added `quality/acceptance.json`, shared Python/Vitest/Playwright acceptance
+  helpers, expiring flaky-test waivers, and `tools/test_gate.py`. The registry
+  governs 11 critical UI, session, agent/provider, local-runtime, security, and
+  data-integrity requirements through 26 mapped test references. Affected mode
+  warns and skips stale mappings; full mode rejects them. Intentional behavior
+  changes explicitly bump the relevant requirement revision.
+- Migrated critical tests to observable acceptance scenarios and replaced exact
+  mobile geometry assumptions with viewport containment and floating-window
+  semantics. Added focused gate self-tests and documented affected, full,
+  release, and behavior-change workflows in the repository guidance.
+- Verification exposed three gate-environment defects: Python subprocesses on
+  Windows did not resolve the `npx.cmd` shim, Node 22 required JSON import
+  attributes in the TypeScript helpers, and seven parallel cold Vite
+  navigations exceeded the old 10-second Playwright ceiling before assertions
+  ran. The gate now resolves Windows executable shims and reports missing tools
+  as environment failures; helpers use valid JSON import attributes; the E2E
+  ceiling is 30 seconds while all behavioral assertions remain unchanged.
+- `python tools/test_gate.py affected` passed with a clean 11-requirement / 26-
+  mapping preflight, 55 Python tests, Svelte check with 0 errors and warnings,
+  56 focused frontend tests, and all 7 mock-host browser scenarios.
+- `python tools/test_gate.py full` passed Python compilation, 93 Python tests,
+  11 browser host contracts, Svelte check with 0 errors and warnings, 145
+  frontend tests across 22 files, production build, bundle budget at 756,574
+  raw / 218,425 gzip bytes, all 7 browser scenarios, and syntax checks for all
+  6 Prompt Agent browser scripts.

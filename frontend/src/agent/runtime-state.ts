@@ -5,6 +5,7 @@ export type AgentRuntimeStatus =
   | "submitting"
   | "streaming"
   | "tool-calling"
+  | "retrying"
   | "aborting"
   | "completed"
   | "failed";

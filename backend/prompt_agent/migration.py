@@ -80,7 +80,7 @@ def _with_routes(
     enabled_set = set(enabled)
     first_enabled = enabled[0] if enabled else ""
     result = {"version": 1, "profiles": profiles}
-    for role in ("active", "teacher", "session", "naming"):
+    for role in ("active", "session", "naming"):
         requested = _route_value(imported_state, role)
         if not requested:
             requested = _route_value(current_state, role)

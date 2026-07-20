@@ -57,7 +57,10 @@ async def stream_openai_compatible(
     }
     if request.tools:
         body["tools"] = [{"type": "function", "function": tool} for tool in tool_definitions(request.tools)]
-        body["tool_choice"] = "auto"
+        body["tool_choice"] = (
+            {"type": "function", "function": {"name": request.tool_choice}}
+            if request.tool_choice else "auto"
+        )
     if request.reasoning not in {"off", "none"} and _reasoning_enabled(profile):
         if reasoning_format == "openrouter":
             body["reasoning"] = {"effort": request.reasoning}

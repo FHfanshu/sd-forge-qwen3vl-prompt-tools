@@ -181,10 +181,12 @@ Exit criteria:
 
 The llama.cpp adapter supports both a resident OpenAI-compatible endpoint and
 an on-demand `llama-once` process owned by Python. A single on-demand process
-is reused across every model/tool round in one frontend Pi agent turn, then is
-terminated after the final reply, failure, or abort by default. Profile settings
-can disable reply-end unloading to keep the owned process resident for reuse.
-Local paths stay server-owned and stale interrupted turns are reclaimed.
+is reused across every model/tool round in one frontend Pi agent turn. By
+default it remains resident between turns and is unloaded after the configured
+idle period; `0` disables idle unloading. Profile settings can instead unload
+after every reply. Force-stop, abort, startup failure, and stale interrupted
+turn recovery still reclaim the owned process immediately. Local paths stay
+server-owned.
 
 ## Phase 6: Forge Agent Tools
 
@@ -313,22 +315,27 @@ runtime as a frozen historical lesson and are not part of the active product.
 
 ## Quality Gates
 
-Run the smallest complete set covering every changed layer:
+Critical acceptance is versioned in `quality/acceptance.json`. High-level UI,
+session, agent/provider, security, and data-integrity tests map to an acceptance
+revision and scenario. Ordinary unit tests remain lightweight and do not need a
+product requirement ID.
+
+During development, run the affected gate:
 
 ```powershell
-python -m compileall -q backend prompt_agent scripts install.py tests
-python -m unittest discover -s tests
-
-cd frontend
-npx --yes --package node@22.17.0 --package pnpm@10.12.4 pnpm run check
-npx --yes --package node@22.17.0 --package pnpm@10.12.4 pnpm run test:coverage
-npx --yes --package node@22.17.0 --package pnpm@10.12.4 pnpm run build
-npx --yes --package node@22.17.0 --package pnpm@10.12.4 pnpm run bundle:size
-npx --yes --package node@22.17.0 --package pnpm@10.12.4 pnpm run test:e2e
+python tools/test_gate.py affected
 ```
 
-Update the commands when the pinned Node version changes. Browser scripts must
-also pass `node --check` after generation or lifecycle edits.
+Before delivery, run the full gate:
+
+```powershell
+python tools/test_gate.py full
+```
+
+Stale acceptance mappings warn and skip in `affected`, but block `full`. Exact
+pixel or DOM-implementation assertions are not allowed in high-level browser
+tests unless the acceptance registry explicitly requires them. Flaky acceptance
+tests may be waived for at most 14 days.
 
 ## Definition Of Done
 
@@ -340,4 +347,5 @@ A phase is complete only when:
 - generated assets are rebuilt rather than edited;
 - secrets and raw private content are absent from logs and audit records;
 - applicable CI-equivalent checks pass;
+- critical acceptance mappings are current and all required scenarios have evidence;
 - `AUDIT.md` records changed files, commands, outcomes, and residual risk.

@@ -37,7 +37,6 @@ const DEFAULT_PARAMETERS: ProfileParameters = {
   reasoningEffort: "low",
   timeout: 180,
   sanitizeSensitive: true,
-  teacherMode: "qwen-redact",
 };
 
 const DEFAULT_MODEL_INFO: ProfileModelInfo = {
@@ -122,7 +121,6 @@ function normalizeParameters(raw: unknown, fallback = DEFAULT_PARAMETERS): Profi
     reasoningEffort: stringValue(source, ["reasoningEffort", "reasoning_effort"], fallback.reasoningEffort) || fallback.reasoningEffort,
     timeout: Math.round(numberValue(source, ["timeout"], fallback.timeout, 1, 3600)),
     sanitizeSensitive: booleanValue(source, ["sanitizeSensitive", "sanitize_sensitive"], fallback.sanitizeSensitive),
-    teacherMode: stringValue(source, ["teacherMode", "teacher_mode"], fallback.teacherMode) || fallback.teacherMode,
   };
 }
 
@@ -176,7 +174,8 @@ export function normalizeProfile(raw: unknown, fallback?: Partial<Profile>): Pro
     nCtx: Math.round(numberValue(source, ["nCtx", "n_ctx", "localNCtx", "local_n_ctx"], numberValue(base, ["nCtx", "n_ctx"], 16384), 1024, 1048576)),
     nGpuLayers: Math.round(numberValue(source, ["nGpuLayers", "n_gpu_layers", "localNGpuLayers", "local_n_gpu_layers"], numberValue(base, ["nGpuLayers", "n_gpu_layers"], -1), -1, 10000)),
     thinking: booleanValue(source, ["thinking", "localTextThinking", "local_text_thinking", "enableThinking"], booleanValue(base, ["thinking"], false)),
-    unloadAfterTurn: booleanValue(source, ["unloadAfterTurn", "unload_after_turn"], booleanValue(base, ["unloadAfterTurn", "unload_after_turn"], true)),
+    unloadAfterTurn: booleanValue(source, ["unloadAfterTurn", "unload_after_turn"], booleanValue(base, ["unloadAfterTurn", "unload_after_turn"], false)),
+    idleUnloadMinutes: Math.round(numberValue(source, ["idleUnloadMinutes", "idle_unload_minutes"], numberValue(base, ["idleUnloadMinutes", "idle_unload_minutes"], 30), 0, 1440)),
   };
   if (providerId) normalized.providerId = providerId;
   if (normalized.runtime !== "remote-http" && ["gemini-native", "anthropic-native"].includes(normalized.protocol)) normalized.protocol = "openai-chat-completions";
@@ -196,7 +195,6 @@ export function createDefaultProfileState(): ProfileState {
   return {
     version: 2,
     activeProfileId: "gemini",
-    teacherProfileId: "gemini",
     sessionProfileId: "local-llama-endpoint",
     namingProfileId: "",
     profiles: DEFAULT_PROFILE_SEEDS.map((profile) => normalizeProfile(profile)),
@@ -223,7 +221,6 @@ export function normalizeProfileState(raw: unknown): ProfileState {
   const agentIds = new Set(agentProfiles.map((profile) => profile.id));
   const firstEnabled = agentProfiles[0]?.id ?? "";
   const requestedActive = stringValue(source, ["activeProfileId", "active_profile_id"]);
-  const requestedTeacher = stringValue(source, ["teacherProfileId", "teacher_profile_id"]);
   const requestedSession = stringValue(source, ["sessionProfileId", "session_profile_id"]);
   const requestedNaming = stringValue(source, ["namingProfileId", "naming_profile_id"]);
   const localIds = enabled.filter((profile) => profile.runtime === "llama-endpoint" || profile.runtime === "llama-once").map((profile) => profile.id);
@@ -231,7 +228,6 @@ export function normalizeProfileState(raw: unknown): ProfileState {
   return profileStateSchema.parse({
     version: 2,
     activeProfileId: agentIds.has(requestedActive) ? requestedActive : firstEnabled,
-    teacherProfileId: agentIds.has(requestedTeacher) ? requestedTeacher : firstEnabled,
     sessionProfileId: localIds.includes(requestedSession) ? requestedSession : (localIds.includes("local-llama-endpoint") ? "local-llama-endpoint" : localIds[0] ?? ""),
     namingProfileId: namingIds.includes(requestedNaming) ? requestedNaming : (namingIds.includes("local-llama-once") ? "local-llama-once" : namingIds[0] ?? ""),
     profiles,
@@ -242,7 +238,7 @@ export function toHostProfilePatch(patch: ProfilePatch | Partial<Profile>): Reco
   const source = profilePatchSchema.parse(patch) as RecordValue;
   const result: RecordValue = {};
   const copy = (camel: string, snake: string) => { if (source[camel] !== undefined) result[snake] = source[camel]; };
-  ["providerId", "displayName", "modelId", "enabled", "protocol", "runtime", "endpoint", "fallbackEndpoints", "hasApiKey", "modelPath", "mmprojPath", "draftModelPath", "llamaServerPath", "nCtx", "nGpuLayers", "thinking", "unloadAfterTurn"].forEach((key) => {
+  ["providerId", "displayName", "modelId", "enabled", "protocol", "runtime", "endpoint", "fallbackEndpoints", "hasApiKey", "modelPath", "mmprojPath", "draftModelPath", "llamaServerPath", "nCtx", "nGpuLayers", "thinking", "unloadAfterTurn", "idleUnloadMinutes"].forEach((key) => {
     const snake = key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
     copy(key, snake);
   });
@@ -254,7 +250,7 @@ export function toHostProfilePatch(patch: ProfilePatch | Partial<Profile>): Reco
     result[targetKey] = target;
   };
   copyNested("capabilities", "capabilities", [["tools", "tools"], ["vision", "vision"], ["streaming", "streaming"], ["reasoning", "reasoning"], ["attachments", "attachments"], ["systemPrompt", "system_prompt"], ["usage", "usage"], ["abort", "abort"]]);
-  copyNested("parameters", "parameters", [["temperature", "temperature"], ["topP", "top_p"], ["top_p", "top_p"], ["maxTokens", "max_tokens"], ["max_tokens", "max_tokens"], ["reasoningEffort", "reasoning_effort"], ["reasoning_effort", "reasoning_effort"], ["timeout", "timeout"], ["sanitizeSensitive", "sanitize_sensitive"], ["sanitize_sensitive", "sanitize_sensitive"], ["teacherMode", "teacher_mode"], ["teacher_mode", "teacher_mode"]]);
+  copyNested("parameters", "parameters", [["temperature", "temperature"], ["topP", "top_p"], ["top_p", "top_p"], ["maxTokens", "max_tokens"], ["max_tokens", "max_tokens"], ["reasoningEffort", "reasoning_effort"], ["reasoning_effort", "reasoning_effort"], ["timeout", "timeout"], ["sanitizeSensitive", "sanitize_sensitive"], ["sanitize_sensitive", "sanitize_sensitive"]]);
   copyNested("modelInfo", "model_info", [["source", "source"], ["providerId", "provider_id"], ["provider_id", "provider_id"], ["matchedModelId", "matched_model_id"], ["matched_model_id", "matched_model_id"], ["contextLimit", "context_limit"], ["context_limit", "context_limit"], ["outputLimit", "output_limit"], ["output_limit", "output_limit"], ["temperatureSupported", "temperature_supported"], ["temperature_supported", "temperature_supported"], ["reasoningToggle", "reasoning_toggle"], ["reasoning_toggle", "reasoning_toggle"], ["reasoningEfforts", "reasoning_efforts"], ["reasoning_efforts", "reasoning_efforts"], ["syncedAt", "synced_at"], ["synced_at", "synced_at"]]);
   return result;
 }
@@ -270,7 +266,6 @@ export function toHostProfileState(state: ProfileState): RecordValue {
   return {
     version: normalized.version,
     active_profile_id: normalized.activeProfileId,
-    teacher_profile_id: normalized.teacherProfileId,
     session_profile_id: normalized.sessionProfileId,
     naming_profile_id: normalized.namingProfileId,
     profiles: normalized.profiles.map(toHostProfileInput),

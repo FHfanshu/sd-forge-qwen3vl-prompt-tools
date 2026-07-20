@@ -87,18 +87,20 @@ Historical KT/Terrarium runtime remains only on branch `kt` / tag `kt-final`.
 
 Pinned frontend toolchain: Node `22.17.0`, pnpm `10.12.4`.
 
+Critical user behavior and cross-layer contracts are versioned in
+`quality/acceptance.json`. Ordinary unit tests stay lightweight. The acceptance
+gate detects stale high-level tests before they can force production code back
+to an older design.
+
 ### Fast local loop
 
 ```powershell
-python -m compileall -q backend prompt_agent scripts install.py tests
-python tests/run_suite.py --max-skips 20
-node --check javascript/prompt_agent.js
-node --check javascript/prompt_agent_01_i18n.js
-node --check javascript/prompt_agent_02_resources.js
-node --check javascript/prompt_agent_07_host.js
-node --check javascript/prompt_agent_90_ui.js
-node --check javascript/prompt_agent_99_boot.js
+python tools/test_gate.py affected
 ```
+
+`affected` first checks acceptance versions and then runs tests mapped to the
+changed boundaries. A stale acceptance test is reported and skipped during this
+development loop instead of forcing an immediate production-code rollback.
 
 ### Frontend (when UI/source changes)
 
@@ -113,15 +115,24 @@ npx --yes --package node@22.17.0 --package pnpm@10.12.4 pnpm --dir frontend run 
 ### Full / CI-equivalent
 
 ```powershell
-python -m coverage run --branch -m unittest discover -s tests
-python -m coverage report --fail-under=70
-node --test tests/test_frontend_*.js
-npx --yes --package node@22.17.0 --package pnpm@10.12.4 pnpm --dir frontend run test:coverage
-npx --yes --package node@22.17.0 --package pnpm@10.12.4 pnpm --dir frontend run test:e2e
+python tools/test_gate.py full
 ```
 
-CI runs path-filtered jobs (backend / frontend / e2e) so unrelated changes skip
-heavy steps. `workflow_dispatch` and pushes to `main` run the full set.
+The full gate blocks stale acceptance mappings, expired flaky-test waivers,
+implementation regressions, generated-bundle drift, browser acceptance failures,
+and bundle-budget failures. CI keeps its path-filtered jobs for parallel speed
+but runs the same acceptance preflight before dispatching them.
+
+When product behavior intentionally changes, review the current acceptance first:
+
+```powershell
+python tools/test_gate.py behavior-change UI-WINDOW-001
+python tools/test_gate.py behavior-change UI-WINDOW-001 --bump
+```
+
+The bump intentionally makes mapped high-level tests stale until their assertions
+are reviewed. Do not bump revisions for a bugfix that restores already-documented
+behavior.
 
 ### Real Forge (local only)
 
@@ -129,6 +140,12 @@ Requires an already-running Forge Neo instance:
 
 ```powershell
 npx --yes --package node@22.17.0 --package pnpm@10.12.4 pnpm --dir frontend run test:e2e:forge
+```
+
+Or run the release gate, which adds coverage and real-Forge evidence:
+
+```powershell
+python tools/test_gate.py release
 ```
 
 Optional: `FORGE_BASE_URL`, HTTP basic-auth vars, `FORGE_MODEL_PROFILE_ID`.

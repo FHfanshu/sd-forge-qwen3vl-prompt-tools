@@ -22,6 +22,8 @@ interface ProxyEvent {
   usage?: Usage;
 }
 
+type PromptAgentStreamOptions = SimpleStreamOptions & { toolChoice?: string };
+
 const emptyUsage = (): Usage => ({
   input: 0,
   output: 0,
@@ -79,6 +81,7 @@ async function consumeProxy(
           maxTokens: options.maxTokens,
           reasoning: options.reasoning,
           sessionId: options.sessionId,
+          toolChoice: (options as PromptAgentStreamOptions).toolChoice,
         },
       }),
       signal: options.signal,

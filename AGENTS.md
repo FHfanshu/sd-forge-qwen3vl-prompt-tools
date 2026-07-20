@@ -55,5 +55,16 @@ This extension is loaded inside Forge Neo, so keep changes small and easy to aud
 - Reproduce UI bugs against the real frontend state transition before changing code; record the visible symptom and the state or event that caused it.
 - For session lifecycle bugs, verify success, failure, abort, refresh interruption, and stale-write recovery. A failed request must not leave the composer permanently disabled.
 - Add or update a focused regression test for every bugfix when the affected boundary is testable.
-- Run the repository CI-equivalent checks that cover the changed files, including generated frontend output when frontend source changes.
+- Run `python tools/test_gate.py affected` during development and
+  `python tools/test_gate.py full` before delivery. The affected gate warns on
+  stale high-level acceptance instead of making an old test dictate production
+  behavior; the full gate requires every critical mapping to be current.
+- Critical UI, session, agent/provider, security, and data-integrity behavior is
+  authoritative in `quality/acceptance.json`. Ordinary unit tests do not need an
+  acceptance mapping. Intentional behavior changes must use
+  `python tools/test_gate.py behavior-change <ID> --bump` and then review all
+  stale mapped tests.
+- High-level tests should assert observable semantics. Do not lock exact pixels,
+  private DOM structure, timer counts, or internal ordering unless the matching
+  acceptance explicitly requires it.
 - Append a concise entry to `AUDIT.md` with the root cause, changed files, commands run, and their outcomes. Do not include secrets, model files, caches, or raw user content in audit records.

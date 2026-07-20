@@ -23,9 +23,9 @@ import { getHostApi, promptAgentNamespace } from "../bridge";
 import { startLocalRuntime, stopLocalRuntime } from "../profile-api";
 
 const LAST_SESSION_PREFERENCE = "last-session-id";
-export const FORGE_AGENT_SYSTEM_PROMPT = "You are the SD Forge Neo Prompt Agent. Forge state is live context: select the positive or negative field when reading/editing prompts, read prompts or generation parameters before changing them, use the returned latest hash/context hash, and make only bounded visible-control changes. For non-empty prompts use patches or diff; full prompt overwrite is allowed only when the field is empty. Prefer search_danbooru_tags for unfamiliar tag concepts. Never request paths or provider credentials.";
+export const FORGE_AGENT_SYSTEM_PROMPT = "You are the SD Forge Neo Prompt Agent. Forge state is live context: select the positive or negative field when reading/editing prompts, read prompts or generation parameters before changing them, use the returned latest hash/context hash, and make only bounded visible-control changes. For non-empty prompts use patches or diff; full prompt overwrite is allowed only when the field is empty. When a tool returns an error, treat it as feedback instead of ending the task: correct the arguments or refresh stale Forge state with the matching read tool, then retry when safe. Never repeat an identical failed write blindly; if the error is not recoverable, explain the blocker. Continue until the user's requested rewrite or change is completed. Character trigger words and templates are stored in Forge styles. When the user asks who or what a named entity is, or asks for background information, first call search_resources with kind=style and the entity query; inspect the best matching style with inspect_resource before answering. Only if no style matches may you fall back to Danbooru tag/wiki tools. Never answer that question from memory or invent an identity, and state whether the answer came from a local Forge style or Danbooru. Prefer search_danbooru_tags for unfamiliar visual tag concepts. Never request paths or provider credentials.";
 type SessionRepository = Pick<PromptAgentSessionRepository,
-  "putSession" | "getSession" | "listSessions" | "putMessage" | "getMessages" |
+  "putSession" | "getSession" | "listSessions" | "putMessage" | "getMessages" | "deleteMessages" |
   "putPreference" | "getPreference" | "markInterrupted">;
 
 export class PromptAgentController {
@@ -163,9 +163,16 @@ export class PromptAgentController {
     }
     try {
       if (usesLocalRuntime) await startLocalRuntime(profile.id, requestId, localStartController.signal);
-      await this.runtime.submit({ text: input.text, images, reasoningLevel });
+      const editedFirstUser = input.editOf ? await this.rewindForEdit(input.editOf) : false;
+      await this.runtime.submit({
+        text: input.text,
+        images,
+        reasoningLevel,
+        requirePromptMutation: userRequestedPromptMutation(input.text),
+        requireBackgroundLookup: userRequestedBackgroundLookup(input.text),
+      });
       await this.queueRuntimePersistence(this.runtime.getState(), this.currentSession.id);
-      await this.touchSession(input.text);
+      await this.touchSession(input.text, editedFirstUser);
       await this.loadHistory();
       return { kind: "local", id: requestId };
     } finally {
@@ -229,10 +236,6 @@ export class PromptAgentController {
       tools: toolRegistry.list(),
       thinkingLevel: normalizedThinking(session.reasoningLevel),
       streamFn: provider.createStream(profile.id, () => this.requestId ?? ""),
-      afterToolCall: async (context) => {
-        if (context.isError && toolRegistry.permission(context.toolCall.name)) return { terminate: true };
-        return undefined;
-      },
     });
     const sessionId = session.id;
     this.unsubscribeRuntime = this.runtime.subscribe((state) => {
@@ -250,7 +253,11 @@ export class PromptAgentController {
     records.sort((left, right) => left.createdAt - right.createdAt);
     useChatStore.getState().setMessages(records.map(toChatMessage));
     useRuntimeStore.getState().setError(state.error?.message ?? null);
-    useRuntimeStore.getState().setWorking(workingPhase(state), state.pendingToolCalls[0] ?? null);
+    const phase = workingPhase(state);
+    useRuntimeStore.getState().setWorking(
+      phase,
+      phase === "retrying" ? null : state.pendingToolCalls[0] ?? null,
+    );
   }
 
   private queueRuntimePersistence(state: AgentRuntimeState, sessionId: string): Promise<void> {
@@ -261,12 +268,36 @@ export class PromptAgentController {
 
   private async persistRuntimeState(state: AgentRuntimeState, sessionId: string): Promise<void> {
     const records = runtimeRecords(sessionId, state);
+    if (["retrying", "completed", "failed"].includes(state.status)) {
+      const recordIds = new Set(records.map((record) => record.id));
+      const obsoleteIds = (await this.sessions.getMessages(sessionId))
+        .filter((record) => record.status === "complete" && !recordIds.has(record.id))
+        .map((record) => record.id);
+      if (obsoleteIds.length) await this.sessions.deleteMessages(obsoleteIds);
+    }
     await Promise.all(records.map((record) => this.sessions.putMessage(record)));
   }
 
-  private async touchSession(firstUserText: string): Promise<void> {
+  private async rewindForEdit(messageId: string): Promise<boolean> {
+    if (!this.currentSession || !this.runtime) throw new Error("Prompt Agent is not ready.");
+    await this.persistenceQueue.catch(() => undefined);
+    const records = await this.sessions.getMessages(this.currentSession.id);
+    const targetIndex = records.findIndex((record) => record.id === messageId);
+    const target = records[targetIndex];
+    if (targetIndex < 0 || !target || target.status !== "complete" || target.message.role !== "user") {
+      throw new Error("This user message is no longer available to edit.");
+    }
+    const firstUserId = records.find((record) => record.status === "complete" && record.message.role === "user")?.id;
+    await this.sessions.deleteMessages(records.slice(targetIndex).map((record) => record.id));
+    const retained = records.slice(0, targetIndex);
+    this.interruptedRecords = retained.filter((record) => record.status !== "complete");
+    this.runtime.replaceMessages(retained.filter((record) => record.status === "complete").map((record) => record.message));
+    return firstUserId === messageId;
+  }
+
+  private async touchSession(firstUserText: string, replaceTitle = false): Promise<void> {
     if (!this.currentSession) return;
-    const title = this.currentSession.title === "New conversation" && firstUserText.trim()
+    const title = (replaceTitle || this.currentSession.title === "New conversation") && firstUserText.trim()
       ? firstUserText.trim().replace(/\s+/g, " ").slice(0, 64)
       : this.currentSession.title;
     this.currentSession = { ...this.currentSession, title, updatedAt: Date.now() };
@@ -292,6 +323,22 @@ const activeProfile = (): Profile => {
 };
 
 const profileById = (id: string): Profile | undefined => useProfileStore.getState().profiles.find((profile) => profile.id === id && profile.enabled);
+
+const abortableDelay = (milliseconds: number, signal: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
+  if (signal.aborted) {
+    reject(signal.reason);
+    return;
+  }
+  const onAbort = () => {
+    window.clearTimeout(timer);
+    reject(signal.reason);
+  };
+  const timer = window.setTimeout(() => {
+    signal.removeEventListener("abort", onAbort);
+    resolve();
+  }, milliseconds);
+  signal.addEventListener("abort", onAbort, { once: true });
+});
 
 const providerId = (profile: Profile): string => profile.modelInfo.providerId || (profile.runtime.startsWith("llama") ? "llama-cpp" : profile.protocol === "gemini-native" ? "gemini" : "openai-compatible");
 
@@ -322,7 +369,7 @@ function runtimeRecords(sessionId: string, state: AgentRuntimeState): PromptAgen
 const messageId = (sessionId: string, message: AgentMessage): string => `${sessionId}:${message.role}:${message.timestamp}`;
 
 function messageStatus(message: AgentMessage, state: AgentRuntimeState): SessionMessageStatus {
-  if (message === state.currentAssistantMessage && ["submitting", "streaming", "tool-calling", "aborting"].includes(state.status)) return "streaming";
+  if (message === state.currentAssistantMessage && ["submitting", "streaming", "tool-calling", "retrying", "aborting"].includes(state.status)) return "streaming";
   if (message.role === "assistant" && message.stopReason === "error") return "failed";
   if (message.role === "assistant" && message.stopReason === "aborted") return "interrupted";
   return "complete";
@@ -375,6 +422,27 @@ function workingPhase(state: AgentRuntimeState): WorkingPhase {
   if (state.status === "submitting") return "submitting";
   if (state.status === "streaming") return "generating";
   if (state.status === "tool-calling") return "tool";
+  if (state.status === "retrying") return "retrying";
   if (state.status === "aborting") return "cancelling";
   return "idle";
+}
+
+export function userRequestedPromptMutation(text: string): boolean {
+  const value = text.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!value) return false;
+  const editVerb = /(改成|修改|改写|重写|优化|精炼|扩写|替换|追加|加上|加入|删除|移除|写入|更新|套用|应用|编辑|修一下|insert|append|replace|rewrite|edit|update|apply|change|remove|delete|optimi[sz]e|refine|expand)/i;
+  const promptReference = /(当前|现在|现有|原来|原有|这个|这段|它|其|提示词|prompt|txt2img|img2img|webui|ui|输入框|文本框)/i;
+  const directEdit = /(帮我|请|直接|把|将|给我|给[\w\u4e00-\u9fff -]{1,40}).{0,30}(改成|修改|改写|重写|优化|精炼|扩写|替换|追加|加上|加入|删除|移除|写入|更新|套用|应用|编辑|修一下)/i;
+  const adviceOnly = /(怎么改|如何改|哪里.*改|修改建议|改进建议|优化建议|建议.*(修改|优化|改写|调整)|should.*(change|edit|rewrite)|how.*(change|edit|rewrite))/i;
+  return editVerb.test(value) && !adviceOnly.test(value) && (promptReference.test(value) || directEdit.test(value));
+}
+
+export function userRequestedBackgroundLookup(text: string): boolean {
+  const value = text.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!value || /(提示词|prompt|txt2img|img2img|生成参数|generation parameter)/i.test(value)) return false;
+  return /[^?？\s]{2,80}\s*是谁/i.test(value)
+    || /(?:背景信息|背景资料|角色背景|人物资料|角色设定|人物设定|出处)/i.test(value)
+    || /(?:查一下|查询|查查|搜索|了解一下).{0,80}(?:是谁|背景|资料|出处|设定|角色|人物)/i.test(value)
+    || /\bwho\s+is\s+[^?]{2,80}/i.test(value)
+    || /\b(?:background\s+(?:info|information)\s+(?:on|about)|look\s+up|research)\s+[^?]{2,80}/i.test(value);
 }

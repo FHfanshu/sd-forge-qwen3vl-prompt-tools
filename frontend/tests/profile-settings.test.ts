@@ -88,15 +88,47 @@ describe("Svelte profile settings", () => {
     expect(screen.getByRole("button", { name: "Resize profile window" })).toBeInTheDocument();
   });
 
-  it("keeps narrow phones full-screen without a resize handle", () => {
+  it("keeps narrow phones in a floating window without a resize handle", () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 844 });
 
     render(ProfileSettings, { open: true, onclose: () => undefined });
 
     const dialog = screen.getByRole("dialog", { name: "Model profiles" });
-    expect(dialog).toHaveStyle({ left: "0px", top: "0px", width: "390px", height: "844px" });
+    expect(dialog).toHaveStyle({ left: "16px", top: "16px", width: "360px", height: "600px" });
     expect(screen.queryByRole("button", { name: "Resize profile window" })).not.toBeInTheDocument();
+  });
+
+  it("lets you clear and rewrite the model id without snap-back or per-keystroke saves", async () => {
+    const fetchMock = installProfileApi();
+    render(ProfileSettings, { open: true, onclose: () => undefined });
+    const input = screen.getByLabelText("Model ID");
+
+    await fireEvent.input(input, { target: { value: "" } });
+    expect(input).toHaveValue("");
+    await fireEvent.input(input, { target: { value: "my-own-model" } });
+    expect(input).toHaveValue("my-own-model");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await fireEvent.change(input, { target: { value: "my-own-model" } });
+
+    const profileId = useProfileStore.getState().selectedProfileId;
+    await waitFor(() => expect(useProfileStore.getState().profiles.find((profile) => profile.id === profileId)?.modelId).toBe("my-own-model"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(`/prompt-agent/api/profiles/${profileId}`, expect.objectContaining({ method: "PATCH" })));
+  });
+
+  it("restores the stored model id when an empty value is committed", async () => {
+    render(ProfileSettings, { open: true, onclose: () => undefined });
+    const input = screen.getByLabelText("Model ID");
+    const stored = (input as HTMLInputElement).value;
+
+    await fireEvent.input(input, { target: { value: "" } });
+    await fireEvent.change(input, { target: { value: "" } });
+
+    expect(input).toHaveValue(stored);
+    expect(screen.getByRole("status")).toHaveTextContent("Check this value and try again.");
+    const profileId = useProfileStore.getState().selectedProfileId;
+    expect(useProfileStore.getState().profiles.find((profile) => profile.id === profileId)?.modelId).toBe(stored);
   });
 
   it("reports the resolved connection route and forwards a bounded timeout", async () => {
@@ -225,18 +257,19 @@ describe("Svelte profile settings", () => {
     expect(screen.getByRole("button", { name: "Use model" })).toBeEnabled();
   });
 
-  it("defaults local one-shot profiles to unloading after each complete reply", async () => {
+  it("defaults local one-shot profiles to resident with idle unloading", async () => {
     const user = userEvent.setup();
     const local = useProfileStore.getState().profiles.find((profile) => profile.runtime === "llama-once");
-    expect(local?.unloadAfterTurn).toBe(true);
+    expect(local?.unloadAfterTurn).toBe(false);
+    expect(local?.idleUnloadMinutes).toBe(30);
     useProfileStore.getState().selectProfile(local!.id);
     render(ProfileSettings, { open: true, onclose: () => undefined });
     await user.click(screen.getByRole("tab", { name: "Local" }));
 
     const toggle = screen.getByRole("switch", { name: "Unload local model after each reply" });
-    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(toggle).toHaveAttribute("aria-checked", "false");
     await user.click(toggle);
-    expect(useProfileStore.getState().profiles.find((profile) => profile.id === local!.id)?.unloadAfterTurn).toBe(false);
+    expect(useProfileStore.getState().profiles.find((profile) => profile.id === local!.id)?.unloadAfterTurn).toBe(true);
   });
 
   it("keeps local paths out of profile state and submits them only on explicit save", async () => {
@@ -269,12 +302,12 @@ describe("Svelte profile settings", () => {
     expect(useProfileStore.getState().profiles).toHaveLength(count - 1);
   });
 
-  it("exposes active, teacher, session, and naming route controls", async () => {
+  it("exposes active, session, and naming route controls without a teacher route", async () => {
     const user = userEvent.setup();
     render(ProfileSettings, { open: true, onclose: () => undefined });
     await user.click(screen.getByRole("tab", { name: "Routes" }));
     expect(screen.getByRole("combobox", { name: /Active profile/ })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: /Teacher profile/ })).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /Teacher profile/ })).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: /Session model/ })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: /Naming model/ })).toBeInTheDocument();
   });

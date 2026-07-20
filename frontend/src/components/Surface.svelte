@@ -79,6 +79,8 @@
   let replacementId = $state<string | null>(null);
   let attachmentMenuId = $state<string | null>(null);
   let notice = $state<string | null>(null);
+  let editingMessageId = $state<string | null>(null);
+  let preEditDraft = $state<{ text: string; attachments: PreparedImageAttachment[] } | null>(null);
   let returnToChatAfterSettings = $state(false);
   let controller = $state<PromptAgentController | null>(null);
   let controllerReady: Promise<PromptAgentController> | null = null;
@@ -304,9 +306,15 @@
         attachments: await materializeImageAttachments(submittedAttachments),
         displayAttachments: submittedAttachments.map(displayImageAttachment),
         reasoning,
+        editOf: editingMessageId ?? undefined,
       };
-      const submission = await send(input);
+      await send(input);
       releaseImageAttachments(submittedAttachments);
+      if (editingMessageId === input.editOf) {
+        releaseImageAttachments(preEditDraft?.attachments ?? []);
+        editingMessageId = null;
+        preEditDraft = null;
+      }
       requestAnimationFrame(() => resizeComposer());
     } catch (error) {
       if (!draft) draft = submittedDraft;
@@ -332,6 +340,30 @@
     if (composerFocused && event.pointerType !== "mouse") event.preventDefault();
   }
 
+  function beginEdit(message: ChatMessage): void {
+    if (!editingMessageId) preEditDraft = { text: draft, attachments: [...attachments] };
+    else releaseImageAttachments(attachments);
+    editingMessageId = message.id;
+    draft = message.content;
+    attachments = [...message.attachments];
+    retainImageAttachments(attachments);
+    notice = null;
+    requestAnimationFrame(() => {
+      resizeComposer();
+      composerInput?.focus();
+      composerInput?.setSelectionRange(draft.length, draft.length);
+    });
+  }
+
+  function cancelEdit(): void {
+    releaseImageAttachments(attachments);
+    draft = preEditDraft?.text ?? "";
+    attachments = [...(preEditDraft?.attachments ?? [])];
+    editingMessageId = null;
+    preEditDraft = null;
+    requestAnimationFrame(() => resizeComposer());
+  }
+
   function stop(): void {
     if (actionOverrides.stopRequest) actionOverrides.stopRequest();
     else if (controller) controller.actions.stopRequest();
@@ -352,6 +384,7 @@
       returnToChatAfterSettings = false;
       $useUiStore.setShellOpen(true);
       $useUiStore.bringToFront("chat");
+      requestAnimationFrame(() => composerInput?.focus());
     }
   }
 
@@ -390,6 +423,8 @@
     notice = null;
     const previousDraft = draft;
     const previousAttachments = [...attachments];
+    const previousEditingMessageId = editingMessageId;
+    const previousPreEditDraft = preEditDraft;
     try {
       if (actionOverrides.newSession) await actionOverrides.newSession();
       else {
@@ -401,6 +436,11 @@
       if (attachments.length === previousAttachments.length && attachments.every((item, index) => item.id === previousAttachments[index]?.id)) {
         attachments = [];
         releaseImageAttachments(previousAttachments);
+      }
+      if (editingMessageId === previousEditingMessageId) editingMessageId = null;
+      if (preEditDraft === previousPreEditDraft) {
+        releaseImageAttachments(previousPreEditDraft?.attachments ?? []);
+        preEditDraft = null;
       }
     } catch (error) {
       notice = error instanceof Error ? error.message : t("assistant.error.new_chat", "A new chat could not be started. Stop the current response and try again.");
@@ -518,6 +558,7 @@
       controller = null;
       controllerReady = null;
       releaseImageAttachments(attachments);
+      releaseImageAttachments(preEditDraft?.attachments ?? []);
     };
   });
 
@@ -642,7 +683,7 @@
                   </details>
                  {/if}
                 {#if message.attachments.length && !collapsedMessageIds.has(message.id)}<div class="pa-message-attachments" aria-label={tf("assistant.reference_images", "{count} reference images", { count: message.attachments.length })}>{#each message.attachments as attachment, index (attachment.id)}<button type="button" class="pa-message-attachment" onclick={() => lightbox = { attachments: message.attachments, index }} aria-label={tf("assistant.preview_named", "Preview {name}", { name: attachment.name })}><img src={attachmentPreviewUrl(attachment)} alt={attachment.name} width="58" height="48" loading="lazy" /></button>{/each}</div>{/if}
-                 <div class="pa-message-footer"><div class="pa-message-actions"><button type="button" class="pa-message-action" onclick={() => void copyMessage(message)}>{#if copiedId === message.id}<Check size={13} /> {t("chat.copied", "Copied")}{:else}<Copy size={13} /> {t("chat.copy", "Copy")}{/if}</button></div></div>
+                  <div class="pa-message-footer"><div class="pa-message-actions"><button type="button" class="pa-message-action" onclick={() => void copyMessage(message)}>{#if copiedId === message.id}<Check size={13} /> {t("chat.copied", "Copied")}{:else}<Copy size={13} /> {t("chat.copy", "Copy")}{/if}</button>{#if message.role === "user"}<button type="button" class="pa-message-action" disabled={Boolean($useChatStore.activeRequestId)} onclick={() => beginEdit(message)}><Pencil size={13} /> {t("assistant.rewind", "Edit and resend")}</button>{/if}</div></div>
                </article>
              {/each}
               {#each renderMessages.pendingTools as tool (tool.id)}<div class="pa-orphan-tools"><ToolCard message={tool} onundo={undoToolMutation} /></div>{/each}
@@ -653,8 +694,9 @@
         </div>
 
         <form class:pa-composer-drop-active={dropActive} class="pa-composer" onsubmit={(event) => { event.preventDefault(); void submit(); }} ondragover={(event) => { event.preventDefault(); dropActive = true; }} ondragleave={() => dropActive = false} ondrop={(event) => { event.preventDefault(); dropActive = false; void addFiles(Array.from(event.dataTransfer?.files ?? [])); }}>
+          {#if editingMessageId}<div class="pa-editing-banner" role="status"><span><Pencil size={13} /> {t("chat.editing", "Editing message")}</span><button type="button" onclick={cancelEdit}>{t("chat.cancel_edit", "Cancel")}</button></div>{/if}
           {#if attachments.length}<div class="pa-filmstrip" aria-label={t("assistant.attached_images", "Attached reference images")}>{#each attachments as attachment, index (attachment.id)}<div class="pa-filmstrip-item"><button type="button" class="pa-filmstrip-preview" onclick={() => lightbox = { attachments, index }} oncontextmenu={(event) => { event.preventDefault(); attachmentMenuId = attachment.id; }} aria-label={tf("assistant.preview_named", "Preview {name}", { name: attachment.name })}><img src={attachmentPreviewUrl(attachment)} alt={attachment.name} width="58" height="54" /><span class="pa-filmstrip-name">{attachment.name}</span></button><button type="button" class="pa-filmstrip-remove" onclick={() => void removeAttachment(attachment.id)} aria-label={tf("assistant.remove_named", "Remove {name}", { name: attachment.name })}><X size={12} /></button><button type="button" class="pa-filmstrip-more" onclick={() => attachmentMenuId = attachmentMenuId === attachment.id ? null : attachment.id} aria-label={tf("assistant.edit_named", "Edit {name}", { name: attachment.name })}>•••</button>{#if attachmentMenuId === attachment.id}<div class="pa-attachment-menu" role="menu"><button type="button" role="menuitem" onclick={() => { replacementId = attachment.id; replacementInput?.click(); attachmentMenuId = null; }}><Pencil size={13} /> {t("common.replace", "Replace")}</button><button type="button" role="menuitem" onclick={() => { void removeAttachment(attachment.id); attachmentMenuId = null; }}><Trash2 size={13} /> {t("common.remove", "Remove")}</button></div>{/if}</div>{/each}<button type="button" class="pa-filmstrip-add" onclick={() => fileInput?.click()} aria-label={t("assistant.attach_another", "Attach another image")}><Plus size={17} /></button></div>{/if}
-           <textarea name="prompt-agent-message" autocomplete="off" bind:this={composerInput} bind:value={draft} rows="1" placeholder={t("assistant.input.placeholder", "Ask about or change the current prompt…")} aria-label={t("assistant.input.label", "Message Prompt Agent")} onfocus={() => composerFocused = true} onblur={() => composerFocused = false} oninput={(event) => resizeComposer(event.currentTarget)} onkeydown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); if ($useChatStore.activeRequestId) stop(); else void submit(); } }}></textarea>
+           <textarea name="prompt-agent-message" autocomplete="off" bind:this={composerInput} bind:value={draft} rows="1" placeholder={t("assistant.input.placeholder", "Ask about or change the current prompt…")} aria-label={t("assistant.input.label", "Message Prompt Agent")} onfocus={() => { composerFocused = true; $useUiStore.bringToFront("chat"); }} onblur={() => composerFocused = false} oninput={(event) => resizeComposer(event.currentTarget)} onkeydown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); if ($useChatStore.activeRequestId) stop(); else void submit(); } }}></textarea>
           <div class="pa-composer-bottom"><div class="pa-composer-tools"><button type="button" class="pa-composer-icon" onclick={() => fileInput?.click()} aria-label={t("assistant.attach", "Attach reference images")}><ImagePlus size={16} /></button></div>
               <div class="pa-composer-tools"><div class="pa-composer-picker-row" aria-label={t("assistant.model_controls", "Model controls")}><ModelPicker /><ReasoningPicker /></div>{#if $useChatStore.activeRequestId}<button type="button" class="pa-send-button pa-stop-button" onclick={stop} disabled={$useRuntimeStore.workingPhase === "cancelling"} aria-label={t("assistant.stop", "Stop response")}><CircleStop size={17} /></button>{:else}<button type="submit" class="pa-send-button" onpointerdown={keepComposerFocus} disabled={!draft.trim() && !attachments.length} aria-label={t("assistant.send", "Send message")}><Send size={17} /></button>{/if}</div>
            </div>

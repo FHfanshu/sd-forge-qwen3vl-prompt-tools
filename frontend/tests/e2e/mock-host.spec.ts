@@ -1,4 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
+import { acceptanceEvidence, acceptanceTest, expectFloatingInsideViewport, expectInsideViewport } from "./acceptance";
+
+acceptanceEvidence("DATA-INTEGRITY-001@1", "no-replay");
 
 async function capture(page: Page, name: string): Promise<void> {
   const directory = process.env.PROMPT_AGENT_VISUAL_DIR;
@@ -15,19 +18,18 @@ async function installMockHost(page: Page, hostDelayMs = 0): Promise<void> {
         id: "mock-remote", display_name: "Mock Qwen", model_id: "qwen-mock", enabled: true,
         protocol: "openai-chat-completions", runtime: "remote-http", endpoint: "https://mock.invalid/v1",
         capabilities: { tools: true, vision: true, streaming: true, reasoning: true },
-        parameters: { temperature: 0.25, top_p: 0.9, max_tokens: 4096, reasoning_effort: "low", timeout: 30, sanitize_sensitive: true, teacher_mode: "qwen-redact" },
+        parameters: { temperature: 0.25, top_p: 0.9, max_tokens: 4096, reasoning_effort: "low", timeout: 30, sanitize_sensitive: true },
       },
       {
         id: "mock-local", display_name: "Mock local", model_id: "qwen-local", enabled: true,
         protocol: "openai-chat-completions", runtime: "llama-once", endpoint: "http://127.0.0.1:8080/v1",
         model_path: "C:/models/mock.gguf", capabilities: { tools: true, vision: true, streaming: true, reasoning: true },
-        parameters: { temperature: 0.25, top_p: 0.9, max_tokens: 4096, reasoning_effort: "low", timeout: 30, sanitize_sensitive: true, teacher_mode: "qwen-redact" },
+        parameters: { temperature: 0.25, top_p: 0.9, max_tokens: 4096, reasoning_effort: "low", timeout: 30, sanitize_sensitive: true },
       },
     ];
     const state = {
       version: 2,
       active_profile_id: "mock-remote",
-      teacher_profile_id: "mock-remote",
       session_profile_id: "mock-local",
       naming_profile_id: "mock-local",
       profiles,
@@ -148,14 +150,14 @@ async function installMockHost(page: Page, hostDelayMs = 0): Promise<void> {
   }, hostDelayMs);
 }
 
-test("module loading alone does not bypass the Forge boot callback", async ({ page }) => {
+acceptanceTest("UI-BOOT-001@1", "boot-gate", "module loading alone does not bypass the Forge boot callback", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator("#tabs")).toHaveAttribute("data-prompt-agent-host-owned", "true");
   await expect(page.locator("#txt2img_prompt")).toHaveAttribute("data-prompt-agent-host-owned", "true");
   await expect(page.locator("#prompt-agent-svelte-mount")).toHaveCount(0);
 });
 
-test("connects when the Svelte bundle loads before the Forge host", async ({ page }) => {
+acceptanceTest("UI-BOOT-001@1", "late-host", "connects when the Svelte bundle loads before the Forge host", async ({ page }) => {
   await installMockHost(page, 2_500);
   await page.goto("/?mount=1");
   await expect(page.getByRole("button", { name: "Open Prompt Agent" })).toBeVisible();
@@ -258,6 +260,18 @@ test("mounted desktop UI exercises chat, history, profiles, and attachments", as
   expect(userMessageStyle.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
   await capture(page, "chat-messages");
 
+  await userMessage.hover();
+  await userMessage.getByRole("button", { name: "Edit and resend" }).click();
+  await expect(composer).toHaveValue("Review this composition");
+  await expect(page.getByText("Editing message", { exact: true })).toBeVisible();
+  await composer.fill("Review this edited composition");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(page.getByText("Review this composition", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Review this edited composition", { exact: true })).toBeVisible();
+  await expect.poll(async () => page.evaluate(() => (
+    window as Window & { __mockStreamRequestCount?: number }
+  ).__mockStreamRequestCount ?? 0)).toBe(2);
+
   await page.getByRole("button", { name: "Open settings" }).click();
   const settings = page.getByRole("dialog", { name: "Model profiles" });
   await expect(settings).toBeVisible();
@@ -269,7 +283,6 @@ test("mounted desktop UI exercises chat, history, profiles, and attachments", as
   await capture(page, "settings-generation");
   await settings.getByRole("tab", { name: "Routes" }).click();
   await expect(settings.getByRole("combobox", { name: /Active profile/ })).toBeVisible();
-  await expect(settings.getByRole("combobox", { name: /Teacher profile/ })).toBeVisible();
   await expect(settings.getByRole("combobox", { name: /Session model/ })).toBeVisible();
   await expect(settings.getByRole("combobox", { name: /Naming model/ })).toBeVisible();
   await settings.getByRole("button", { name: "Language" }).click();
@@ -277,7 +290,7 @@ test("mounted desktop UI exercises chat, history, profiles, and attachments", as
   await expect(settings.getByRole("tab", { name: "路由" })).toBeVisible();
 });
 
-test("active turns abort and restore a usable composer", async ({ page }) => {
+acceptanceTest("SESSION-LIFECYCLE-001@1", "abort,recovery", "active turns abort and restore a usable composer", async ({ page }) => {
   test.setTimeout(20_000);
   await installMockHost(page);
   await page.addInitScript(() => { (window as Window & { __mockSlowTurn?: boolean }).__mockSlowTurn = true; });
@@ -296,7 +309,7 @@ test("active turns abort and restore a usable composer", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
 });
 
-test("refresh preserves partial content, interrupts unfinished work, and never resumes it", async ({ page }) => {
+acceptanceTest("SESSION-REFRESH-001@1", "interruption,no-replay,recovery", "refresh preserves partial content, interrupts unfinished work, and never resumes it", async ({ page }) => {
   test.setTimeout(20_000);
   await installMockHost(page);
   await page.addInitScript(() => { (window as Window & { __mockSlowTurn?: boolean }).__mockSlowTurn = true; });
@@ -380,17 +393,12 @@ test("refresh preserves partial content, interrupts unfinished work, and never r
 test.describe("mobile layout", () => {
   test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 
-  test("portrait and landscape windows remain inside the viewport", async ({ page }) => {
+  acceptanceTest("UI-WINDOW-001@1", "phone", "portrait and landscape windows remain inside the viewport", async ({ page }) => {
     await installMockHost(page);
     await page.goto("/?mount=1");
     await page.getByRole("button", { name: "Open Prompt Agent" }).click();
     const chat = page.getByRole("dialog", { name: "Prompt Agent chat" });
-    const portrait = await chat.boundingBox();
-    expect(portrait).not.toBeNull();
-    expect(portrait!.x).toBeGreaterThanOrEqual(0);
-    expect(portrait!.y).toBeGreaterThanOrEqual(0);
-    expect(portrait!.x + portrait!.width).toBeLessThanOrEqual(390);
-    expect(portrait!.y + portrait!.height).toBeLessThanOrEqual(844);
+    const portrait = await expectInsideViewport(chat, { width: 390, height: 844 });
     const composer = await page.getByRole("textbox", { name: "Message Prompt Agent" }).boundingBox();
     expect(composer).not.toBeNull();
     expect(composer!.x).toBeGreaterThanOrEqual(portrait!.x);
@@ -407,12 +415,7 @@ test.describe("mobile layout", () => {
     expect(modelPicker!.y + modelPicker!.height).toBeLessThanOrEqual(844);
     await page.keyboard.press("Escape");
     await page.setViewportSize({ width: 844, height: 390 });
-    const landscape = await chat.boundingBox();
-    expect(landscape).not.toBeNull();
-    expect(landscape!.x).toBeGreaterThanOrEqual(0);
-    expect(landscape!.y).toBeGreaterThanOrEqual(0);
-    expect(landscape!.x + landscape!.width).toBeLessThanOrEqual(844);
-    expect(landscape!.y + landscape!.height).toBeLessThanOrEqual(390);
+    await expectInsideViewport(chat, { width: 844, height: 390 });
 
     await page.getByRole("button", { name: "Open settings" }).click();
     await expect(chat).toHaveCount(0);
@@ -420,12 +423,7 @@ test.describe("mobile layout", () => {
     await expect(settings).toBeVisible();
     await expect(page.getByRole("button", { name: "Open Prompt Agent" })).toHaveCount(0);
     await expect(settings.getByRole("button", { name: "Resize profile window" })).toHaveCount(0);
-    const settingsBox = await settings.boundingBox();
-    expect(settingsBox).not.toBeNull();
-    expect(settingsBox!.x).toBe(0);
-    expect(settingsBox!.y).toBe(0);
-    expect(settingsBox!.width).toBe(844);
-    expect(settingsBox!.height).toBe(390);
+    await expectFloatingInsideViewport(settings, { width: 844, height: 390 });
     await capture(page, "settings-mobile");
     await settings.getByRole("button", { name: "Close" }).click();
     await expect(page.getByRole("dialog", { name: "Prompt Agent chat" })).toBeVisible();
@@ -435,7 +433,7 @@ test.describe("mobile layout", () => {
 test.describe("tablet layout", () => {
   test.use({ viewport: { width: 820, height: 1180 }, isMobile: true, hasTouch: true });
 
-  test("keeps chat and settings as bounded floating windows", async ({ page }) => {
+  acceptanceTest("UI-WINDOW-001@1", "tablet", "keeps chat and settings as bounded floating windows", async ({ page }) => {
     await installMockHost(page);
     await page.goto("/?mount=1");
     await page.getByRole("button", { name: "Open Prompt Agent" }).click();
@@ -455,17 +453,9 @@ test.describe("tablet layout", () => {
     await expect(chat).toBeVisible();
     await expect(settings).toBeVisible();
     await expect(settings.getByRole("button", { name: "Resize profile window" })).toBeVisible();
-    const portrait = await settings.boundingBox();
-    expect(portrait).not.toBeNull();
-    expect(portrait!.x).toBeGreaterThan(0);
-    expect(portrait!.y).toBeGreaterThan(0);
-    expect(portrait!.width).toBeLessThan(820);
-    expect(portrait!.height).toBeLessThan(1180);
+    await expectFloatingInsideViewport(settings, { width: 820, height: 1180 });
 
     await page.setViewportSize({ width: 1180, height: 820 });
-    const landscape = await settings.boundingBox();
-    expect(landscape).not.toBeNull();
-    expect(landscape!.x + landscape!.width).toBeLessThanOrEqual(1180);
-    expect(landscape!.y + landscape!.height).toBeLessThanOrEqual(820);
+    await expectFloatingInsideViewport(settings, { width: 1180, height: 820 });
   });
 });

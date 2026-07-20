@@ -147,7 +147,9 @@ export const useI18nStore = createStore<I18nStore>((set, get) => ({
     if (!host || typeof host.subscribeLocaleHints !== "function") return () => undefined;
     const unsubscribe = host.subscribeLocaleHints((hints) => {
       get().applyHostLocaleHints(hints);
-      void probePythonLocaleMetadata().catch(() => undefined);
+      void probePythonLocaleMetadata()
+        .then((metadata) => get().setForgeLocale(metadata.locale))
+        .catch(() => undefined);
     });
     hostLocaleUnsubscribe = () => {
       unsubscribe();
@@ -163,7 +165,8 @@ export const useI18nStore = createStore<I18nStore>((set, get) => ({
       if (host?.getLocaleHints) {
         get().applyHostLocaleHints(host.getLocaleHints());
       }
-      await probePythonLocaleMetadata(fetchImpl).catch(() => undefined);
+      const pythonMetadata = await probePythonLocaleMetadata(fetchImpl).catch(() => null);
+      if (pythonMetadata) get().setForgeLocale(pythonMetadata.locale);
       const preloaded = await preloadPythonBundles(fetchImpl, "/prompt-agent/api/i18n", signal);
       get().setBundles(preloaded);
     } catch (error) {

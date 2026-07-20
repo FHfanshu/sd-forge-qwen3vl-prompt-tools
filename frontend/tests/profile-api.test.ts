@@ -58,7 +58,6 @@ describe("profile API endpoints", () => {
     const responseState = {
       version: 2,
       activeProfileId: "remote",
-      teacherProfileId: "remote",
       sessionProfileId: "",
       namingProfileId: "",
       profiles: [{
@@ -72,7 +71,7 @@ describe("profile API endpoints", () => {
         fallbackEndpoints: [],
         hasApiKey: false,
        capabilities: { tools: true, vision: true, streaming: true, reasoning: true, attachments: true, systemPrompt: true, usage: true, abort: true },
-        parameters: { temperature: 0.25, topP: 0.9, maxTokens: 8192, reasoningEffort: "low", timeout: 180, sanitizeSensitive: true, teacherMode: "qwen-redact" },
+        parameters: { temperature: 0.25, topP: 0.9, maxTokens: 8192, reasoningEffort: "low", timeout: 180, sanitizeSensitive: true },
         modelInfo: modelState.models[0].modelInfo,
         localModelConfigured: false,
         mmprojConfigured: false,
@@ -82,6 +81,7 @@ describe("profile API endpoints", () => {
         nGpuLayers: -1,
         thinking: false,
         unloadAfterTurn: true,
+        idleUnloadMinutes: 30,
       }],
     };
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify(responseState), { status: 200 }));

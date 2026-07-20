@@ -21,6 +21,8 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
     steps:
       - uses: actions/checkout@v4
+      - name: Validate critical acceptance registry
+        run: python tools/test_gate.py preflight --mode full
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -33,10 +35,14 @@ jobs:
               - 'requirements.txt'
               - 'requirements-test.txt'
               - 'tests/**'
+              - 'quality/**'
+              - 'tools/test_gate.py'
               - '.github/workflows/test.yml'
             frontend:
               - 'frontend/**'
               - 'javascript/**'
+              - 'quality/**'
+              - 'tools/test_gate.py'
               - '.github/workflows/test.yml'
 
   backend:

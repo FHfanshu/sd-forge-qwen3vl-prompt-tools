@@ -181,6 +181,27 @@ export class PromptAgentSessionRepository {
     return deleted;
   }
 
+  async deleteMessages(ids: string[]): Promise<number> {
+    const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+    if (!uniqueIds.length) return 0;
+    const deleted = await withDatabase(this.openDatabase, async (database) => {
+      const transaction = database.transaction(SESSION_STORES.messages, "readwrite");
+      const store = transaction.objectStore(SESSION_STORES.messages);
+      const completion = transactionComplete(transaction);
+      const records: PromptAgentMessage[] = [];
+      for (const id of uniqueIds) {
+        const record = await requestResult(store.get(id)) as PromptAgentMessage | undefined;
+        if (!record) continue;
+        records.push(record);
+        store.delete(id);
+      }
+      await completion;
+      return records;
+    });
+    for (const message of deleted) this.publish("message", "delete", message.id, message.sessionId);
+    return deleted.length;
+  }
+
   async putAttachment(attachment: PromptAgentAttachment): Promise<void> {
     const record = toAttachmentRecord(attachment);
     await withDatabase(this.openDatabase, async (database) => {

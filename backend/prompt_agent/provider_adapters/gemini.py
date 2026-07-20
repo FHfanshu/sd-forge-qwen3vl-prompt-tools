@@ -54,6 +54,13 @@ async def stream_gemini(request: StreamRequest, profile: dict[str, Any]) -> Asyn
                 for tool in tool_definitions(request.tools)
             ],
         }]
+        if request.tool_choice:
+            body["toolConfig"] = {
+                "functionCallingConfig": {
+                    "mode": "ANY",
+                    "allowedFunctionNames": [request.tool_choice],
+                },
+            }
     if request.reasoning not in {"off", "none"} and _reasoning_enabled(profile):
         maximum = int(body["generationConfig"]["maxOutputTokens"])
         body["generationConfig"]["thinkingConfig"] = {

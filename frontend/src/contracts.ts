@@ -117,7 +117,6 @@ export const profileParametersSchema = z.object({
   reasoningEffort: z.string().min(1),
   timeout: z.number().int().positive(),
   sanitizeSensitive: z.boolean(),
-  teacherMode: z.string().min(1),
 });
 export type ProfileParameters = z.infer<typeof profileParametersSchema>;
 
@@ -156,6 +155,7 @@ export const profileSchema = z.object({
   nGpuLayers: z.number().int(),
   thinking: z.boolean(),
   unloadAfterTurn: z.boolean(),
+  idleUnloadMinutes: z.number().int().min(0).max(1440),
 });
 export type Profile = z.infer<typeof profileSchema>;
 
@@ -180,13 +180,13 @@ export const profilePatchSchema = z.object({
   nGpuLayers: z.number().int().optional(),
   thinking: z.boolean().optional(),
   unloadAfterTurn: z.boolean().optional(),
+  idleUnloadMinutes: z.number().int().min(0).max(1440).optional(),
 });
 export type ProfilePatch = z.infer<typeof profilePatchSchema>;
 
 export const profileStateSchema = z.object({
   version: z.literal(2),
   activeProfileId: z.string(),
-  teacherProfileId: z.string(),
   sessionProfileId: z.string(),
   namingProfileId: z.string(),
   profiles: z.array(profileSchema).min(1),
@@ -197,8 +197,6 @@ export const profileStateInputSchema = z.object({
   version: z.number().int().optional(),
   activeProfileId: z.string().optional(),
   active_profile_id: z.string().optional(),
-  teacherProfileId: z.string().optional(),
-  teacher_profile_id: z.string().optional(),
   sessionProfileId: z.string().optional(),
   session_profile_id: z.string().optional(),
   namingProfileId: z.string().optional(),
@@ -218,7 +216,6 @@ export interface ProfileStoreActionContracts {
   updateProfile(profileId: string, patch: ProfilePatch): Profile | null;
   deleteProfile(profileId: string): boolean;
   activateProfile(profileId: string): void;
-  setTeacherProfile(profileId: string): void;
   setSessionProfile(profileId: string): void;
   setNamingProfile(profileId: string): void;
   restoreDefaults(): void;
@@ -233,7 +230,6 @@ export interface ProfileActionHandlers {
   updateProfile?(profileId: string, patch: ProfilePatch): Profile | null;
   deleteProfile?(profileId: string): boolean;
   activateProfile?(profileId: string): void;
-  setTeacherProfile?(profileId: string): void;
   setSessionProfile?(profileId: string): void;
   setNamingProfile?(profileId: string): void;
   restoreDefaults?(): void;
@@ -244,6 +240,7 @@ export interface SendMessageInput {
   attachments: WireAttachment[];
   displayAttachments?: ChatAttachment[];
   reasoning: ReasoningEffort;
+  editOf?: string;
 }
 
 export interface RuntimeSession {

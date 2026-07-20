@@ -15,9 +15,11 @@ from backend.prompt_agent.forge_tools import (
     validate_forge_tool_request,
 )
 from backend.prompt_agent.profiles import ProfileAuthority
+from quality.acceptance import acceptance
 
 
 class ForgeToolValidationTests(unittest.TestCase):
+    @acceptance("AGENT-TOOLS-001@1", "surface")
     def test_agent_tool_names_are_fixed_and_ordered(self):
         self.assertEqual(
             (
@@ -48,6 +50,7 @@ class ForgeToolValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ForgeToolValidationError, "field must be positive or negative"):
             validate_forge_tool_request("read_prompt", {})
 
+    @acceptance("DATA-INTEGRITY-001@1", "freshness")
     def test_mutations_require_fresh_hashes_and_allowlisted_parameters(self):
         with self.assertRaisesRegex(ForgeToolValidationError, "base_hash"):
             validate_forge_tool_request("edit_prompt", {"field": "positive", "patches": []})
@@ -139,6 +142,7 @@ class ForgeToolApiTests(unittest.TestCase):
         self.assertEqual("validation_error", response.json()["detail"]["error"]["code"])
         self.assertNotIn("C:/private", response.text)
 
+    @acceptance("AGENT-TOOLS-001@1", "revalidation,freshness")
     def test_validation_endpoint_revalidates_browser_host_tools(self):
         with TemporaryDirectory() as directory:
             app = FastAPI()

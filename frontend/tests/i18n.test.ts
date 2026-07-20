@@ -72,4 +72,31 @@ describe("runtime i18n contract", () => {
       metadata: { code: "zh-CN", label: "简体中文", direction: "ltr", source: "python-runtime", content_version: "sha256:zh" },
     })).toMatchObject({ locale: "zh-CN", content_version: "sha256:zh" });
   });
+
+  it("follows Forge localization returned by Python instead of browser language", async () => {
+    window.localStorage.clear();
+    window.__SD_FORGE_NEO_PROMPT_AGENT__ = {};
+    useI18nStore.getState().reset();
+    useI18nStore.getState().setBrowserLanguages(["en-US"]);
+    useI18nStore.getState().setForgeLocale(null);
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === "/prompt-agent/api/i18n/locale") {
+        return new Response(JSON.stringify({
+          locale: "zh-CN",
+          fallback_locale: "en",
+          supported_locales: ["zh-CN", "en"],
+          content_version: "sha256:zh",
+          metadata: { code: "zh-CN", label: "简体中文", direction: "ltr", source: "python-runtime", content_version: "sha256:zh" },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      const bundle = url.includes("zh-CN") ? zh : en;
+      return new Response(JSON.stringify(bundle), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    await useI18nStore.getState().preload(fetchImpl as unknown as typeof fetch);
+
+    expect(useI18nStore.getState().forgeLocale).toBe("zh-CN");
+    expect(useI18nStore.getState().locale).toBe("zh-CN");
+    expect(useI18nStore.getState().t("greeting")).toBe("你好");
+  });
 });

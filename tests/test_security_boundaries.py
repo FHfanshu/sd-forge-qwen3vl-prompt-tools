@@ -1,6 +1,7 @@
 import base64
 import contextlib
 import runpy
+import subprocess
 import sys
 import tempfile
 import types
@@ -13,9 +14,29 @@ from fastapi import FastAPI
 
 from prompt_agent import image_payloads, model_paths
 from prompt_agent.reference_image import _reference_image_messages
+from quality.acceptance import acceptance
 
 
 class SecurityBoundaryTests(unittest.TestCase):
+    def test_extension_backend_namespace_does_not_shadow_forge_backend(self):
+        root = Path(__file__).resolve().parents[1]
+        forge_root = root.parents[1]
+        self.assertFalse((root / "backend" / "__init__.py").exists())
+        script = """
+import sys
+sys.path = [sys.argv[1], sys.argv[2]] + sys.path
+from backend.args import parser
+from backend.prompt_agent import API_PREFIX
+print(parser.prog, API_PREFIX)
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", script, str(root), str(forge_root)],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("/prompt-agent/api", completed.stdout)
+
     def test_forge_script_registers_prompt_agent_api(self):
         script = Path(__file__).resolve().parents[1] / "scripts" / "prompt_agent.py"
         source = script.read_text(encoding="utf-8")
@@ -52,6 +73,7 @@ class SecurityBoundaryTests(unittest.TestCase):
         self.assertEqual("system", messages[0]["role"])
         self.assertEqual("image_url", messages[1]["content"][1]["type"])
 
+    @acceptance("SECURITY-PRIVACY-001@1", "path-rejection")
     def test_llama_server_path_must_be_server_configured(self):
         with tempfile.TemporaryDirectory() as directory:
             trusted = Path(directory) / "trusted.exe"

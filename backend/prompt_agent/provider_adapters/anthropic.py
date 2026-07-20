@@ -51,7 +51,10 @@ async def stream_anthropic(request: StreamRequest, profile: dict[str, Any]) -> A
             {"name": tool["name"], "description": tool["description"], "input_schema": tool["parameters"]}
             for tool in tool_definitions(request.tools)
         ]
-        body["tool_choice"] = {"type": "auto"}
+        body["tool_choice"] = (
+            {"type": "tool", "name": request.tool_choice}
+            if request.tool_choice else {"type": "auto"}
+        )
     thinking_enabled = False
     if request.reasoning not in {"off", "none"} and _reasoning_enabled(profile):
         maximum = int(body["max_tokens"])

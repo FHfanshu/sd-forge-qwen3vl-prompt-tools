@@ -1,5 +1,5 @@
 import { Agent, type AgentMessage, type AgentOptions, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { ImageContent, Model } from "@earendil-works/pi-ai";
+import type { ImageContent, Message, Model } from "@earendil-works/pi-ai";
 import type { RuntimeListener } from "./runtime-events";
 import {
   initialAgentRuntimeState,
@@ -12,6 +12,20 @@ export interface AgentInput {
   text: string;
   images?: ImageContent[];
   reasoningLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  requirePromptMutation?: boolean;
+  requireBackgroundLookup?: boolean;
+}
+
+interface PromptAgentControlMessage {
+  role: "promptAgentControl";
+  content: string;
+  timestamp: number;
+}
+
+declare module "@earendil-works/pi-agent-core" {
+  interface CustomAgentMessages {
+    promptAgentControl: PromptAgentControlMessage;
+  }
 }
 
 export interface PromptAgentRuntimeOptions
@@ -26,6 +40,7 @@ export interface PromptAgentRuntimeOptions
 export interface PromptAgentRuntime {
   submit(input: AgentInput): Promise<void>;
   abort(): void;
+  replaceMessages(messages: AgentMessage[]): void;
   reset(): void;
   destroy(): void;
   getState(): AgentRuntimeState;
@@ -43,6 +58,28 @@ const runtimeError = (error: unknown): AgentRuntimeError => ({
   cause: error,
 });
 
+const PROMPT_MUTATION_CORRECTION = "The user requested an actual rewrite of the current Forge prompt, but no edit_prompt call has succeeded. Do not finish with advice or claim the prompt changed. Read the current prompt again if needed, then call edit_prompt with the latest base_hash and corrected arguments. Finish only after edit_prompt succeeds; if Forge reports a non-retryable blocker, explain that blocker clearly.";
+const MAX_PROMPT_MUTATION_CORRECTIONS = 2;
+const BACKGROUND_LOOKUP_CORRECTION = "The user asked for background information about a named entity. Your previous text-only answer is not acceptable and must not be shown. Character trigger words are stored in Forge style templates: first call search_resources with kind=style and the entity as query, then inspect_resource with kind=style for the best matching ID. If no style matches, fall back to inspect_danbooru_tags with include_wiki=true or search_danbooru_tags. Do not claim who or what the entity is from memory. Only answer after a successful inspection, and identify whether the source was a local Forge style or Danbooru.";
+const MAX_BACKGROUND_LOOKUP_CORRECTIONS = 2;
+type BackgroundLookupStage = "style-search" | "style-inspect" | "danbooru";
+
+function isControlMessage(message: AgentMessage): message is PromptAgentControlMessage {
+  return message.role === "promptAgentControl";
+}
+
+function normalizeControlMessages(messages: AgentMessage[]): AgentMessage[] {
+  return messages.map((message) => isControlMessage(message)
+    ? { role: "user", content: message.content, timestamp: message.timestamp }
+    : message);
+}
+
+function defaultConvertToLlm(messages: AgentMessage[]): Message[] {
+  return normalizeControlMessages(messages).filter((message): message is Message => (
+    message.role === "user" || message.role === "assistant" || message.role === "toolResult"
+  ));
+}
+
 export class PiPromptAgentRuntime implements PromptAgentRuntime {
   private readonly agent: Agent;
   private readonly listeners = new Set<RuntimeListener>();
@@ -50,6 +87,15 @@ export class PiPromptAgentRuntime implements PromptAgentRuntime {
   private state: AgentRuntimeState = initialAgentRuntimeState();
   private destroyed = false;
   private abortRequested = false;
+  private promptMutationRequired = false;
+  private promptMutationSucceeded = false;
+  private promptMutationCorrections = 0;
+  private backgroundLookupRequired = false;
+  private backgroundLookupSucceeded = false;
+  private backgroundLookupCorrections = 0;
+  private backgroundLookupStage: BackgroundLookupStage = "style-search";
+  private lastTurnHadToolError = false;
+  private readonly suppressedAssistantTimestamps = new Set<number>();
 
   constructor(options: PromptAgentRuntimeOptions) {
     this.agent = new Agent({
@@ -60,9 +106,18 @@ export class PiPromptAgentRuntime implements PromptAgentRuntime {
         tools: options.tools ?? [],
         thinkingLevel: options.thinkingLevel ?? "off",
       },
-      streamFn: options.streamFn,
-      convertToLlm: options.convertToLlm,
-      transformContext: options.transformContext,
+      streamFn: options.streamFn
+        ? (model, context, streamOptions) => options.streamFn!(model, context, {
+          ...streamOptions,
+          toolChoice: this.requiredBackgroundTool(),
+        } as typeof streamOptions)
+        : undefined,
+      convertToLlm: options.convertToLlm
+        ? (messages) => options.convertToLlm!(normalizeControlMessages(messages))
+        : defaultConvertToLlm,
+      transformContext: options.transformContext
+        ? (messages, signal) => options.transformContext!(normalizeControlMessages(messages), signal)
+        : undefined,
       beforeToolCall: options.beforeToolCall,
       afterToolCall: options.afterToolCall,
       toolExecution: "sequential",
@@ -71,8 +126,45 @@ export class PiPromptAgentRuntime implements PromptAgentRuntime {
     this.unsubscribeAgent = this.agent.subscribe((event) => {
       let status: AgentRuntimeStatus = this.state.status;
       if (event.type === "agent_start") status = "submitting";
+      if (event.type === "turn_start" && this.lastTurnHadToolError) {
+        status = "retrying";
+        this.lastTurnHadToolError = false;
+      }
       if (event.type === "message_update") status = "streaming";
       if (event.type === "tool_execution_start" || event.type === "tool_execution_update") status = "tool-calling";
+      if (event.type === "tool_execution_end") {
+        if (event.toolName === "edit_prompt" && !event.isError) this.promptMutationSucceeded = true;
+        if (!event.isError) this.recordBackgroundLookup(event.toolName, event.result.details);
+        if (event.isError) this.lastTurnHadToolError = true;
+      }
+      if (event.type === "turn_end"
+        && event.message.role === "assistant"
+        && event.message.stopReason !== "error"
+        && event.message.stopReason !== "aborted"
+        && event.toolResults.length === 0
+        && this.promptMutationRequired
+        && !this.promptMutationSucceeded) {
+        this.suppressedAssistantTimestamps.add(event.message.timestamp);
+        if (this.promptMutationCorrections < MAX_PROMPT_MUTATION_CORRECTIONS) {
+          this.promptMutationCorrections += 1;
+          this.agent.followUp({ role: "promptAgentControl", content: PROMPT_MUTATION_CORRECTION, timestamp: Date.now() });
+          status = "retrying";
+        }
+      }
+      if (event.type === "turn_end"
+        && event.message.role === "assistant"
+        && event.message.stopReason !== "error"
+        && event.message.stopReason !== "aborted"
+        && event.toolResults.length === 0
+        && !this.backgroundLookupSucceeded
+        && this.backgroundLookupRequired) {
+        this.suppressedAssistantTimestamps.add(event.message.timestamp);
+        if (this.backgroundLookupCorrections < MAX_BACKGROUND_LOOKUP_CORRECTIONS) {
+          this.backgroundLookupCorrections += 1;
+          this.agent.followUp({ role: "promptAgentControl", content: BACKGROUND_LOOKUP_CORRECTION, timestamp: Date.now() });
+          status = "retrying";
+        }
+      }
       if (event.type === "agent_end") status = this.agent.state.errorMessage ? "failed" : "completed";
       this.state = this.snapshot(status);
       this.emit();
@@ -82,13 +174,44 @@ export class PiPromptAgentRuntime implements PromptAgentRuntime {
   async submit(input: AgentInput): Promise<void> {
     this.assertAlive();
     this.abortRequested = false;
+    this.promptMutationRequired = input.requirePromptMutation === true;
+    this.promptMutationSucceeded = false;
+    this.promptMutationCorrections = 0;
+    this.backgroundLookupRequired = input.requireBackgroundLookup === true;
+    this.backgroundLookupSucceeded = false;
+    this.backgroundLookupCorrections = 0;
+    this.backgroundLookupStage = "style-search";
+    this.lastTurnHadToolError = false;
+    this.suppressedAssistantTimestamps.clear();
     this.state = { ...this.snapshot("submitting"), error: undefined };
     this.emit();
     try {
       if (input.reasoningLevel) this.agent.state.thinkingLevel = input.reasoningLevel;
       await this.agent.prompt(input.text, input.images);
-      this.state = this.snapshot(this.agent.state.errorMessage ? "failed" : "completed");
+      this.agent.state.messages = this.visibleMessages();
+      if (!this.agent.state.errorMessage && this.promptMutationRequired && !this.promptMutationSucceeded) {
+        this.state = {
+          ...this.snapshot("failed"),
+          error: {
+            code: "prompt_mutation_incomplete",
+            message: "Prompt Agent could not complete the requested Forge prompt rewrite after corrective retries.",
+            retryable: true,
+          },
+        };
+      } else if (!this.agent.state.errorMessage && this.backgroundLookupRequired && !this.backgroundLookupSucceeded) {
+        this.state = {
+          ...this.snapshot("failed"),
+          error: {
+            code: "background_lookup_incomplete",
+            message: "Prompt Agent could not verify the requested background information through a lookup tool.",
+            retryable: true,
+          },
+        };
+      } else {
+        this.state = this.snapshot(this.agent.state.errorMessage ? "failed" : "completed");
+      }
     } catch (error) {
+      this.agent.state.messages = this.visibleMessages();
       this.state = { ...this.snapshot("failed"), error: runtimeError(error) };
     }
     this.emit();
@@ -102,9 +225,37 @@ export class PiPromptAgentRuntime implements PromptAgentRuntime {
     this.agent.abort();
   }
 
+  replaceMessages(messages: AgentMessage[]): void {
+    this.assertAlive();
+    if (this.agent.state.isStreaming) throw new Error("Cannot replace messages while Prompt Agent is running");
+    this.abortRequested = false;
+    this.promptMutationRequired = false;
+    this.promptMutationSucceeded = false;
+    this.promptMutationCorrections = 0;
+    this.backgroundLookupRequired = false;
+    this.backgroundLookupSucceeded = false;
+    this.backgroundLookupCorrections = 0;
+    this.backgroundLookupStage = "style-search";
+    this.lastTurnHadToolError = false;
+    this.suppressedAssistantTimestamps.clear();
+    this.agent.reset();
+    this.agent.state.messages = messages;
+    this.state = this.snapshot("idle");
+    this.emit();
+  }
+
   reset(): void {
     this.assertAlive();
     this.abortRequested = false;
+    this.promptMutationRequired = false;
+    this.promptMutationSucceeded = false;
+    this.promptMutationCorrections = 0;
+    this.backgroundLookupRequired = false;
+    this.backgroundLookupSucceeded = false;
+    this.backgroundLookupCorrections = 0;
+    this.backgroundLookupStage = "style-search";
+    this.lastTurnHadToolError = false;
+    this.suppressedAssistantTimestamps.clear();
     this.agent.reset();
     this.state = initialAgentRuntimeState();
     this.emit();
@@ -127,7 +278,7 @@ export class PiPromptAgentRuntime implements PromptAgentRuntime {
   }
 
   getMessages(): AgentMessage[] {
-    return [...this.agent.state.messages];
+    return this.visibleMessages();
   }
 
   getTools(): AgentTool<any>[] {
@@ -147,15 +298,51 @@ export class PiPromptAgentRuntime implements PromptAgentRuntime {
 
   private snapshot(status: AgentRuntimeStatus): AgentRuntimeState {
     const errorMessage = this.agent.state.errorMessage;
+    const currentAssistantMessage = this.agent.state.streamingMessage;
     return {
       status,
-      messages: [...this.agent.state.messages],
-      currentAssistantMessage: this.agent.state.streamingMessage,
+      messages: this.visibleMessages(),
+      currentAssistantMessage: currentAssistantMessage && this.isVisibleMessage(currentAssistantMessage)
+        ? currentAssistantMessage
+        : undefined,
       pendingToolCalls: [...this.agent.state.pendingToolCalls],
       error: errorMessage
         ? { code: this.abortRequested ? "runtime_aborted" : "provider_error", message: errorMessage, retryable: true }
         : undefined,
     };
+  }
+
+  private visibleMessages(): AgentMessage[] {
+    return this.agent.state.messages.filter((message) => this.isVisibleMessage(message));
+  }
+
+  private isVisibleMessage(message: AgentMessage): boolean {
+    return !isControlMessage(message)
+      && !(message === this.agent.state.streamingMessage && this.backgroundLookupRequired && !this.backgroundLookupSucceeded)
+      && !(message.role === "assistant" && this.suppressedAssistantTimestamps.has(message.timestamp));
+  }
+
+  private requiredBackgroundTool(): string | undefined {
+    if (!this.backgroundLookupRequired || this.backgroundLookupSucceeded) return undefined;
+    if (this.backgroundLookupStage === "style-search") return "search_resources";
+    if (this.backgroundLookupStage === "style-inspect") return "inspect_resource";
+    return "inspect_danbooru_tags";
+  }
+
+  private recordBackgroundLookup(toolName: string, details: unknown): void {
+    if (!this.backgroundLookupRequired || !details || typeof details !== "object") return;
+    const result = details as Record<string, unknown>;
+    if (toolName === "search_resources" && result.kind === "style") {
+      this.backgroundLookupStage = Array.isArray(result.items) && result.items.length > 0 ? "style-inspect" : "danbooru";
+      return;
+    }
+    if (toolName === "inspect_resource" && result.kind === "style" && result.ok === true) {
+      this.backgroundLookupSucceeded = true;
+      return;
+    }
+    if (["inspect_danbooru_tags", "search_danbooru_tags", "related_danbooru_tags"].includes(toolName) && result.ok === true) {
+      this.backgroundLookupSucceeded = true;
+    }
   }
 
   private emit(): void {
