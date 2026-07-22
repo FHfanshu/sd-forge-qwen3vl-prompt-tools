@@ -9,7 +9,6 @@ export const SESSION_STORES = {
   attachments: "attachments",
   preferences: "preferences",
   runtimePreferences: "preferences",
-  profileCache: "profile-cache",
 } as const;
 
 const LEGACY_PREFERENCES_STORE = "runtime-preferences";
@@ -29,7 +28,6 @@ function createCurrentStores(database: IDBDatabase): void {
     attachments.createIndex("sessionId", "sessionId", { unique: false });
   }
   if (!database.objectStoreNames.contains(SESSION_STORES.preferences)) createStore(database, SESSION_STORES.preferences);
-  if (!database.objectStoreNames.contains(SESSION_STORES.profileCache)) createStore(database, SESSION_STORES.profileCache);
 }
 
 function ensureIndex(store: IDBObjectStore, name: string, keyPath: string): void {
@@ -55,8 +53,6 @@ function migrateVersionOneToTwo(database: IDBDatabase, transaction: IDBTransacti
   ensureIndex(attachments, "sessionId", "sessionId");
 
   if (!database.objectStoreNames.contains(SESSION_STORES.sessions)) createStore(database, SESSION_STORES.sessions);
-  if (!database.objectStoreNames.contains(SESSION_STORES.profileCache)) createStore(database, SESSION_STORES.profileCache);
-
   const preferences = database.objectStoreNames.contains(SESSION_STORES.preferences)
     ? transaction.objectStore(SESSION_STORES.preferences)
     : createStore(database, SESSION_STORES.preferences);
@@ -79,9 +75,14 @@ function migrateVersionOneToTwo(database: IDBDatabase, transaction: IDBTransacti
   };
 }
 
+function migrateVersionTwoToThree(database: IDBDatabase): void {
+  if (database.objectStoreNames.contains("profile-cache")) database.deleteObjectStore("profile-cache");
+}
+
 function migrateDatabase(database: IDBDatabase, transaction: IDBTransaction, oldVersion: number): void {
   if (oldVersion < 1) createCurrentStores(database);
   if (oldVersion < 2) migrateVersionOneToTwo(database, transaction);
+  if (oldVersion < 3) migrateVersionTwoToThree(database);
 }
 
 export const openPromptAgentDatabase = (): Promise<IDBDatabase> =>

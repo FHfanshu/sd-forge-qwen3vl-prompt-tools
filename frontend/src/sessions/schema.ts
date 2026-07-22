@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 export const PROMPT_AGENT_DATABASE = "sd-forge-neo-prompt-agent";
-export const PROMPT_AGENT_DATABASE_VERSION = 2;
+export const PROMPT_AGENT_DATABASE_VERSION = 3;
 export const PROMPT_AGENT_CHANGE_CHANNEL = `${PROMPT_AGENT_DATABASE}:changes`;
 
 export type SessionMessageStatus = "complete" | "streaming" | "interrupted" | "failed";
@@ -17,6 +17,8 @@ export interface PromptAgentSession {
   reasoningLevel: string;
   systemPrompt: string;
   schemaVersion: number;
+  syncRevision?: number;
+  syncHash?: string;
 }
 
 export interface PromptAgentMessage {
@@ -47,23 +49,7 @@ export interface PromptAgentPreference {
   value: PromptAgentPreferenceValue;
 }
 
-export interface PromptAgentProfileCache {
-  id: string;
-  displayName?: string;
-  modelId?: string;
-  providerId?: string;
-  protocol?: string;
-  runtime?: string;
-  capabilities?: {
-    tools: boolean;
-    vision: boolean;
-    streaming: boolean;
-    reasoning: boolean;
-  };
-  cachedAt: number;
-}
-
-export type SessionChangeEntity = "session" | "message" | "attachment" | "preference" | "profile-cache";
+export type SessionChangeEntity = "session" | "message" | "attachment" | "preference";
 export type SessionChangeOperation = "put" | "delete";
 
 export interface SessionChangeNotification {

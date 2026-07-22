@@ -2,7 +2,7 @@
 
 ## Authority
 
-The browser owns new chat history in IndexedDB database `sd-forge-neo-prompt-agent`. Python does not own assistant sessions and does not continue a browser request after refresh.
+Python owns durable synchronized chat snapshots in `data/prompt-agent/sessions.sqlite3`. Each browser keeps a local cache in IndexedDB database `sd-forge-neo-prompt-agent`. Python never owns agent execution and does not continue a browser request after refresh.
 
 `PromptAgentRuntime` is the only generation-state authority. Svelte stores render runtime state but do not create another execution state machine.
 
@@ -13,8 +13,7 @@ The versioned database contains:
 - `sessions`: session metadata, selected profile, timestamps, and preview text;
 - `messages`: user, assistant, reasoning, and tool display records;
 - `attachments`: persisted attachment metadata and blobs when supported;
-- `preferences`: active session and runtime preferences;
-- `profile-cache`: secret-free public profile metadata.
+- `preferences`: active session and runtime preferences.
 
 Provider credentials, decrypted secrets, executable paths, model paths, and privileged Forge state never enter IndexedDB.
 
@@ -22,12 +21,14 @@ Provider credentials, decrypted secrets, executable paths, model paths, and priv
 
 1. Mount opens IndexedDB and applies schema migrations.
 2. Any message left in `streaming` state is marked `interrupted`.
-3. The last selected session and its persisted messages are restored.
-4. Only completed model-context messages are loaded into a new Pi runtime.
-5. A user submission creates one active browser request.
-6. Runtime snapshots are serialized to prevent older writes from replacing newer content.
-7. Completion, failure, or cancellation produces a terminal message state and restores the composer.
-8. Refresh or tab closure never reconnects to or re-executes the previous request.
+3. The browser exchanges local snapshots with `/prompt-agent/api/sessions/sync`.
+4. Server snapshots hydrate the IndexedDB cache before history selection.
+5. The last selected session and its persisted messages are restored.
+6. Only completed model-context messages are loaded into a new Pi runtime.
+7. A user submission creates one active browser request.
+8. Runtime snapshots are serialized to prevent older writes from replacing newer content.
+9. Completion, failure, or cancellation produces a terminal message state, synchronizes best-effort, and restores the composer.
+10. Refresh or tab closure never reconnects to or re-executes the previous request.
 
 ## Message Rules
 
@@ -36,6 +37,7 @@ Provider credentials, decrypted secrets, executable paths, model paths, and priv
 - Reasoning may be displayed and persisted as UI metadata, but is not added to later model context by default.
 - Partial assistant content is preserved when a request fails or is cancelled.
 - Deleting a session also removes its messages and attachment records.
+- Server snapshots carry revisions. A stale divergent revision is preserved as a conflict-copy session rather than overwriting either transcript.
 
 ## Multi-Tab Behavior
 
@@ -48,15 +50,18 @@ Tabs may announce that another tab changed session data. They do not claim execu
 - Refresh: mark unfinished content interrupted without continuing it.
 - Stale persistence write: serialize writes and bind each snapshot to its originating session.
 - Failed storage transaction: report the error without leaving generation state active.
+- Failed server synchronization: keep the IndexedDB cache usable and retry at the next mount or terminal turn.
 
 ## Acceptance Criteria
 
-- Session, message, attachment, preference, and profile-cache CRUD are covered.
+- Session, message, attachment, and preference CRUD are covered.
 - Streaming updates keep one logical record per message.
 - Refresh restores history and selection and marks unfinished output interrupted.
 - No provider stream or tool call resumes after refresh.
 - Multi-tab behavior is informational only.
 - Browser persistence contains no secrets or local filesystem paths.
+- A second browser connected to the same Forge host restores synchronized sessions and messages.
+- Concurrent divergent writes preserve both transcripts.
 
 The mock-host Playwright suite exercises the refresh boundary against real
 IndexedDB: it waits for a partial streaming record, reloads, verifies the record

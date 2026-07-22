@@ -130,7 +130,7 @@ describe("PromptAgentSessionRepository", () => {
     repository.close();
   });
 
-  it("creates the versioned v2 stores and migrates v1 preferences", async () => {
+  it("creates the versioned stores, migrates v1 preferences, and removes the obsolete profile cache", async () => {
     await createLegacyV1Database();
 
     const repository = new PromptAgentSessionRepository();
@@ -145,9 +145,9 @@ describe("PromptAgentSessionRepository", () => {
       SESSION_STORES.messages,
       SESSION_STORES.attachments,
       SESSION_STORES.preferences,
-      SESSION_STORES.profileCache,
     ]));
     expect(Array.from(database.objectStoreNames)).not.toContain("runtime-preferences");
+    expect(Array.from(database.objectStoreNames)).not.toContain("profile-cache");
     expect(Array.from(database.transaction(SESSION_STORES.attachments, "readonly").objectStore(SESSION_STORES.attachments).indexNames)).toContain("sessionId");
     database.close();
     repository.close();
@@ -161,13 +161,13 @@ describe("PromptAgentSessionRepository", () => {
       SESSION_STORES.messages,
       SESSION_STORES.attachments,
       SESSION_STORES.preferences,
-      SESSION_STORES.profileCache,
     ]));
     expect(Array.from(database.objectStoreNames)).not.toContain("runtime-preferences");
+    expect(Array.from(database.objectStoreNames)).not.toContain("profile-cache");
     database.close();
   });
 
-  it("supports CRUD for attachments and secret-free profile cache records", async () => {
+  it("supports CRUD for attachments", async () => {
     const repository = new PromptAgentSessionRepository();
     await repository.putSession(session("session"));
     await repository.putAttachment(attachment("attachment", "session"));
@@ -176,23 +176,6 @@ describe("PromptAgentSessionRepository", () => {
     expect(await repository.deleteAttachment("attachment")).toBe(true);
     expect(await repository.getAttachment("attachment")).toBeUndefined();
 
-    const profileWithPrivateFields = {
-      id: "profile",
-      displayName: "Public",
-      modelId: "model",
-      providerId: "provider",
-      cachedAt: 1,
-      capabilities: { tools: true, vision: false, streaming: true, reasoning: false },
-      apiKey: "secret",
-      modelPath: "C:\\models\\private.gguf",
-    };
-    await repository.putProfileCache(profileWithPrivateFields);
-    const cached = await repository.getProfileCache("profile");
-    expect(cached).toEqual(expect.objectContaining({ id: "profile", displayName: "Public", modelId: "model" }));
-    expect(cached).not.toHaveProperty("apiKey");
-    expect(cached).not.toHaveProperty("modelPath");
-    expect(await repository.deleteProfileCache("profile")).toBe(true);
-    expect(await repository.getProfileCache("profile")).toBeUndefined();
     repository.close();
   });
 

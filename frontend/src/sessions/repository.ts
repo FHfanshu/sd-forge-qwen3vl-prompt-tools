@@ -5,12 +5,12 @@ import {
   type PromptAgentMessage,
   type PromptAgentPreference,
   type PromptAgentPreferenceValue,
-  type PromptAgentProfileCache,
   type PromptAgentSession,
   type SessionChangeEntity,
   type SessionChangeNotification,
   type SessionChangeOperation,
 } from "./schema";
+import { synchronizePromptAgentSessions } from "./sync";
 
 export interface PromptAgentChangeChannel {
   onmessage: ((event: MessageEvent) => void) | null;
@@ -30,7 +30,7 @@ const createChangeChannel: PromptAgentChangeChannelFactory = (name) => {
   }
 };
 
-const SESSION_CHANGE_ENTITIES: SessionChangeEntity[] = ["session", "message", "attachment", "preference", "profile-cache"];
+const SESSION_CHANGE_ENTITIES: SessionChangeEntity[] = ["session", "message", "attachment", "preference"];
 const SESSION_CHANGE_OPERATIONS: SessionChangeOperation[] = ["put", "delete"];
 
 function isSessionChangeNotification(value: unknown): value is SessionChangeNotification {
@@ -265,37 +265,6 @@ export class PromptAgentSessionRepository {
     return deleted;
   }
 
-  async putProfileCache(profile: PromptAgentProfileCache): Promise<void> {
-    const record = toProfileCacheRecord(profile);
-    await withDatabase(this.openDatabase, async (database) => {
-      const transaction = database.transaction(SESSION_STORES.profileCache, "readwrite");
-      transaction.objectStore(SESSION_STORES.profileCache).put(record);
-      await transactionComplete(transaction);
-    });
-    this.publish("profile-cache", "put", record.id);
-  }
-
-  async getProfileCache(id: string): Promise<PromptAgentProfileCache | undefined> {
-    return withDatabase(this.openDatabase, async (database) => {
-      const transaction = database.transaction(SESSION_STORES.profileCache, "readonly");
-      return requestResult(transaction.objectStore(SESSION_STORES.profileCache).get(id));
-    });
-  }
-
-  async listProfileCache(): Promise<PromptAgentProfileCache[]> {
-    return withDatabase(this.openDatabase, async (database) => {
-      const transaction = database.transaction(SESSION_STORES.profileCache, "readonly");
-      const profiles = await requestResult(transaction.objectStore(SESSION_STORES.profileCache).getAll()) as PromptAgentProfileCache[];
-      return profiles.sort((left, right) => right.cachedAt - left.cachedAt || left.id.localeCompare(right.id));
-    });
-  }
-
-  async deleteProfileCache(id: string): Promise<boolean> {
-    const deleted = await this.deleteById(SESSION_STORES.profileCache, id);
-    if (deleted) this.publish("profile-cache", "delete", id);
-    return deleted;
-  }
-
   async markInterrupted(): Promise<number> {
     return withDatabase(this.openDatabase, async (database) => {
       const transaction = database.transaction(SESSION_STORES.messages, "readwrite");
@@ -308,6 +277,10 @@ export class PromptAgentSessionRepository {
       for (const message of unfinished) this.publish("message", "put", message.id, message.sessionId);
       return unfinished.length;
     });
+  }
+
+  async syncWithServer() {
+    return synchronizePromptAgentSessions(this);
   }
 
   private async deleteById(storeName: string, id: string): Promise<boolean> {
@@ -349,6 +322,8 @@ function toSessionRecord(session: PromptAgentSession): PromptAgentSession {
     reasoningLevel: session.reasoningLevel,
     systemPrompt: session.systemPrompt,
     schemaVersion: session.schemaVersion,
+    ...(session.syncRevision !== undefined ? { syncRevision: session.syncRevision } : {}),
+    ...(session.syncHash !== undefined ? { syncHash: session.syncHash } : {}),
   };
 }
 
@@ -382,24 +357,4 @@ function toPreferenceValue(value: PromptAgentPreferenceValue): PromptAgentPrefer
   if (typeof value === "number" && !Number.isFinite(value)) throw new TypeError("Preference numbers must be finite");
   if (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number") return value;
   throw new TypeError("Preferences must contain primitive values");
-}
-
-function toProfileCacheRecord(profile: PromptAgentProfileCache): PromptAgentProfileCache {
-  return {
-    id: profile.id,
-    ...(profile.displayName !== undefined ? { displayName: profile.displayName } : {}),
-    ...(profile.modelId !== undefined ? { modelId: profile.modelId } : {}),
-    ...(profile.providerId !== undefined ? { providerId: profile.providerId } : {}),
-    ...(profile.protocol !== undefined ? { protocol: profile.protocol } : {}),
-    ...(profile.runtime !== undefined ? { runtime: profile.runtime } : {}),
-    ...(profile.capabilities ? {
-      capabilities: {
-        tools: profile.capabilities.tools,
-        vision: profile.capabilities.vision,
-        streaming: profile.capabilities.streaming,
-        reasoning: profile.capabilities.reasoning,
-      },
-    } : {}),
-    cachedAt: profile.cachedAt,
-  };
 }

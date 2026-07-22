@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from typing import Any
 
 from .contracts import parse_stream_request
@@ -11,8 +12,9 @@ from .forge_tools import (
 from .models import public_models
 from .local_runtime import LocalLlamaRuntime, LocalRuntimeError
 from .profile_connection import ConnectionTestError, test_profile_connection
-from .profiles import ProfileAuthority
+from .profiles import ProfileAuthority, default_storage_root
 from .providers import provider_catalog, public_profile_state, stream_profile
+from .session_sync import SessionSyncAuthority, SessionSyncError
 
 
 API_PREFIX = "/prompt-agent/api"
@@ -26,18 +28,23 @@ def health_payload() -> dict[str, Any]:
         "service": "SD Forge Neo Prompt Agent",
         "api_version": API_VERSION,
         "runtime": "frontend-pi",
-        "session_storage": "indexeddb",
+        "session_storage": "sqlite-sync+indexeddb-cache",
         "features": {
             "agent_loop": True,
             "provider_proxy": True,
             "forge_tools": True,
             "profiles": True,
             "local_models": True,
+            "session_sync": True,
         },
     }
 
 
-def register_prompt_agent_api(app: Any, profile_authority: ProfileAuthority | None = None) -> None:
+def register_prompt_agent_api(
+    app: Any,
+    profile_authority: ProfileAuthority | None = None,
+    session_sync_authority: SessionSyncAuthority | None = None,
+) -> None:
     from fastapi import Body, HTTPException
     from fastapi.responses import StreamingResponse
 
@@ -46,6 +53,7 @@ def register_prompt_agent_api(app: Any, profile_authority: ProfileAuthority | No
         return
     setattr(state, _REGISTRATION_MARKER, True)
     profiles = profile_authority or ProfileAuthority()
+    session_sync = session_sync_authority or SessionSyncAuthority(getattr(profiles, "root", default_storage_root()))
     local_runtime = LocalLlamaRuntime()
     setattr(state, "_prompt_agent_local_runtime", local_runtime)
     if hasattr(app, "add_event_handler"):
@@ -58,6 +66,15 @@ def register_prompt_agent_api(app: Any, profile_authority: ProfileAuthority | No
     @app.get(f"{API_PREFIX}/profiles")
     async def prompt_agent_profiles() -> dict[str, Any]:
         return profiles.list_state()
+
+    @app.post(f"{API_PREFIX}/sessions/sync")
+    async def prompt_agent_session_sync(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        try:
+            return session_sync.sync(payload)
+        except (OSError, SessionSyncError, sqlite3.Error) as error:
+            status = 422 if isinstance(error, SessionSyncError) else 503
+            detail = str(error) if isinstance(error, SessionSyncError) else "Session synchronization is unavailable."
+            raise HTTPException(status_code=status, detail=detail) from error
 
     @app.get(f"{API_PREFIX}/profiles/{{profile_id}}")
     async def prompt_agent_profile(profile_id: str) -> dict[str, Any]:
@@ -209,7 +226,7 @@ def register_prompt_agent_api(app: Any, profile_authority: ProfileAuthority | No
                 },
             ) from error
         finally:
-            if profile.get("runtime") in {"llama-once", "llama-endpoint"} and turn_id.startswith("connection-test:"):
+            if profile.get("runtime") == "llama-once" and turn_id.startswith("connection-test:"):
                 await local_runtime.stop_turn(turn_id, force=True)
 
     @app.post(f"{API_PREFIX}/local-runtime/start")
