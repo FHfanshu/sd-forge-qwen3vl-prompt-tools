@@ -2,10 +2,11 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProfileSettings from "../src/components/ProfileSettings.svelte";
-import { normalizeProfile } from "../src/profile-adapter";
+import { createDefaultProfileState, normalizeProfile } from "../src/profile-adapter";
 import { useI18nStore } from "../src/stores/i18n";
 import { useProfileStore } from "../src/stores/profiles";
 import { useUiStore } from "../src/stores/ui";
+import { acceptanceTest } from "./acceptance";
 
 beforeEach(() => {
   document.body.removeAttribute("style");
@@ -27,6 +28,7 @@ function installProfileApi(options: {
   connection?: (signal?: AbortSignal) => Promise<Record<string, unknown>>;
   failSecretSaves?: number;
   forceHasApiKey?: boolean;
+  deleteFailure?: string;
 } = {}): ReturnType<typeof vi.fn> {
   let failSecretSaves = options.failSecretSaves ?? 0;
   const storedKeys = new Set<string>();
@@ -58,7 +60,9 @@ function installProfileApi(options: {
       const hasApiKey = options.forceHasApiKey ?? (storedKeys.has(profileId) || profile.hasApiKey);
       return new Response(JSON.stringify({ ...normalizeProfile(profile), hasApiKey, has_api_key: hasApiKey }), { status: 200 });
     }
-    if (method === "DELETE") return new Response(null, { status: 204 });
+    if (method === "DELETE") return options.deleteFailure
+      ? new Response(JSON.stringify({ detail: options.deleteFailure }), { status: 503 })
+      : new Response(null, { status: 204 });
     return new Response(JSON.stringify(profile), { status: 200 });
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -74,6 +78,27 @@ describe("Svelte profile settings", () => {
     ["Model", "Connection", "Generation", "Routes"].forEach((name) => expect(screen.getByRole("tab", { name })).toBeInTheDocument());
     expect(screen.queryByRole("tab", { name: "Local" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Interface" })).not.toBeInTheDocument();
+  });
+
+  acceptanceTest("MODEL-PROFILE-001@3", "connection-modes", "offers only the three supported connection modes and maps them atomically", async () => {
+    const user = userEvent.setup();
+    render(ProfileSettings, { open: true, onclose: () => undefined });
+
+    const connection = screen.getByLabelText("Connection type");
+    expect([...connection.querySelectorAll("option")].map((option) => option.value)).toEqual([
+      "openai-compatible",
+      "gemini-native",
+      "llama-once",
+    ]);
+    expect(screen.queryByLabelText("API protocol")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Runtime")).not.toBeInTheDocument();
+
+    await user.selectOptions(connection, "llama-once");
+    await waitFor(() => expect(useProfileStore.getState().profiles.find((profile) => profile.id === useProfileStore.getState().selectedProfileId)).toMatchObject({
+      protocol: "openai-chat-completions",
+      runtime: "llama-once",
+      providerId: "llama-cpp",
+    }));
   });
 
   it("keeps touch tablets in a floating, resizable profile window", () => {
@@ -97,6 +122,33 @@ describe("Svelte profile settings", () => {
     const dialog = screen.getByRole("dialog", { name: "Model profiles" });
     expect(dialog).toHaveStyle({ left: "16px", top: "16px", width: "360px", height: "600px" });
     expect(screen.queryByRole("button", { name: "Resize profile window" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the profile window stable while a focused field opens the virtual keyboard", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 844 });
+    const visualViewport = Object.assign(new EventTarget(), {
+      offsetLeft: 0,
+      offsetTop: 0,
+      width: 390,
+      height: 844,
+    });
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: visualViewport });
+
+    render(ProfileSettings, { open: true, onclose: () => undefined });
+    const dialog = screen.getByRole("dialog", { name: "Model profiles" });
+    const input = screen.getByLabelText("Model ID");
+
+    input.focus();
+    visualViewport.height = 300;
+    visualViewport.dispatchEvent(new Event("resize"));
+    await waitFor(() => expect(dialog).toHaveClass("pa-keyboard-overflow"));
+    expect(dialog).toHaveStyle({ left: "16px", top: "16px", width: "360px", height: "600px" });
+
+    input.blur();
+    visualViewport.height = 844;
+    visualViewport.dispatchEvent(new Event("resize"));
+    await waitFor(() => expect(dialog).not.toHaveClass("pa-keyboard-overflow"));
   });
 
   it("lets you clear and rewrite the model id without snap-back or per-keystroke saves", async () => {
@@ -160,6 +212,8 @@ describe("Svelte profile settings", () => {
 
   it("puts the enabled switch in the model summary", async () => {
     const user = userEvent.setup();
+    const state = useProfileStore.getState();
+    state.setProfiles(state.profiles.map((profile) => profile.id === "openai-compatible" ? { ...profile, enabled: true } : profile));
     render(ProfileSettings, { open: true, onclose: () => undefined });
     const toggle = screen.getByRole("button", { name: "Toggle model availability" });
     expect(toggle).toHaveAttribute("aria-pressed", "true");
@@ -246,6 +300,31 @@ describe("Svelte profile settings", () => {
     expect(screen.queryByRole("tab", { name: "Connection" })).not.toBeInTheDocument();
   });
 
+  acceptanceTest("MODEL-PROFILE-001@3", "edit-stability", "keeps a catalog-backed Gemini profile selected and editable", async () => {
+    const defaults = createDefaultProfileState();
+    const gemini = normalizeProfile({
+      ...defaults.profiles[0],
+      id: "profile-1",
+      displayName: "Gemini 3.1 Pro",
+      modelId: "gemini-3.1-pro-preview",
+      endpoint: "https://gateway.invalid",
+      modelInfo: { ...defaults.profiles[0].modelInfo, source: "models.dev", providerId: "pioneer" },
+    });
+    const local = normalizeProfile({ ...defaults.profiles.at(-1), id: "local-endpoint", displayName: "Gemma local", enabled: true });
+    useProfileStore.getState().setState({ ...defaults, profiles: [local, gemini], activeProfileId: gemini.id });
+
+    render(ProfileSettings, { open: true, onclose: () => undefined });
+
+    expect(useProfileStore.getState().activeProfileId).toBe(gemini.id);
+    expect(useProfileStore.getState().selectedProfileId).toBe(gemini.id);
+    expect(screen.getByRole("tab", { name: "Connection" })).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("tab", { name: "Connection" }));
+    expect(screen.getByLabelText("Endpoint")).toHaveValue("https://gateway.invalid");
+    await fireEvent.change(screen.getByLabelText("Endpoint"), { target: { value: "https://gateway-2.invalid" } });
+    expect(useProfileStore.getState().selectedProfileId).toBe(gemini.id);
+    expect(screen.getByLabelText("Endpoint")).toHaveValue("https://gateway-2.invalid");
+  });
+
   it("allows a configured llama-once profile to become the active agent", () => {
     const local = useProfileStore.getState().profiles.find((profile) => profile.runtime === "llama-once");
     expect(local).toBeDefined();
@@ -289,17 +368,35 @@ describe("Svelte profile settings", () => {
     await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => String((init as RequestInit | undefined)?.body ?? "").includes("C:/private/model.gguf"))).toBe(true));
   });
 
-  it("requires alert-dialog confirmation before deletion", async () => {
+  acceptanceTest("MODEL-PROFILE-001@3", "touch-delete", "offers a direct touch deletion action and deletes the captured profile only after confirmation", async () => {
     const user = userEvent.setup();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 844 });
     render(ProfileSettings, { open: true, onclose: () => undefined });
     const count = useProfileStore.getState().profiles.length;
     const profile = useProfileStore.getState().profiles[0];
-    await user.click(screen.getByRole("button", { name: `${profile.displayName} actions` }));
-    await user.click(await screen.findByRole("menuitem", { name: "Delete" }));
+    useProfileStore.getState().selectProfile(profile.id);
+    await user.click(screen.getByRole("button", { name: "Delete selected profile" }));
     expect(screen.getByRole("alertdialog")).toBeInTheDocument();
     expect(useProfileStore.getState().profiles).toHaveLength(count);
+    useProfileStore.getState().selectProfile(useProfileStore.getState().profiles[1].id);
     await user.click(screen.getByRole("button", { name: "Delete profile" }));
-    expect(useProfileStore.getState().profiles).toHaveLength(count - 1);
+    await waitFor(() => expect(useProfileStore.getState().profiles).toHaveLength(count - 1));
+    expect(useProfileStore.getState().profiles.some((item) => item.id === profile.id)).toBe(false);
+  });
+
+  acceptanceTest("MODEL-PROFILE-001@3", "failure-recovery", "keeps the profile and exposes the server error when deletion fails", async () => {
+    installProfileApi({ deleteFailure: "profile store unavailable" });
+    const user = userEvent.setup();
+    render(ProfileSettings, { open: true, onclose: () => undefined });
+    const count = useProfileStore.getState().profiles.length;
+
+    await user.click(screen.getByRole("button", { name: "Delete selected profile" }));
+    await user.click(screen.getByRole("button", { name: "Delete profile" }));
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("profile store unavailable"));
+    expect(useProfileStore.getState().profiles).toHaveLength(count);
+    expect(screen.getByRole("button", { name: "Delete selected profile" })).toBeEnabled();
   });
 
   it("exposes active, session, and naming route controls without a teacher route", async () => {

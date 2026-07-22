@@ -44,6 +44,11 @@ describe("window viewport boundaries", () => {
     expect(layout.top + layout.height).toBeLessThanOrEqual(356);
   });
 
+  it("allows a stable floating window to exceed only the keyboard-reduced height", () => {
+    const css = readFileSync("src/styles.css", "utf-8");
+    expect(css).toMatch(/\.pa-window\.pa-keyboard-overflow, \.pa-profile-window\.pa-keyboard-overflow \{ max-height: none; \}/);
+  });
+
   it("reads the visual viewport offset and dimensions when available", () => {
     Object.defineProperty(window, "visualViewport", {
       configurable: true,
@@ -55,11 +60,12 @@ describe("window viewport boundaries", () => {
     expect(readLayoutViewportRect()).toEqual({ left: 0, top: 0, width: window.innerWidth, height: window.innerHeight });
   });
 
-  it("restores the last stable visual viewport while a keyboard close resize is stale", () => {
+  it("freezes the last stable viewport while the virtual keyboard opens and closes", () => {
     const stable = { left: 0, top: 0, width: 1024, height: 768 };
     const keyboard = { ...stable, height: 260 };
-    expect(resolveViewportAfterKeyboard(stable, keyboard, true, false)).toEqual({ viewport: keyboard, stable, recovering: true });
+    expect(resolveViewportAfterKeyboard(stable, keyboard, true, false)).toEqual({ viewport: stable, stable, recovering: true });
     expect(resolveViewportAfterKeyboard(stable, keyboard, false, true)).toEqual({ viewport: stable, stable, recovering: true });
+    expect(resolveViewportAfterKeyboard(stable, stable, true, false)).toEqual({ viewport: stable, stable, recovering: false });
     const rotated = { left: 0, top: 0, width: 768, height: 1024 };
     expect(resolveViewportAfterKeyboard(stable, rotated, false, true)).toEqual({ viewport: rotated, stable: rotated, recovering: false });
   });
@@ -68,5 +74,19 @@ describe("window viewport boundaries", () => {
     const css = readFileSync("src/styles.css", "utf-8");
     expect(css).toMatch(/@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.pa-message-heading, \.pa-message-footer \{ position: static; opacity: 1; pointer-events: auto; \}/);
     expect(css).toMatch(/\.pa-message-tool > :is\(\.pa-message-heading, \.pa-message-footer\) \{ display: none; \}/);
+  });
+
+  it("keeps pointer hit areas connected between messages and hover actions", () => {
+    const css = readFileSync("src/styles.css", "utf-8");
+    expect(css).toMatch(/\.pa-message-heading \{[^}]*bottom: 100%;[^}]*padding-bottom: \.2rem;/);
+    expect(css).toMatch(/\.pa-message-footer \{[^}]*top: 100%;[^}]*padding-top: \.15rem;/);
+    expect(css).toMatch(/\.pa-message-card:hover :is\(\.pa-message-heading, \.pa-message-footer\)[^{}]*\{ pointer-events: auto; \}/);
+  });
+
+  it("lets hover actions outgrow short user message bubbles without wrapping", () => {
+    const css = readFileSync("src/styles.css", "utf-8");
+    expect(css).toMatch(/\.pa-message-actions \{[^}]*flex-wrap: nowrap;/);
+    expect(css).toMatch(/\.pa-message-action \{[^}]*white-space: nowrap;/);
+    expect(css).toMatch(/@media \(hover: hover\) and \(pointer: fine\)[\s\S]*?\.pa-message-user \.pa-message-footer \{[^}]*left: auto;[^}]*width: max-content;/);
   });
 });

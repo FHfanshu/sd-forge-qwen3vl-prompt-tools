@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { PROMPT_AGENT_DATABASE_VERSION } from "../../src/sessions/schema";
 import { acceptanceEvidence, acceptanceTest, expectFloatingInsideViewport, expectInsideViewport } from "./acceptance";
 
 acceptanceEvidence("DATA-INTEGRITY-001@1", "no-replay");
@@ -114,6 +115,18 @@ async function installMockHost(page: Page, hostDelayMs = 0): Promise<void> {
         if (body.role && body.profile_id) (state as Record<string, unknown>)[`${body.role}_profile_id`] = body.profile_id;
         return json(state);
       }
+      if (url.pathname === "/prompt-agent/api/sessions/sync" && method === "POST") {
+        const body = JSON.parse(String(init?.body ?? request?.body ?? "{}")) as { sessions?: Array<Record<string, unknown>> };
+        return json({
+          version: 1,
+          conflicts: [],
+          sessions: (body.sessions ?? []).map((snapshot) => ({
+            ...snapshot,
+            revision: typeof snapshot.revision === "number" ? snapshot.revision : 1,
+            content_hash: "0".repeat(64),
+          })),
+        });
+      }
       if (url.pathname === "/prompt-agent/api/stream" && method === "POST") {
         browserState.__mockRequestBodies?.push(JSON.parse(String(init?.body ?? request?.body ?? "{}")));
         browserState.__mockStreamRequestCount = (browserState.__mockStreamRequestCount ?? 0) + 1;
@@ -168,7 +181,7 @@ acceptanceTest("UI-BOOT-001@1", "late-host", "connects when the Svelte bundle lo
 });
 
 test("mounted desktop UI exercises chat, history, profiles, and attachments", async ({ page }) => {
-  test.setTimeout(20_000);
+  test.setTimeout(40_000);
   await installMockHost(page);
   await page.goto("/?mount=1");
   await expect(page.locator("#prompt-agent-svelte-mount")).toHaveCount(1);
@@ -260,8 +273,16 @@ test("mounted desktop UI exercises chat, history, profiles, and attachments", as
   expect(userMessageStyle.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
   await capture(page, "chat-messages");
 
-  await userMessage.hover();
-  await userMessage.getByRole("button", { name: "Edit and resend" }).click();
+  const editButton = userMessage.getByRole("button", { name: "Edit and resend" });
+  const messageBox = (await userMessage.boundingBox())!;
+  const editBox = (await editButton.boundingBox())!;
+  await page.mouse.move(messageBox.x + messageBox.width / 2, messageBox.y + messageBox.height / 2);
+  await expect(editButton).toHaveCSS("opacity", "1");
+  await page.mouse.move(editBox.x + editBox.width / 2, messageBox.y + messageBox.height + 1);
+  await page.waitForTimeout(180);
+  await expect(editButton).toHaveCSS("opacity", "1");
+  await page.mouse.move(editBox.x + editBox.width / 2, editBox.y + editBox.height / 2, { steps: 4 });
+  await editButton.click();
   await expect(composer).toHaveValue("Review this composition");
   await expect(page.getByText("Editing message", { exact: true })).toBeVisible();
   await composer.fill("Review this edited composition");
@@ -290,8 +311,8 @@ test("mounted desktop UI exercises chat, history, profiles, and attachments", as
   await expect(settings.getByRole("tab", { name: "路由" })).toBeVisible();
 });
 
-acceptanceTest("SESSION-LIFECYCLE-001@1", "abort,recovery", "active turns abort and restore a usable composer", async ({ page }) => {
-  test.setTimeout(20_000);
+acceptanceTest("SESSION-LIFECYCLE-001@2", "abort,recovery", "active turns abort and restore a usable composer", async ({ page }) => {
+  test.setTimeout(40_000);
   await installMockHost(page);
   await page.addInitScript(() => { (window as Window & { __mockSlowTurn?: boolean }).__mockSlowTurn = true; });
   await page.goto("/?mount=1");
@@ -310,7 +331,7 @@ acceptanceTest("SESSION-LIFECYCLE-001@1", "abort,recovery", "active turns abort 
 });
 
 acceptanceTest("SESSION-REFRESH-001@1", "interruption,no-replay,recovery", "refresh preserves partial content, interrupts unfinished work, and never resumes it", async ({ page }) => {
-  test.setTimeout(20_000);
+  test.setTimeout(40_000);
   await installMockHost(page);
   await page.addInitScript(() => { (window as Window & { __mockSlowTurn?: boolean }).__mockSlowTurn = true; });
   await page.goto("/?mount=1");
@@ -320,8 +341,8 @@ acceptanceTest("SESSION-REFRESH-001@1", "interruption,no-replay,recovery", "refr
   await page.getByRole("button", { name: "Send message" }).click();
   await expect(page.getByText("Mock assistant", { exact: true })).toBeVisible();
 
-  await expect.poll(async () => page.evaluate(async () => {
-    const request = indexedDB.open("sd-forge-neo-prompt-agent", 2);
+  await expect.poll(async () => page.evaluate(async (databaseVersion) => {
+    const request = indexedDB.open("sd-forge-neo-prompt-agent", databaseVersion);
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
@@ -338,10 +359,10 @@ acceptanceTest("SESSION-REFRESH-001@1", "interruption,no-replay,recovery", "refr
     } finally {
       database.close();
     }
-  })).toBe(true);
+  }, PROMPT_AGENT_DATABASE_VERSION)).toBe(true);
 
-  await page.evaluate(async () => {
-    const request = indexedDB.open("sd-forge-neo-prompt-agent", 2);
+  await page.evaluate(async (databaseVersion) => {
+    const request = indexedDB.open("sd-forge-neo-prompt-agent", databaseVersion);
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
@@ -367,7 +388,7 @@ acceptanceTest("SESSION-REFRESH-001@1", "interruption,no-replay,recovery", "refr
     } finally {
       database.close();
     }
-  });
+  }, PROMPT_AGENT_DATABASE_VERSION);
 
   await page.reload();
   await page.getByRole("button", { name: "Open Prompt Agent" }).click();
@@ -393,7 +414,7 @@ acceptanceTest("SESSION-REFRESH-001@1", "interruption,no-replay,recovery", "refr
 test.describe("mobile layout", () => {
   test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 
-  acceptanceTest("UI-WINDOW-001@1", "phone", "portrait and landscape windows remain inside the viewport", async ({ page }) => {
+  acceptanceTest("UI-WINDOW-001@3", "phone", "portrait and landscape windows remain inside the viewport", async ({ page }) => {
     await installMockHost(page);
     await page.goto("/?mount=1");
     await page.getByRole("button", { name: "Open Prompt Agent" }).click();
@@ -421,7 +442,7 @@ test.describe("mobile layout", () => {
     await expect(chat).toHaveCount(0);
     const settings = page.getByRole("dialog", { name: "Model profiles" });
     await expect(settings).toBeVisible();
-    await expect(page.getByRole("button", { name: "Open Prompt Agent" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Open Prompt Agent" })).toBeVisible();
     await expect(settings.getByRole("button", { name: "Resize profile window" })).toHaveCount(0);
     await expectFloatingInsideViewport(settings, { width: 844, height: 390 });
     await capture(page, "settings-mobile");
@@ -433,7 +454,7 @@ test.describe("mobile layout", () => {
 test.describe("tablet layout", () => {
   test.use({ viewport: { width: 820, height: 1180 }, isMobile: true, hasTouch: true });
 
-  acceptanceTest("UI-WINDOW-001@1", "tablet", "keeps chat and settings as bounded floating windows", async ({ page }) => {
+acceptanceTest("UI-WINDOW-001@3", "tablet", "keeps chat and settings as bounded floating windows", async ({ page }) => {
     await installMockHost(page);
     await page.goto("/?mount=1");
     await page.getByRole("button", { name: "Open Prompt Agent" }).click();

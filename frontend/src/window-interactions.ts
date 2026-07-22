@@ -48,8 +48,11 @@ export function resolveViewportAfterKeyboard(
   textEntryFocused: boolean,
   recovering: boolean,
 ): ViewportRecovery {
-  if (textEntryFocused) return { viewport: live, stable, recovering: true };
   const sameWidth = Math.abs(live.width - stable.width) < 2;
+  const keyboardReduced = sameWidth && live.height < stable.height - 48;
+  if (textEntryFocused && keyboardReduced) {
+    return { viewport: stable, stable, recovering: true };
+  }
   if (recovering && sameWidth && live.height < stable.height) {
     return { viewport: stable, stable, recovering: true };
   }
